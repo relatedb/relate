@@ -122,6 +122,13 @@ impl ProjectionShape {
     pub(crate) fn star(&self) -> bool {
         self.facts().star
     }
+    /// Whether the shape is the plain one: no aggregation and no `*` item,
+    /// so each row projects alone and the clause keys its rows by the
+    /// declared output columns.
+    pub(crate) fn plain(&self) -> bool {
+        let facts = self.facts();
+        !facts.aggregating && !facts.star
+    }
 }
 
 /// A shape's two facts — whether it aggregates, and whether it carries a

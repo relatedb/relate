@@ -305,6 +305,12 @@ impl RetainedTotal {
         self.add_bytes(graph, crate::workspace::owned_heap(value))
     }
 
+    /// The retained total so far — the enforced figure a PROFILE terminal
+    /// record reports (the aggregate bills' read and the test-side one).
+    pub(crate) fn total(&self) -> u64 {
+        self.total
+    }
+
     /// Grow by raw retained bytes (a key, an entry, a batch figure).
     #[inline]
     pub(crate) fn add_bytes(&mut self, graph: &ExecGraph<'_>, bytes: u64) -> Result<()> {
@@ -384,11 +390,5 @@ impl RetainedTotal {
     pub(crate) fn add_allocation(&mut self, graph: &ExecGraph<'_>, bytes: u64) -> Result<()> {
         graph.charge_expression(bytes)?;
         graph.charge_retained(&mut self.total, bytes)
-    }
-
-    /// The retained total so far (the test-side read).
-    #[cfg(test)]
-    pub(crate) fn total(&self) -> u64 {
-        self.total
     }
 }

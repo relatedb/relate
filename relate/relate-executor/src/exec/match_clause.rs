@@ -289,6 +289,20 @@ pub(crate) fn charge_finished_container(graph: &ExecGraph<'_>, rows: &[Row]) -> 
     Ok(())
 }
 
+/// The one charge-then-fold for a fold that asks for a rung container's
+/// retention: the container is held whole while it is folded, so the cap
+/// sees it first. Every such fold spells its `offer_container` through this
+/// helper (the stage chain and both bounded sinks), and a fold that does
+/// not ask — the aggregation — keeps the default row-by-row fold.
+pub(crate) fn charge_and_fold(
+    fold: &dyn RowFold,
+    graph: &ExecGraph<'_>,
+    rows: Vec<Row>,
+) -> Result<()> {
+    charge_finished_container(graph, &rows)?;
+    rows.into_iter().try_for_each(|row| fold.offer(graph, row))
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn match_clause(
     ctx: ExecCtx<'_>,

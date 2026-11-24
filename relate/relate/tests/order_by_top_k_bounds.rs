@@ -11,7 +11,7 @@
 
 mod common;
 
-use relate::{Database, OpenOptions, Value};
+use relate::{OpenOptions, Value};
 
 /// The workspace budget the bounded shape must fit inside: generous for
 /// five retained rows, impossible for the full input at the sizes below.
@@ -64,43 +64,31 @@ fn an_unwind_feed_streams_into_the_window_whatever_the_input_count() {
     );
 }
 
-/// A held feed still reserves, once. A `MATCH`'s walk output is collected
-/// before the projection runs, so the window drains a vector it does not
-/// own and the projection reserves it against the admission pool for its
-/// lifetime — one reservation where the collecting path made three (its own
-/// projected `Vec`, the sort's merged buffer, the top-k selection's second
-/// vector). 30k one-column rows refuse under a 2 MiB pool and 5k answer
-/// under it; that boundary is the *reservation's*, so it fails if the held
-/// feed goes unbilled — and it is not the walk's own charge, which lands on
-/// the per-allocation cap, a different meter.
+/// A `MATCH`-fed `ORDER BY … LIMIT` folds the walk's rows into the same
+/// bounded window a generated feed reaches: the projection holds
+/// `skip + limit` entries, never the input. 30k one-column rows answer under
+/// a 2 MiB pool the held feed could not fit.
 #[test]
-fn a_held_feed_reserves_once_for_the_window() {
-    // The store is built unlimited (a write batch holds its rows too, and
-    // that hold is not this test's subject), then reopened under the pool.
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("db");
-    {
-        let build = Database::open_with(path.to_str().unwrap(), OpenOptions::default()).unwrap();
-        let mut c = build.connect().unwrap();
-        common::run(&mut c, "UNWIND range(1, 30_000) AS i CREATE (:N {a: i})");
-    }
-    let db = Database::open_with(
-        path.to_str().unwrap(),
-        OpenOptions {
-            concurrent_logical_workspace_limit: Some(2 << 20),
-            ..Default::default()
-        },
-    )
-    .unwrap();
-    let mut c = db.connect().unwrap();
-    // The walk's whole 30k-row output is held before the projection runs,
-    // and the window reserves it once — crossing the 2 MiB pool.
-    common::refused_workspace_limit(
+fn a_match_fed_window_holds_only_its_page() {
+    let (_dir, mut c) = common::reopened_under(
+        2 << 20,
+        &["UNWIND range(1, 30_000) AS i CREATE (:N {a: i})"],
+    );
+    let values = common::first_column(&common::run(
         &mut c,
         "MATCH (n:N) WITH n.a AS a ORDER BY a DESC LIMIT 5 RETURN a",
+    ));
+    assert_eq!(
+        values,
+        vec![
+            Value::Int(30_000),
+            Value::Int(29_999),
+            Value::Int(29_998),
+            Value::Int(29_997),
+            Value::Int(29_996)
+        ]
     );
-    // A held feed a sixth the size answers under the same pool, so the
-    // refusal is the reservation's boundary, not the walk's own charge.
+    // The MATCH's own `WHERE` still gates what reaches the window.
     let values = common::first_column(&common::run(
         &mut c,
         "MATCH (n:N) WHERE n.a <= 5000 WITH n.a AS a ORDER BY a DESC LIMIT 5 RETURN a",
@@ -115,6 +103,71 @@ fn a_held_feed_reserves_once_for_the_window() {
             Value::Int(4_996)
         ]
     );
+}
+
+/// A run of stages ending at an ordered page folds the last stage's rows
+/// into the window too: two `MATCH` clauses over 300 nodes each are a
+/// 90 000-row cross product, and the five-row page answers under a 2 MiB
+/// pool that holds nowhere near the product.
+#[test]
+fn a_staged_match_run_feeds_the_window() {
+    let (_dir, mut c) = common::reopened_under(
+        2 << 20,
+        &[
+            "UNWIND range(1, 300) AS i CREATE (:A {k: i})",
+            "UNWIND range(1, 300) AS i CREATE (:B {k: i})",
+        ],
+    );
+    let rows = common::rows(
+        &mut c,
+        "MATCH (a:A) WITH a MATCH (b:B) \
+         RETURN a.k AS a, b.k AS b ORDER BY a DESC, b DESC LIMIT 5",
+    );
+    assert_eq!(
+        rows,
+        vec![
+            vec![Value::Int(300), Value::Int(300)],
+            vec![Value::Int(300), Value::Int(299)],
+            vec![Value::Int(300), Value::Int(298)],
+            vec![Value::Int(300), Value::Int(297)],
+            vec![Value::Int(300), Value::Int(296)],
+        ]
+    );
+}
+
+/// A nondeterministic page bound stays on the held path: the sink cannot
+/// size its window for a page the projection may resolve differently, so the
+/// `MATCH` holds its rows (refused under this pool) instead of answering a
+/// page the window guessed.
+#[test]
+fn a_nondeterministic_page_bound_keeps_the_held_path() {
+    let (_dir, mut c) = common::reopened_under(
+        2 << 20,
+        &["UNWIND range(1, 30_000) AS i CREATE (:N {a: i})"],
+    );
+    let error = common::err_text(c.query(
+        "MATCH (n:N) WITH n.a AS a ORDER BY a DESC LIMIT toInteger(rand() * 5 + 1) RETURN a",
+    ));
+    assert!(
+        error.contains("concurrent-logical-workspace-limit"),
+        "the nondeterministic bound keeps the held path: {error}"
+    );
+}
+
+/// A provably empty ordered page (`LIMIT 0`) over a MATCH feed takes the
+/// count-only sink: the 50k-row input is never collected, so the empty
+/// answer fits a 2 MiB pool the held path could not.
+#[test]
+fn a_match_fed_window_limit_zero_answers_nothing_without_collecting() {
+    let (_dir, mut c) = common::reopened_under(
+        2 << 20,
+        &["UNWIND range(1, 50_000) AS i CREATE (:N {k: i})"],
+    );
+    let rows = common::rows(
+        &mut c,
+        "MATCH (n:N) WHERE n.k > 0 WITH n.k AS k ORDER BY k DESC LIMIT 0 RETURN k",
+    );
+    assert!(rows.is_empty());
 }
 
 /// The window is charged even when the workspace ledger is off (the

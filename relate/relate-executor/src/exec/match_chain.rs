@@ -68,8 +68,9 @@ use super::aggregate::Aggregation;
 use super::classification::ProjectionClass;
 use super::feed::RowStream;
 use super::match_clause::{
-    charge_finished_container, run_match_operator_ladder, LadderRun, MatchClauseInputs,
+    charge_and_fold, run_match_operator_ladder, LadderRun, MatchClauseInputs,
 };
+use super::match_consumer::{open_sink, Sink};
 use super::match_folds::fold_would_take;
 use super::pattern_policies::{MatchFold, RowFold};
 use super::profile_chain::{CountingFold, StageStats};
@@ -122,6 +123,9 @@ enum Next<'a> {
     Stage(Box<Stage<'a>>),
     /// The aggregation of the barrier after the run.
     Fold(Box<MatchFold<'a>>),
+    /// The bounded sink of the barrier after the run (ADR-0555 §3): the last
+    /// stage's projected rows fold into it as they arrive.
+    Sink(Box<Sink<'a>>),
     /// The vector the barrier after the run receives.
     Rows(Collector),
 }
@@ -133,6 +137,7 @@ impl Next<'_> {
         match self {
             Next::Stage(stage) => stage.as_ref(),
             Next::Fold(fold) => fold.as_ref(),
+            Next::Sink(sink) => sink.as_fold(),
             Next::Rows(collector) => collector,
         }
     }
@@ -308,6 +313,7 @@ pub(crate) fn open_match_chain<'a>(
     ctx: ExecCtx<'a>,
     clauses: &'a [Clause],
     class_slot: &'a OnceCell<ProjectionClass<'a>>,
+    sink_class: &'a OnceCell<ProjectionClass<'a>>,
     scope: Option<&'a Row>,
     record: Option<(PlanMetricsSite<'a>, usize)>,
 ) -> Result<Option<MatchChain<'a>>> {
@@ -324,22 +330,32 @@ pub(crate) fn open_match_chain<'a>(
     let terminal = match open_match_fold(graph, after, class_slot, params, scope)? {
         Some(fold) => Next::Fold(Box::new(fold)),
         None => {
+            // A last `MATCH` owns the barrier's sink projection. When that
+            // barrier has a bounded form, its projected rows fold into the
+            // sink instead of a collector; every other barrier keeps the
+            // collector.
+            let mut sink = None;
             let mut collector = Collector {
                 shape: Collected::Bindings(None),
                 rows: RefCell::new(Vec::new()),
                 retained: RefCell::new(graph.retain_bytes(0)?),
             };
-            // A last `MATCH` owns the barrier's sink projection, else
-            // its bindings are trimmed to what the barrier names.
             if let Some(Transform::Match { projection, .. }) = transforms.last_mut() {
                 *projection = after.and_then(|next| sinkable_projection(graph, next));
                 if projection.is_some() {
                     collector.shape = Collected::SinkProjected;
+                    sink = match after {
+                        Some(next) => open_sink(ctx, next, sink_class, None)?,
+                        None => None,
+                    };
                 } else {
                     collector.shape = Collected::Bindings(live_from(&clauses[1 + stages..]));
                 }
             }
-            Next::Rows(collector)
+            match sink {
+                Some(sink) => Next::Sink(Box::new(sink)),
+                None => Next::Rows(collector),
+            }
         }
     };
     // Built back to front: each stage owns the stage after it.
@@ -418,7 +434,8 @@ impl<'a> Stage<'a> {
                 // A stage hands its walk the stage after it as the fold, so
                 // the walk pushes row by row; the last stage's rows come
                 // back (a sink projection) for the collector.
-                let fold = (!matches!(self.next, Next::Rows(_))).then_some(consumer);
+                let fold =
+                    (!matches!(self.next, Next::Rows(_) | Next::Sink(_))).then_some(consumer);
                 let LadderRun { rows, facts } = run_match_operator_ladder(
                     self.ctx,
                     batch,
@@ -475,7 +492,7 @@ impl<'a> Stage<'a> {
         }
         match &self.next {
             Next::Stage(stage) => stage.finish(graph),
-            Next::Fold(_) | Next::Rows(_) => Ok(()),
+            Next::Fold(_) | Next::Sink(_) | Next::Rows(_) => Ok(()),
         }
     }
 }
@@ -496,8 +513,7 @@ impl RowFold for Stage<'_> {
     /// A rung's finished container headed to a stage is retained until it
     /// is offered; the pipeline bounds that figure as the held path did.
     fn offer_container(&self, graph: &ExecGraph<'_>, rows: Vec<Row>) -> Result<()> {
-        charge_finished_container(graph, &rows)?;
-        rows.into_iter().try_for_each(|row| self.offer(graph, row))
+        charge_and_fold(self, graph, rows)
     }
 }
 
@@ -531,6 +547,7 @@ impl<'a> MatchChain<'a> {
             match stage.next {
                 Next::Stage(next) => stage = *next,
                 Next::Fold(fold) => break LandingKind::Folded(Box::new((*fold).into_parts().0)),
+                Next::Sink(sink) => break sink.finish().kind,
                 Next::Rows(collector) => {
                     let mut rows = collector.rows.into_inner();
                     Row::share_schemas(&mut rows);
@@ -571,6 +588,12 @@ impl<'a> MatchChain<'a> {
                 Next::Stage(next) => stage = next,
                 Next::Rows(collector) => {
                     retained = rows_logical_bytes(&collector.rows.borrow());
+                    break;
+                }
+                // A bounded sink's live container is the terminal's retained
+                // state too — the same accounting policy as the collector.
+                Next::Sink(sink) => {
+                    retained = sink.retained_bytes();
                     break;
                 }
                 Next::Fold(_) => break,
@@ -617,6 +640,7 @@ impl RowFold for MatchChain<'_> {
 pub(crate) enum MatchConsumer<'a> {
     Fold(MatchFold<'a>),
     Chain(MatchChain<'a>),
+    Sink(Sink<'a>),
 }
 
 /// What a consumer leaves for the clause after the clauses it covered:
@@ -651,6 +675,7 @@ pub(crate) fn open_match_consumer<'a>(
     ctx: ExecCtx<'a>,
     clauses: &'a [Clause],
     class_slot: &'a OnceCell<ProjectionClass<'a>>,
+    sink_class: &'a OnceCell<ProjectionClass<'a>>,
     scope: Option<&'a Row>,
     record: Option<(PlanMetricsSite<'a>, usize)>,
 ) -> Result<Option<MatchConsumer<'a>>> {
@@ -658,7 +683,19 @@ pub(crate) fn open_match_consumer<'a>(
     if let Some(fold) = open_match_fold(graph, clauses.get(1), class_slot, params, scope)? {
         return Ok(Some(MatchConsumer::Fold(fold)));
     }
-    Ok(open_match_chain(ctx, clauses, class_slot, scope, record)?.map(MatchConsumer::Chain))
+    if let Some(chain) = open_match_chain(ctx, clauses, class_slot, sink_class, scope, record)? {
+        return Ok(Some(MatchConsumer::Chain(chain)));
+    }
+    // No intermediate stage: a named `DISTINCT` or an `ORDER BY … LIMIT`
+    // right after the head folds the head's rows into the bounded sink, the
+    // sink projection evaluating the items per row.
+    let Some(next) = clauses.get(1) else {
+        return Ok(None);
+    };
+    let Some(projection) = sinkable_projection(graph, next) else {
+        return Ok(None);
+    };
+    Ok(open_sink(ctx, next, sink_class, Some(projection))?.map(MatchConsumer::Sink))
 }
 
 impl<'a> MatchConsumer<'a> {
@@ -667,6 +704,7 @@ impl<'a> MatchConsumer<'a> {
         match self {
             MatchConsumer::Fold(fold) => fold,
             MatchConsumer::Chain(chain) => chain,
+            MatchConsumer::Sink(sink) => sink.as_fold(),
         }
     }
 
@@ -689,6 +727,7 @@ impl<'a> MatchConsumer<'a> {
                 ))
             }
             MatchConsumer::Chain(chain) => chain.finish(graph),
+            MatchConsumer::Sink(sink) => Ok((None, sink.finish())),
         }
     }
 }

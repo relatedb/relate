@@ -232,7 +232,6 @@ impl TieredWordSet {
     }
 
     /// The bytes this set's own workspace charge holds.
-    #[cfg(test)]
     pub(crate) fn charged(&self) -> u64 {
         self.charge.bytes()
     }

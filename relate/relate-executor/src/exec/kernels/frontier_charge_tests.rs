@@ -105,38 +105,35 @@ fn refused_mid_emission(
     full
 }
 
-/// LABS-1077: the distinct-endpoint consumer's rows charge as they land
-/// inside `emit_endpoint_row`. A distinct-endpoint projection whose rows
-/// each construct a ~200-byte string crosses a 5 KB cap mid-emission:
-/// the refusal is the typed expression-capacity error carrying the
-/// crossing row's own figure, and the frontier counters show the rung
-/// stopped before it served every seed — on the pre-charge tree the
-/// same statement refused only after the full walk (the counters
-/// identical to the unrefused run's), the whole container already
-/// landed. The ring (not the web) is the fixture: its stood-down DFS
-/// enumeration finishes, so the under-cap half can differential against
-/// it.
+/// A named `DISTINCT` over the frontier's distinct-endpoint shape folds the
+/// endpoint rows into the clause's first-seen pass (ADR-0555 §3), so the
+/// projection no longer materializes a per-row container: the ~200-byte
+/// string each row would construct never exists as a held container, and
+/// the 5 KB cap that refused the materialized form answers the six keys.
+/// The frontier still serves the clause, and the answer is the stood-down
+/// DFS's.
 #[test]
-fn a_kernel_served_distinct_endpoint_container_is_capped_while_rows_land() {
+fn a_kernel_served_distinct_endpoint_fold_is_bounded_by_its_keys() {
     let cap = 5_000;
     let pad = "p".repeat(200);
     let query = format!("MATCH (x:Geo)-[:LINK*1..3]-(y:Geo) RETURN DISTINCT y.id + '{pad}' AS k");
-    // One landed row: its ~200-byte constructed projection (the largest
-    // `y.id` this graph binds is `"n5"`) plus a generous 2-slot row
-    // figure.
-    let one_landing = relate_core::str_logical_bytes(&format!("n5{pad}"))
-        + crate::workspace::retained_rows_bytes(1, 2);
-    let full = refused_mid_emission(ring_graph, &query, cap, one_landing);
-    assert_eq!(full.rows.len(), 6, "the six distinct endpoint keys");
-    // The no-false-positive form: the under-cap run answers the stood-down
-    // DFS's rows exactly.
+    let mut g = ring_graph();
+    g.configure_expression_memory_limit(Some(cap));
+    let _ = take_frontier_counters();
+    let folded = exec_cypher(&g, &query);
+    assert_eq!(folded.rows.len(), 6, "the six distinct endpoint keys");
+    assert!(
+        take_frontier_counters().levels > 0,
+        "the frontier rung was serving the clause"
+    );
+    // The under-cap form answers the stood-down DFS's rows exactly.
     let mut g_dfs = ring_graph();
     g_dfs.configure_expression_memory_limit(Some(FITTING_CAP));
     let dfs = with_frontier_disabled(|| exec_cypher(&g_dfs, &query));
     assert!(
-        same_rows(&full, &dfs),
+        same_rows(&folded, &dfs),
         "rows diverge for {query}:\n  frontier: {:?}\n  dfs:      {:?}",
-        full.rows,
+        folded.rows,
         dfs.rows
     );
 }

@@ -27,7 +27,7 @@ use super::test_support::{
 };
 use crate::ctx::ExecCtx;
 use crate::overlay::ExecGraph;
-use crate::row::Row;
+use crate::row::{Row, RowNames};
 
 /// The ring `i -> i+1` with the chord `i -> i+7` over `total` nodes.
 fn ring_rels(total: usize) -> Vec<(usize, usize, &'static str)> {
@@ -557,6 +557,94 @@ fn a_finished_container_is_charged_only_when_the_fold_asks() {
     assert_eq!(charging.offered.get(), 0, "refused before any row landed");
 }
 
+/// A bounded sink's classification claim must not starve a later `MATCH`'s
+/// aggregation fold: the part has one classification slot, and a preceding
+/// `DISTINCT` page that claimed it would leave the later `MATCH` to hold its
+/// rows into the aggregation (the folding-consumer-stops-folding regression
+/// the `UNWIND` guard exists for). The sink declines when the part carries
+/// such a fold, so the small cap answers here.
+#[test]
+fn a_bounded_sink_leaves_a_later_match_its_aggregation_fold() {
+    for query in [
+        // the fold directly after the later `MATCH`
+        "MATCH (a:P) WITH DISTINCT a.id AS k \
+         MATCH (b:N)-[:E*1..2]->(c) RETURN count(*) AS c",
+        // the fold at the end of the later `MATCH`'s stage run (a mapping
+        // `WITH` between them)
+        "MATCH (a:P) WITH DISTINCT a.id AS k \
+         MATCH (b:N)-[:E*1..2]->(c) WITH c.id AS x RETURN count(*) AS c",
+    ] {
+        let mut g = ring(400);
+        g.graph.configure_expression_memory_limit(Some(32 * 1024));
+        let folded = exec_cypher(&g.graph, query);
+        let held = exec_cypher(&ring(400).graph, query);
+        assert_eq!(folded.rows, held.rows, "{query}");
+    }
+}
+
+/// Whether offering a rung's finished container (300 rows of a 1 KiB
+/// string) to the sink `query`'s follower opens is refused under a 64 KiB
+/// cap — the container is held whole while the sink folds it, so the cap
+/// must see it.
+fn rung_container_refused(query: &str) -> bool {
+    use std::cell::OnceCell;
+
+    use super::match_chain::open_match_consumer;
+
+    let mut built = ring(40);
+    built
+        .graph
+        .configure_expression_memory_limit(Some(64 * 1024));
+    let query = parse_and_lower(query).unwrap();
+    let plan = relate_planner::plan(query, &mut |_| false).unwrap();
+    let clauses = &plan.parts[0];
+    let view = ExecGraph::read(&built.graph);
+    let params = BTreeMap::new();
+    let slot = OnceCell::new();
+    let sink_slot = OnceCell::new();
+    let consumer = open_match_consumer(
+        ExecCtx::new(&view, &params),
+        clauses,
+        &slot,
+        &sink_slot,
+        None,
+        None,
+    )
+    .unwrap()
+    .expect("the follower opens a sink");
+    let names = RowNames::new(&["n".to_string()]);
+    let pad = "p".repeat(1024);
+    let rows: Vec<Row> = (0..300)
+        .map(|i| Row::from_names(&names, vec![Value::String(format!("{i}{pad}").into())]))
+        .collect();
+    refusal(consumer.as_fold().offer_container(&view, rows))
+}
+
+/// A rung's finished container headed to the bounded sink is charged before
+/// it is folded, as a stage's is: the container is retained whole while the
+/// sink consumes it, so a cap that fits the sink's own bounded state but not
+/// the container refuses before a row lands. Without the sink's own
+/// `offer_container` the default folds the container row by row uncharged —
+/// the exact shape these bounded forms exist to refuse. (The projection keys
+/// the rows by `size(n)` — three small integers — so the seen-set fits while
+/// the incoming container does not.)
+#[test]
+fn a_rung_container_headed_to_the_bounded_sink_is_charged() {
+    assert!(rung_container_refused(
+        "MATCH (n:N) RETURN DISTINCT size(n) AS k"
+    ));
+}
+
+/// The count-only sink of a provably empty page still holds whatever a rung
+/// hands it while it counts: the container is charged first, so `LIMIT 0`
+/// cannot absorb a whole rung container uncharged.
+#[test]
+fn the_count_only_sink_charges_a_rung_container() {
+    assert!(rung_container_refused(
+        "MATCH (n:N) RETURN DISTINCT n AS k LIMIT 0"
+    ));
+}
+
 /// A cancelled statement stops a stage at its next batch: the per-batch
 /// check (beside the operator ladder's own per-row ticks) surfaces the
 /// cancellation instead of running the batch.
@@ -579,9 +667,17 @@ fn a_cancelled_statement_stops_at_the_next_batch() {
     let view = ExecGraph::read(&built.graph).with_cancel(Some(&token));
     let params = BTreeMap::new();
     let slot = OnceCell::new();
-    let chain = open_match_chain(ExecCtx::new(&view, &params), clauses, &slot, None, None)
-        .unwrap()
-        .expect("the second MATCH streams");
+    let sink_slot = OnceCell::new();
+    let chain = open_match_chain(
+        ExecCtx::new(&view, &params),
+        clauses,
+        &slot,
+        &sink_slot,
+        None,
+        None,
+    )
+    .unwrap()
+    .expect("the second MATCH streams");
     for _ in 0..CHAIN_BATCH - 1 {
         chain.offer(&view, Row::new()).unwrap();
     }

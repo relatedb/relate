@@ -258,6 +258,17 @@ impl DistinctSet {
         self.word_bytes() + self.spill_ref().map_or(0, Spill::general_bytes)
     }
 
+    /// The bytes this set's accounted state holds — every word tier's
+    /// charge plus the general tables' — the seen-set's share of a
+    /// container's retained figure (PROFILE's terminal record).
+    pub(crate) fn retained_bytes(&self) -> u64 {
+        self.active_words().map_or(0, TieredWordSet::charged)
+            + self
+                .spill_ref()
+                .map_or(0, |spill| spill.parked_sum(TieredWordSet::charged))
+            + self.charge.bytes()
+    }
+
     /// Whether the word tier has promoted to its per-tag tables (T2).
     #[cfg(test)]
     pub(crate) fn words_promoted(&self) -> bool {
@@ -265,17 +276,6 @@ impl DistinctSet {
             || self
                 .spill_ref()
                 .is_some_and(|spill| spill.word_tiers().any(TieredWordSet::promoted))
-    }
-
-    /// The bytes this set's own workspace charge holds: every word tier's
-    /// charge plus the general tables' charge.
-    #[cfg(test)]
-    pub(crate) fn charged(&self) -> u64 {
-        self.active_words().map_or(0, TieredWordSet::charged)
-            + self
-                .spill_ref()
-                .map_or(0, |spill| spill.parked_sum(TieredWordSet::charged))
-            + self.charge.bytes()
     }
 
     /// The active word tier, when a word has been taken.

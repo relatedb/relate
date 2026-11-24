@@ -17,7 +17,7 @@ use super::classification::{ProjectionClass, ProjectionShape};
 use super::feed::RowStream;
 use super::order::{page, PageBounds};
 use super::pattern_policies::MatchFold;
-use super::post_merge::{adopt_rows, finish_projection, land_feed, Landed};
+use super::post_merge::{adopt_rows, finish_projection, land_feed, Landed, LandedTail};
 use super::scope::{return_columns, star_scope_names, visible_keys, ProjectionFields};
 use super::{materialize_rows_strict, QueryResult, RowFeed};
 
@@ -94,13 +94,19 @@ fn next_fold_shape<'a>(
     Some((fields, shape))
 }
 
-/// Whether the clause after a `MATCH` consumes its rows as a stream: a
-/// `WITH` or `RETURN` whose projection folds an aggregation as rows arrive
-/// ([`ProjectionShape::streams`] — an aggregating shape with no `*` item,
-/// since a `*` groups by every carried variable and needs the rows' shape up
-/// front). Every other follower takes the rows as a held vector, as ever.
+/// The fold pair when the clause after a `MATCH` consumes its rows as a
+/// stream (a `WITH`/`RETURN` whose projection folds an aggregation as rows
+/// arrive — [`ProjectionShape::streams`]): the one derivation both readers
+/// take, [`streams_into_projection`]'s answer and [`open_match_fold`]'s
+/// fields for the class.
+fn folding_shape(next: Option<&Clause>) -> Option<(ProjectionFields<'_>, ProjectionShape)> {
+    next_fold_shape(next).filter(|(_, shape)| shape.streams())
+}
+
+/// Whether the clause after a `MATCH` consumes its rows as a stream. Every
+/// other follower takes the rows as a held vector, as ever.
 pub(crate) fn streams_into_projection(next: Option<&Clause>) -> bool {
-    next_fold_shape(next).is_some_and(|(_, shape)| shape.streams())
+    folding_shape(next).is_some()
 }
 
 /// Open the aggregation a streamed `MATCH` folds into, for the
@@ -138,16 +144,8 @@ pub(crate) fn open_match_fold<'a>(
     if class_slot.get().is_some() {
         return Ok(None);
     }
-    let Some(fields) = next.and_then(ProjectionFields::from_clause) else {
+    let Some((fields, shape)) = folding_shape(next) else {
         return Ok(None);
-    };
-    // The shape answers without building the parked-key plan; a rejected
-    // shape never folds (the projection fails closed at its own
-    // classification, which the clause reaches because every clause
-    // executes).
-    let shape = match ProjectionShape::decide(&fields) {
-        Ok(shape) if shape.streams() => shape,
-        _ => return Ok(None),
     };
     // The slot owns the clause's one classification: the parked-key plan
     // is built exactly once, here, and kept alive for the fold's borrow
@@ -208,6 +206,10 @@ pub(crate) enum RowSource {
     /// (their columns plus the parked `__ord*` sort keys), so only the
     /// sort, page, DISTINCT, and column-extraction stages are left.
     SinkProjected,
+    /// A bounded sink already landed these rows in the clause's own
+    /// container; the carried facts say which tail stages it ran, so the
+    /// projection adopts the landing instead of re-opening a container.
+    SinkLanded(LandedTail),
 }
 
 /// The one input type of the projection: the rows it evaluates its items
@@ -221,6 +223,9 @@ pub(crate) enum ProjectionInput<'a> {
     /// this clause's columns plus the parked `__ord*` sort keys: only the
     /// sort, page, DISTINCT and column-extraction stages are left.
     SinkProjected(Vec<Row>),
+    /// A bounded sink's landing: the rows in the clause's own container and
+    /// the tail stages it already ran.
+    SinkLanded(Landed),
 }
 
 impl ProjectionInput<'_> {
@@ -230,6 +235,7 @@ impl ProjectionInput<'_> {
         match self {
             Self::Feed(feed) => feed.probe(),
             Self::SinkProjected(rows) => rows,
+            Self::SinkLanded(landed) => &landed.rows,
         }
     }
 
@@ -244,7 +250,7 @@ impl ProjectionInput<'_> {
         // fails to compile until it states one.
         match self {
             Self::Feed(RowFeed::Held(stream)) => stream.stop(),
-            Self::Feed(RowFeed::Folded(_)) | Self::SinkProjected(_) => Ok(()),
+            Self::Feed(RowFeed::Folded(_)) | Self::SinkProjected(_) | Self::SinkLanded(_) => Ok(()),
         }
     }
 }
@@ -335,12 +341,19 @@ fn merge_rows(
             refresh.rows(graph, &mut rows);
             adopt_rows(graph, params, class, bounds, rows)
         }
+        // A bounded sink already ran the clause's container; the carried
+        // landing's facts say so, and the only mutation is the in-place
+        // inflate refresh.
+        (ProjectionInput::SinkLanded(mut landed), ProjectionShape::Plain) => {
+            refresh.rows(graph, &mut landed.rows);
+            Ok(landed)
+        }
         // `sinkable_projection` declines every aggregating and `*` shape, so
-        // a sink-projected feed never arrives with one — and none of them
-        // has a pre-projected policy to fall back on.
-        (ProjectionInput::SinkProjected(_), _) => Err(Error::internal(
-            "a sink-projected feed reached a shape the sink never projects",
-        )),
+        // a pre-projected feed never arrives with one — and neither form has
+        // a pre-projected policy to fall back on.
+        (ProjectionInput::SinkProjected(_) | ProjectionInput::SinkLanded(_), _) => Err(
+            Error::internal("a pre-projected feed reached a shape the sink never projects"),
+        ),
         // The star and plain shapes consume the batch stream itself —
         // their row assembly lands each pulled row — so the arm hands
         // them the one input they can take, never a conversion that
@@ -399,6 +412,12 @@ fn prepare_input<'a>(
     // else is collected: a pre-projected input stays pre-projected, every
     // collected feed becomes held rows.
     let (rows, wrap): (Vec<Row>, Rewrap<'a>) = match input {
+        // A bounded sink's landing is already the clause's answer page (or
+        // first-seen set); it carries its own facts and pages itself.
+        ProjectionInput::SinkLanded(landed) => {
+            let charge = held_charge(&landed.rows)?;
+            return Ok((ProjectionInput::SinkLanded(landed), charge));
+        }
         ProjectionInput::SinkProjected(rows) => (rows, ProjectionInput::SinkProjected),
         ProjectionInput::Feed(RowFeed::Folded(folded)) => {
             return Ok((

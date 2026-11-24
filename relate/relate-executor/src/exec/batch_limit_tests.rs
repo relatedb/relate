@@ -162,10 +162,12 @@ fn shapes_that_change_the_arriving_rows_are_not_pushed() {
     let n = 3 * CHUNK_ROWS;
     let g = items(n).graph;
     for (cypher, chain_serves) in [
-        // ORDER BY: the top rows of a sort are not the scan's prefix.
+        // ORDER BY: the top rows of a sort are not the scan's prefix, so no
+        // want rides the scan — but the chain still serves the shape
+        // unbounded, feeding the ordered window as rows land (ADR-0555 §3).
         (
             "MATCH (n) RETURN n.id AS id ORDER BY n.id DESC LIMIT 1",
-            false,
+            true,
         ),
         // DISTINCT: duplicates must be dropped before the limit counts.
         ("MATCH (n) RETURN DISTINCT n.id % 2 AS m LIMIT 2", false),

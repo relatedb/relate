@@ -174,6 +174,12 @@ impl<'k, 'a> TopKWindow<'k, 'a> {
         Ok(())
     }
 
+    /// The live window's charged bytes — the entry figure the window's own
+    /// charge tracks (PROFILE's terminal-retention fact for a window sink).
+    pub(crate) fn retained_bytes(&self) -> u64 {
+        self.charge.bytes()
+    }
+
     /// The held rows, best first — at most `keep`, already in the sort's
     /// order, so the finish tail sorts nothing on this shape. The window's
     /// charge is released with it; the rows are the caller's.

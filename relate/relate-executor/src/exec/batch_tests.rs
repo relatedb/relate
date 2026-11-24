@@ -249,8 +249,6 @@ fn the_gate_declines_every_unsupported_shape() {
         // A sink projection runs in the match sink.
         "MATCH (c:Comment) WHERE c.length > 1000 RETURN c.id",
         "MATCH (c:Comment) WHERE c.length > 1000 RETURN c.id ORDER BY c.id",
-        // DISTINCT + LIMIT takes the cap.
-        "MATCH (c:Comment) WHERE c.length > 1000 RETURN DISTINCT c.id LIMIT 2",
         // A second pattern in the same MATCH.
         "MATCH (c:Comment), (r:Root) WHERE c.length > 1000 RETURN count(c.id)",
         // A named path.
@@ -260,6 +258,22 @@ fn the_gate_declines_every_unsupported_shape() {
     ] {
         differential(&g, cypher, false).unwrap();
     }
+}
+
+/// A named `DISTINCT` feeds the clause's first-seen pass (ADR-0555 §3,
+/// ADR-0660), so the chain serves the shape unbounded and pushes each row
+/// into the seen-set — the answer is the per-row path's, and no `LIMIT`
+/// rides the scan (a distinct suffix's `want` is the distinct cap's, which a
+/// `WHERE`-bearing clause takes from the walker).
+#[test]
+fn a_distinct_fold_opens_the_gate_for_a_distinct_suffix() {
+    let g = comments();
+    differential(
+        &g,
+        "MATCH (c:Comment) WHERE c.length > 1000 RETURN DISTINCT c.id LIMIT 2",
+        true,
+    )
+    .unwrap();
 }
 
 /// A nondeterministic bound keeps its per-row evaluation (its value may

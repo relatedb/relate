@@ -160,6 +160,31 @@ pub fn refused_workspace_limit(conn: &mut relate::Connection, statement: &str) -
     error
 }
 
+/// Build `statements` into a fresh store unlimited, then reopen it under
+/// `pool` bytes of concurrent logical workspace. The memory-shape tests' one
+/// fixture: the write batch holds its rows too, and that hold is not their
+/// subject.
+pub fn reopened_under(pool: u64, statements: &[&str]) -> (tempfile::TempDir, relate::Connection) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("db");
+    let uri = relate_test_support::uri(&path);
+    {
+        let build = env_seam::open(uri, relate::OpenOptions::default());
+        let mut connection = build.connect().unwrap();
+        for statement in statements {
+            run(&mut connection, statement);
+        }
+    }
+    let db = env_seam::open(
+        uri,
+        relate::OpenOptions {
+            concurrent_logical_workspace_limit: Some(pool),
+            ..Default::default()
+        },
+    );
+    (dir, db.connect().unwrap())
+}
+
 /// The first column of every result row as a `String` — the shape the
 /// title/name/note assertions of the SEARCH and procedure test crates all
 /// spelled inline.

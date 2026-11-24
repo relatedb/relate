@@ -202,6 +202,12 @@ fn run_clauses_mode(
     // as the fold lives, so the slot sits after the cell that holds it
     // (dropped last).
     let fold_class: OnceCell<ProjectionClass<'_>> = OnceCell::new();
+    // The bounded sink's own classification slot. It is separate from the
+    // fold's on purpose: a sink that claimed the fold's cell would make a
+    // later `MATCH`'s aggregation fold decline to the held path (the
+    // folding-consumer-stops-folding class), so the two consumers each own
+    // the cell their plan borrows from.
+    let sink_class: OnceCell<ProjectionClass<'_>> = OnceCell::new();
     let mut folded: Option<Aggregation<'_>> = None;
     // The one input the clause arms are threaded with (ADR-0660). The held
     // container is the common producer form: each arm drains it through the
@@ -424,6 +430,7 @@ fn run_clauses_mode(
                     clauses,
                     i,
                     &fold_class,
+                    &sink_class,
                     scope,
                     profile,
                 )?;
@@ -694,10 +701,13 @@ fn project_clause<'a>(
         }
         // A pre-projected sink owns its rows, so it is taken off the stream;
         // the one refusal of a produced stream lives in `into_held`.
-        None if matches!(rows_from, RowSource::SinkProjected) => {
-            ProjectionInput::SinkProjected(stream.into_held()?)
-        }
-        None => ProjectionInput::Feed(RowFeed::Held(stream)),
+        None => match rows_from {
+            RowSource::SinkProjected => ProjectionInput::SinkProjected(stream.into_held()?),
+            RowSource::SinkLanded(tail) => {
+                ProjectionInput::SinkLanded(tail.into_landed(stream.into_held()?))
+            }
+            RowSource::Bindings => ProjectionInput::Feed(RowFeed::Held(stream)),
+        },
     };
     let rows = project_rows(ctx, input, spec, inflate, scope)?;
     finish_parked_feed(facts, tick.as_mut());

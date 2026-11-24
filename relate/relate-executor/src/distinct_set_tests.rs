@@ -210,17 +210,17 @@ fn summed_deltas_equal_the_bytes_oracle_across_promotions() {
         .collect();
     for (step, row) in offers.iter().enumerate() {
         set.insert_row(row).unwrap();
-        assert_eq!(set.charged(), set.bytes(), "after offer {step}");
+        assert_eq!(set.retained_bytes(), set.bytes(), "after offer {step}");
         // Every NaN is its own key, so a NaN row's re-offer is *new* (and
         // may pay a delta); any other re-offer is a duplicate that adds
         // nothing.
-        let before = set.charged();
+        let before = set.retained_bytes();
         let nan_row = row
             .iter()
             .any(|v| matches!(v, Value::Float(f) if f.is_nan()));
         assert_eq!(set.insert_row(row).unwrap(), nan_row);
         if !nan_row {
-            assert_eq!(set.charged(), before);
+            assert_eq!(set.retained_bytes(), before);
         }
     }
     assert!(set.words_promoted());
@@ -234,11 +234,11 @@ fn promotion_costs_no_delta() {
     for i in 0..16 {
         insert(&mut set, &int(i));
     }
-    let inline = set.charged();
+    let inline = set.retained_bytes();
     assert_eq!(inline, crate::workspace::word_set_bytes(16));
     insert(&mut set, &int(16));
     assert_eq!(
-        set.charged() - inline,
+        set.retained_bytes() - inline,
         crate::workspace::word_insert_delta(16),
         "the 17th word pays buffer_growth(16, 17, 8) only"
     );
@@ -319,7 +319,7 @@ fn clone_charge_semantics() {
     let guard = LedgerGuard::install(&mut ledger);
     let empty = DistinctSet::default();
     assert_eq!(
-        empty.try_clone().unwrap().charged(),
+        empty.try_clone().unwrap().retained_bytes(),
         0,
         "an empty clone reserves nothing"
     );
@@ -331,7 +331,7 @@ fn clone_charge_semantics() {
     set.insert_row(&[int(1), int(2)]).unwrap();
     let copy = set.try_clone().unwrap();
     assert_eq!(
-        copy.charged(),
+        copy.retained_bytes(),
         set.bytes(),
         "a filled clone retains bytes()"
     );
@@ -343,7 +343,7 @@ fn clone_charge_semantics() {
     let _guard = LedgerGuard::install(&mut refusing);
     assert!(set.try_clone().is_err());
     let fallback = set.clone_contents();
-    assert_eq!(fallback.charged(), 0);
+    assert_eq!(fallback.retained_bytes(), 0);
     assert_eq!(fallback.len(), set.len());
 }
 
@@ -444,7 +444,7 @@ fn differential_against_the_reference_sets() {
                 let got = set.insert_value(&v).unwrap();
                 assert_eq!(got, expected, "k={k} int_only={int_only} step={step} {v:?}");
                 assert_eq!(set.len(), reference.len());
-                assert_eq!(set.charged(), set.bytes());
+                assert_eq!(set.retained_bytes(), set.bytes());
                 offers.push((format!("{v:?}"), got, expected));
             }
             let emitted: Vec<&str> = offers
@@ -474,7 +474,7 @@ fn differential_against_the_reference_sets() {
                     "k={k} int_only={int_only} step={step} {row:?}"
                 );
                 assert_eq!(set.len(), reference.len());
-                assert_eq!(set.charged(), set.bytes());
+                assert_eq!(set.retained_bytes(), set.bytes());
             }
         }
     }

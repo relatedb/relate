@@ -59,7 +59,7 @@ fn distinct_columns<'r>(row: &'r Row, names: &[String]) -> Result<std::borrow::C
 /// projection's own output names, or — for a `*` shape — the first row's
 /// visible keys, resolved once because every row of one projection carries
 /// the same scope.
-struct DistinctPass<'a> {
+pub(crate) struct DistinctPass<'a> {
     class: &'a ProjectionClass<'a>,
     seen: DistinctSet,
     star_columns: Option<Vec<String>>,
@@ -72,6 +72,12 @@ impl<'a> DistinctPass<'a> {
             seen: DistinctSet::default(),
             star_columns: None,
         }
+    }
+
+    /// The seen-set's own charged bytes — the pass's share of a container's
+    /// retained figure.
+    fn retained_bytes(&self) -> u64 {
+        self.seen.retained_bytes()
     }
 
     /// Whether the row's key columns have not been seen before — the one
@@ -140,11 +146,34 @@ pub(crate) struct Landed {
     pub(crate) streamed_page: bool,
 }
 
+/// [`Landed`]'s facts without its rows — the copy a dispatcher threads
+/// between clauses so the projection adopts the landing it was handed.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct LandedTail {
+    pub(crate) windowed: bool,
+    pub(crate) streamed_distinct: bool,
+    pub(crate) funnel_filtered_where: bool,
+    pub(crate) streamed_page: bool,
+}
+
+impl LandedTail {
+    /// The landing the seam carried, with its rows.
+    pub(crate) fn into_landed(self, rows: Vec<Row>) -> Landed {
+        Landed {
+            rows,
+            windowed: self.windowed,
+            streamed_distinct: self.streamed_distinct,
+            funnel_filtered_where: self.funnel_filtered_where,
+            streamed_page: self.streamed_page,
+        }
+    }
+}
+
 /// What a landing container wants next: [`Land::More`] for another row,
 /// [`Land::Full`] when its output page is complete — the funnel then stops
 /// the producer instead of pulling a row nobody will answer with.
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Land {
+pub(crate) enum Land {
     More,
     Full,
 }
@@ -154,7 +183,7 @@ enum Land {
 /// disjoint states, so they are variants rather than nullable fields: the
 /// window shape carries a heap and no `Vec`, the collected and page shapes a
 /// `Vec` and no heap, and no arm constructs another's state.
-enum OutputContainer<'k, 'a> {
+pub(crate) enum OutputContainer<'k, 'a> {
     /// ADR-0463's retaining `Vec`: each landed row grows a running charge
     /// and the buffer holds the projection's whole output.
     Collected {
@@ -200,7 +229,7 @@ impl<'k, 'a> OutputContainer<'k, 'a> {
     /// decision, the parked-key plan and the plain WHERE are the
     /// classification's own — read from it, never handed back as loose
     /// parameters.
-    fn open(
+    pub(crate) fn open(
         graph: &ExecGraph<'_>,
         class: &'k ProjectionClass<'a>,
         bounds: PageBounds,
@@ -220,7 +249,7 @@ impl<'k, 'a> OutputContainer<'k, 'a> {
     /// The pass-through page's container: the filter, the charged seen-set
     /// and the page's own counters, read from the classification and the
     /// clause's bounds exactly as [`Self::open`] reads the others.
-    fn page(
+    pub(crate) fn page(
         graph: &ExecGraph<'_>,
         class: &'k ProjectionClass<'a>,
         bounds: PageBounds,
@@ -240,7 +269,7 @@ impl<'k, 'a> OutputContainer<'k, 'a> {
 
     /// One built output row lands in its container. `graph` and `params`
     /// are the row's evaluation environment — one input for every arm.
-    fn land(
+    pub(crate) fn land(
         &mut self,
         graph: &ExecGraph<'_>,
         params: &BTreeMap<String, Value>,
@@ -296,8 +325,21 @@ impl<'k, 'a> OutputContainer<'k, 'a> {
 
     /// Whether this container is the bounded window — the fact the finish
     /// tail reads from what the funnel landed rather than re-deriving it.
-    fn is_window(&self) -> bool {
+    pub(crate) fn is_window(&self) -> bool {
         matches!(self, OutputContainer::Window { .. })
+    }
+
+    /// Whether the page is satisfied — the fact the bounded sink reads to
+    /// stop projecting rows it would not keep (the page's own state, never a
+    /// latch beside it).
+    pub(crate) fn is_full(&self) -> bool {
+        matches!(
+            self,
+            OutputContainer::Page {
+                limit_left: Some(0),
+                ..
+            }
+        )
     }
 
     /// Whether this container is the pass-through page — the fact the finish
@@ -309,11 +351,23 @@ impl<'k, 'a> OutputContainer<'k, 'a> {
     /// The container's rows: the window's best-first `skip + limit`, or the
     /// `Vec`'s whole output. Neither arm can fail — the window's and the
     /// page's charges are released with them, the `Vec` moves out.
-    fn finish(self) -> Vec<Row> {
+    pub(crate) fn finish(self) -> Vec<Row> {
         match self {
             OutputContainer::Window { window, .. } => window.finish(),
             OutputContainer::Collected { out, .. } => out,
             OutputContainer::Page { out, .. } => out,
+        }
+    }
+
+    /// The live container's charged bytes — the terminal-retention figure
+    /// the PROFILE tail reports for a sink terminal.
+    pub(crate) fn retained_bytes(&self) -> u64 {
+        match self {
+            OutputContainer::Window { window, .. } => window.retained_bytes(),
+            OutputContainer::Collected { retained, .. } => retained.total(),
+            OutputContainer::Page {
+                retained, distinct, ..
+            } => retained.total() + distinct.as_ref().map_or(0, DistinctPass::retained_bytes),
         }
     }
 

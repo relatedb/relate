@@ -77,6 +77,7 @@ pub(crate) mod kernels;
 pub(crate) mod match_cap;
 pub(crate) mod match_chain;
 pub(crate) mod match_clause;
+pub(crate) mod match_consumer;
 pub(crate) mod match_folds;
 pub(crate) mod named_path;
 // The one engine fork (`match_one_path`) every per-path consumer routes

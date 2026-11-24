@@ -56,12 +56,16 @@ pub(super) struct MatchArm<'a> {
 /// consumed stage records its own facts, and the tick observes the head
 /// clause through [`MatchArm::streamed`] instead of the clause holding
 /// its output for attribution.
+// The two classification slots are distinct cells (a sink must never claim
+// the fold's), so the arm takes both beside its clause/scope arguments.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn exec_match_arm<'a>(
     ctx: ExecCtx<'a>,
     mut rows: Vec<Row>,
     clauses: &'a [Clause],
     i: usize,
     fold_class: &'a OnceCell<ProjectionClass<'a>>,
+    sink_class: &'a OnceCell<ProjectionClass<'a>>,
     scope: Option<&'a Row>,
     profile: Option<PlanMetricsSite<'a>>,
 ) -> Result<MatchArm<'a>> {
@@ -103,6 +107,7 @@ pub(super) fn exec_match_arm<'a>(
                 ctx,
                 &clauses[i..],
                 fold_class,
+                sink_class,
                 scope,
                 profile.map(|site| (site, i)),
             )?
@@ -200,6 +205,7 @@ pub(super) fn exec_match_arm<'a>(
                         ctx,
                         &clauses[i..],
                         fold_class,
+                        sink_class,
                         scope,
                         profile.map(|site| (site, i)),
                     )?
