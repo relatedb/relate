@@ -540,12 +540,13 @@ carry `framing::BodyEncoding` (`identity` or `gzip`).
   the tx routes. The order is
   the same for the one-shot and the chunked path, so a below-threshold reply
   carries exactly the bytes a streamed one does. The serializer feeds the
-  rows to the writer one at a time and never rebuilds the rows array; what
+  rows to the writer one at a time, encoding each from the engine's own value
+  and never building a JSON tree of the rows (ADR-0675); what
   the pre-ADR-0386 writer did with `serde_json::to_vec` — a body-sized
   serialized copy on top of the reply — is gone above the threshold, where
-  the body goes straight into the frame writer. The rows, the envelope's
-  parts and the whole-object replies are still materialized before the reply
-  seam (ADR-0386 §6). Every other in-seam body (error envelopes, a
+  the body goes straight into the frame writer. The engine's rows
+  and the whole-object replies are still materialized before the reply seam
+  (ADR-0386 §6). Every other in-seam body (error envelopes, a
   statement-less transaction answer) is serialized as one JSON object,
   chunked when it clears the threshold.
 - **The `GET /` discovery document is excluded from the seam**: it is

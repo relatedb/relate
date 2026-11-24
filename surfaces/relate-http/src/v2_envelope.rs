@@ -15,22 +15,125 @@
 //! replaced in place, a missing key is appended. This module is the wire shape
 //! only — `crate::stream` owns the framing that carries it.
 
-use serde::Serialize;
+use serde::ser::{SerializeMap, SerializeSeq};
+use serde::{Serialize, Serializer};
 use serde_json::Value as Json;
 
+use crate::v2_json::v2_value_json;
+
+/// One top-level member's value: an already-built JSON tree, or the success
+/// envelope's `data` block, whose rows stay the engine's own values and are
+/// encoded one at a time as the writer walks them (ADR-0675) — never rebuilt
+/// as a body-sized JSON tree before the first byte goes out.
+pub(crate) enum Member {
+    /// A value built as JSON up front: every whole-object reply and the
+    /// success envelope's small tail members.
+    Json(Json),
+    /// The success envelope's `data`: `fields`, then the rows.
+    Data(DataBlock),
+}
+
+impl From<Json> for Member {
+    fn from(value: Json) -> Self {
+        Member::Json(value)
+    }
+}
+
+impl Serialize for Member {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Member::Json(value) => value.serialize(serializer),
+            Member::Data(data) => data.serialize(serializer),
+        }
+    }
+}
+
+/// The success envelope's `data` object (ADR-0386 §3): `fields`, then
+/// `values`. The rows are the engine's materialized values, encoded per
+/// value inside [`Serialize`], so the transient JSON a row needs lives for
+/// that row alone (ADR-0675). Member order is fixed here — `fields` first —
+/// not by a map's insertion order.
+pub(crate) struct DataBlock {
+    fields: Vec<String>,
+    rows: Vec<Vec<relate::Value>>,
+    typed: bool,
+}
+
+impl DataBlock {
+    pub(crate) fn new(fields: Vec<String>, rows: Vec<Vec<relate::Value>>, typed: bool) -> Self {
+        Self {
+            fields,
+            rows,
+            typed,
+        }
+    }
+}
+
+impl Serialize for DataBlock {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut data = serializer.serialize_map(Some(2))?;
+        data.serialize_entry("fields", &self.fields)?;
+        data.serialize_entry(
+            "values",
+            &RowsView {
+                rows: &self.rows,
+                typed: self.typed,
+            },
+        )?;
+        data.end()
+    }
+}
+
+/// The `values` array: each row an array of its v2-encoded values.
+struct RowsView<'a> {
+    rows: &'a [Vec<relate::Value>],
+    typed: bool,
+}
+
+impl Serialize for RowsView<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut rows = serializer.serialize_seq(Some(self.rows.len()))?;
+        for row in self.rows {
+            rows.serialize_element(&RowView {
+                row,
+                typed: self.typed,
+            })?;
+        }
+        rows.end()
+    }
+}
+
+struct RowView<'a> {
+    row: &'a [relate::Value],
+    typed: bool,
+}
+
+impl Serialize for RowView<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut values = serializer.serialize_seq(Some(self.row.len()))?;
+        for value in self.row {
+            values
+                .serialize_element(&v2_value_json(&relate::value_to_cypher(value), self.typed))?;
+        }
+        values.end()
+    }
+}
+
 /// A reply body (ADR-0386 §3/§9): its top-level members in wire order.
-pub struct ReplyBody(Vec<(String, Json)>);
+pub struct ReplyBody(Vec<(String, Member)>);
 
 impl ReplyBody {
     /// The one constructor: the top-level members in the order they
     /// serialize — `data` first for a success envelope
-    /// (`query_api::success_envelope`), constructor order for a whole-object
+    /// (`crate::reply::success_envelope`), constructor order for a whole-object
     /// reply.
-    pub fn new<S: Into<String>>(members: impl IntoIterator<Item = (S, Json)>) -> Self {
+    pub(crate) fn new<S: Into<String>, V: Into<Member>>(
+        members: impl IntoIterator<Item = (S, V)>,
+    ) -> Self {
         Self(
             members
                 .into_iter()
-                .map(|(key, value)| (key.into(), value))
+                .map(|(key, value)| (key.into(), value.into()))
                 .collect(),
         )
     }
@@ -45,6 +148,7 @@ impl ReplyBody {
     /// appended after the last member. The one mutation path of a reply body,
     /// so no key can appear twice.
     pub(crate) fn insert_member(&mut self, key: &str, value: Json) {
+        let value = Member::Json(value);
         match self.0.iter_mut().find(|(existing, _)| existing == key) {
             Some((_, existing)) => *existing = value,
             None => self.0.push((key.to_string(), value)),
@@ -54,7 +158,6 @@ impl ReplyBody {
 
 impl Serialize for ReplyBody {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        use serde::ser::SerializeMap;
         let mut body = serializer.serialize_map(Some(self.0.len()))?;
         for (key, value) in &self.0 {
             body.serialize_entry(key, value)?;
@@ -77,6 +180,45 @@ pub(crate) mod tests {
     use serde_json::json;
 
     use super::*;
+
+    /// The lazy `data` block writes the exact bytes the JSON tree it replaced
+    /// did, in both encodings: `fields` first, rows as arrays of v2 values.
+    #[test]
+    fn the_data_block_serializes_like_the_json_tree_it_replaced() {
+        let rows = vec![
+            vec![relate::Value::Int(1), relate::Value::Null],
+            vec![relate::Value::String("a".into()), relate::Value::Bool(true)],
+        ];
+        for typed in [false, true] {
+            let tree: Vec<Json> = rows
+                .iter()
+                .map(|row| {
+                    Json::Array(
+                        row.iter()
+                            .map(|v| v2_value_json(&relate::value_to_cypher(v), typed))
+                            .collect(),
+                    )
+                })
+                .collect();
+            let expected = serde_json::to_string(&json!({
+                "data": {"fields": ["a", "b"], "values": tree}
+            }))
+            .unwrap();
+            let body = ReplyBody::new([(
+                "data",
+                Member::Data(DataBlock::new(
+                    vec!["a".into(), "b".into()],
+                    rows.clone(),
+                    typed,
+                )),
+            )]);
+            assert_eq!(
+                serde_json::to_string(&body).unwrap(),
+                expected,
+                "typed={typed}"
+            );
+        }
+    }
 
     /// The one insertion implementation: an existing key keeps its place (the
     /// tx routes re-inserting a tail member), a new key arrives last (their

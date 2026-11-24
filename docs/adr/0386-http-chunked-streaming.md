@@ -234,3 +234,7 @@ policy verbatim where it is quoted.
   handler-error policy), and the client sees a failed exchange rather than a
   truncated one. Once the chunked head is written, a write failure is the
   same truncated-transport failure class every response already has.
+
+## Later references
+
+[ADR-0675](./0675-http-rows-encode-lazily.md) narrows Decision 6: the success envelope no longer rebuilds the rows as a JSON tree; they encode lazily from the engine's values.

@@ -16,8 +16,7 @@ use relate_model::wire::{self, WireStatsSnapshot};
 
 use crate::http::{is_query_family, APPLICATION_JSON, VND_NEO4J_QUERY};
 use crate::typed_params::{request_params, RequestDialect};
-use crate::v2_envelope::ReplyBody;
-use crate::v2_json::v2_value_json;
+use crate::v2_envelope::{DataBlock, Member, ReplyBody};
 use crate::v2_plan;
 
 /// The outcome of dispatching one request: an HTTP status and the JSON body.
@@ -202,7 +201,7 @@ pub(crate) fn run_on(
         // `values`, the order both reply writers emit (ADR-0386 §3), and
         // the one negotiated media type drives the value encoding and the
         // content type the reply advertises.
-        Ok(result) => success_envelope(&result, include_counters, media_type, success_status),
+        Ok(result) => success_envelope(result, include_counters, media_type, success_status),
         Err(e) => Err(run_error(&e)),
     }
 }
@@ -362,53 +361,20 @@ impl ResponseMediaType {
 /// `bookmarks`, with the tx routes' `transaction` block appended last by
 /// [`ReplyBody::insert_member`].
 ///
-/// The row array is moved in, never rebuilt, so no writer re-reads the JSON
-/// tree. The negotiated media type decides the value encoding here, beside the
+/// The rows are moved in as the engine's own values and encoded one at a
+/// time by the writer (ADR-0675), so no body-sized JSON tree is ever built.
+/// The negotiated media type decides the value encoding here, beside the
 /// content type the reply advertises. Fails only on the plan-wire budget
 /// refusal (ADR-0628) — an error Reply through the one engine-error policy,
 /// the statement itself having executed.
 fn success_envelope(
-    result: &QueryResult,
+    result: QueryResult,
     include_counters: bool,
     media_type: ResponseMediaType,
     success_status: u16,
 ) -> Result<Reply, Reply> {
     let typed = media_type.typed();
-    let fields = Json::Array(
-        result
-            .header
-            .columns
-            .iter()
-            .map(|c| Json::String(c.clone()))
-            .collect(),
-    );
-    // Rows as arrays aligned with `fields`, values in the Neo4j Query API v2
-    // encoding (see [`v2_value_json`]). The envelope owns the materialized
-    // rows (ADR-0386 §6: the engine has no cursor); the writer walks them one
-    // at a time and never rebuilds the array.
-    let rows = result
-        .rows
-        .iter()
-        .map(|row| {
-            Json::Array(
-                row.iter()
-                    .map(|v| v2_value_json(&relate::value_to_cypher(v), typed))
-                    .collect(),
-            )
-        })
-        .collect();
-    // The `data` member opens every success envelope with `fields` then the
-    // materialized `values` rows. That order is an invariant, not a
-    // coincidence: the workspace enables serde_json's `preserve_order`
-    // (ADR-0634), so object members serialize in construction order and
-    // `fields` is inserted before `values` on every build; the stream
-    // tests pin the exact `{"data":{"fields"` prefix at both thresholds,
-    // so a third key ever joining `data` is caught. The top-level order
-    // below is the body's member list, not a map's.
-    let mut data = Map::new();
-    data.insert("fields".to_string(), fields);
-    data.insert("values".to_string(), Json::Array(rows));
-    let mut members = vec![("data".to_string(), Json::Object(data))];
+    let mut members: Vec<(String, Member)> = Vec::with_capacity(8);
     // The structured plan of an EXPLAIN/PROFILE statement (ADR-0344/0345,
     // ADR-0357) rides the envelope in the Neo4j Query API v2 field shape —
     // `queryPlan` for EXPLAIN, `profiledQueryPlan` for PROFILE — through
@@ -422,11 +388,14 @@ fn success_envelope(
         // statement already executed; the error text states only its plan
         // document is refused.
         let (key, node) = v2_plan::plan_field(tree, typed).map_err(|e| run_error(&e))?;
-        members.push((key.to_string(), node));
+        members.push((key.to_string(), node.into()));
     }
     let stats: WireStatsSnapshot = query_stats_to_wire(&result.stats);
     if include_counters || stats_updated_graph(&stats) {
-        members.push(("counters".to_string(), wire::stats_to_wire_json(&stats)));
+        members.push((
+            "counters".to_string(),
+            wire::stats_to_wire_json(&stats).into(),
+        ));
     }
     // ADR-0363 decision 12: the EXPLAIN/PROFILE notifications in the
     // Neo4j shape, through the engine serializer — the remedy folds into
@@ -442,10 +411,11 @@ fn success_envelope(
                     .iter()
                     .map(wire::notification_to_neo4j_json)
                     .collect(),
-            ),
+            )
+            .into(),
         ));
     }
-    members.push(("bookmarks".to_string(), Json::Array(Vec::new())));
+    members.push(("bookmarks".to_string(), Json::Array(Vec::new()).into()));
     // LABS-1120: the statement's timing block rides the reply after the
     // Neo4j Query API v2 members — one keyed `timings` object (the model's
     // one builder, the same nested form the CLI machine modes carry) with
@@ -454,12 +424,25 @@ fn success_envelope(
     // members are unaffected (the official drivers' hydrators drop unknown
     // keys), and the alternative — no phase visibility on this surface —
     // is what LABS-1120 set out to fix.
-    let timings = relate::timing_stamp_ms(result);
-    members.push(("timings".to_string(), timings.to_timings_json()));
+    let timings = relate::timing_stamp_ms(&result);
+    members.push(("timings".to_string(), timings.to_timings_json().into()));
     members.push((
         "planCache".to_string(),
-        Json::String(timings.plan_cache.into()),
+        Json::String(timings.plan_cache.into()).into(),
     ));
+    // Rows stay the engine's values and are encoded one at a time by the
+    // writer (ADR-0675). The tail above only borrowed the result, so the
+    // columns and rows move out once, here, and `data` leads the body:
+    // `fields` then `values`, the order the block's own `Serialize` fixes
+    // (ADR-0386 §3, pinned by the stream tests' `{"data":{"fields"` prefix).
+    let QueryResult { header, rows, .. } = result;
+    members.insert(
+        0,
+        (
+            "data".to_string(),
+            Member::Data(DataBlock::new(header.columns, rows, typed)),
+        ),
+    );
     Ok(Reply::json_as(
         success_status,
         ReplyBody::new(members),
