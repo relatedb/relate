@@ -1,9 +1,9 @@
 use super::*;
 
 /// The registry's recorded gate sites agree with the front's actual
-/// behavior, per row: a Lexer/Parser row changes `ParseOptions` when
-/// enabled (others change nothing), and an AstDetector row is exactly
-/// a row whose detector fires on its probe statement. The probe table
+/// behavior, per row: a `ParseOption` row changes `ParseOptions` when
+/// enabled (others change nothing), and an `AstDetector` row is exactly
+/// a row whose declared detector fires on its probe statement. The probe table
 /// is an exhaustive match, so a new row is a compile error here.
 #[test]
 fn recorded_gate_sites_agree_with_the_front() {
@@ -43,7 +43,9 @@ fn recorded_gate_sites_agree_with_the_front() {
     for feature in PREVIEW_FEATURES {
         let name = feature.kebab_name();
         let sites = feature.gate_sites();
-        let parse_gated = sites.contains(&GateSite::Lexer) || sites.contains(&GateSite::Parser);
+        let parse_gated = sites
+            .iter()
+            .any(|site| matches!(site, GateSite::ParseOption(_)));
         let changed = parse_options(PreviewFeatures::none().with_feature(*feature))
             != relate_parser::lexer::ParseOptions::default();
         assert_eq!(parse_gated, changed, "{name}: parse-site mismatch");
@@ -54,16 +56,22 @@ fn recorded_gate_sites_agree_with_the_front() {
                 let options = parse_options(PreviewFeatures::none().with_feature(*feature));
                 let stmt = parse_sized_with_options(src, options).expect("probe parses");
                 let gates = validate::statement_graph_type_gates(&stmt).expect("gate walk");
-                assert!(
-                    statement_uses_feature(*feature, &stmt, &gates).expect("detector runs"),
-                    "{name}: detector did not fire on {src}"
-                );
+                for site in sites {
+                    if let GateSite::AstDetector(kind) = site {
+                        assert!(
+                            detector_uses(*kind, *feature, &stmt, &gates).expect("detector runs"),
+                            "{name}: detector {kind:?} did not fire on {src}"
+                        );
+                    }
+                }
                 true
             }
             None => false,
         };
         assert_eq!(
-            sites.contains(&GateSite::AstDetector),
+            sites
+                .iter()
+                .any(|site| matches!(site, GateSite::AstDetector(_))),
             probed,
             "{name}: AstDetector site disagrees with the detector"
         );

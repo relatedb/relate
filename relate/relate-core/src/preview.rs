@@ -42,31 +42,54 @@ use crate::error_kinds::TckErrorClass;
 
 use crate::Error;
 
-/// Where the front (`relate-front`) checks a preview feature's gate
-/// (ADR-0371): one contract with [`PreviewFeature::gate_sites`]. A row
-/// records only the sites the front itself consults; a gate checked
-/// elsewhere (lowering validation, function admission, procedure dispatch,
-/// the namespace mapping, run-time evaluation) records none. Checked
-/// metadata: the front's tests assert its actual parse options and
-/// detector match agree with the recorded sites.
+/// The `ParseOptions` field a parse-site feature switches on, one variant per
+/// option. The front applies each through one total `match`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum GateSite {
-    /// The lexer: the token stream differs (`ParseOptions`).
-    Lexer,
-    /// The parser's grammar (`ParseOptions`).
-    Parser,
-    /// A walk over the parsed AST detects the construct; the front's
-    /// detector match raises the authored error.
-    AstDetector,
+pub enum ParseOption {
+    ObfuscatedLiterals,
+    MixedLabelSyntax,
+    CypherAnnotations,
+    PathConstruction,
 }
 
-/// The one registry: each preview feature's variant, doc comment, and
-/// kebab-case `RELATE_PREVIEW` name are declared from this single
+/// The front's AST detector a detected feature is checked by, one variant per
+/// distinct detector. The front dispatches through one total `match`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DetectorKind {
+    HybridSearch,
+    LocalCallables,
+    Float16,
+    PathConstruction,
+    Chronological,
+    /// The graph-type family: the one graph-type walk reports membership.
+    GraphTypeMembership,
+}
+
+/// Where in the pipeline a preview feature's gate is checked, for the
+/// sites whose consumers a test can read. A feature gated somewhere else
+/// (statement validation, run-time evaluation, the executor's graph-type
+/// layer) declares no site.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum GateSite {
+    /// The lexer or parser decides it, through this parse option.
+    ParseOption(ParseOption),
+    /// The front's AST detector loop rejects the feature's syntax.
+    AstDetector(DetectorKind),
+    /// A function name is admitted or hidden by the function registry.
+    NameAdmission,
+    /// Procedure dispatch gates a built-in procedure family.
+    ProcedureDispatch,
+    /// The namespace registry hides a fixed namespace.
+    Namespace,
+}
+
+/// The one registry: each preview feature's variant, doc comment,
+/// kebab-case `RELATE_PREVIEW` name, and gate sites are declared from this single
 /// list, so a variant cannot exist without its name and vice versa — a
 /// forgotten row is a compile error, not a runtime `expect`. Every other
 /// spelling of a feature name derives from [`PREVIEW_FEATURE_TABLE`].
 macro_rules! preview_feature_registry {
-    ($(($variant:ident, $doc:literal, $name:literal, $sites:expr)),* $(,)?) => {
+    ($(($variant:ident, $doc:literal, $name:literal, [$($site:expr),* $(,)?])),* $(,)?) => {
         /// A gated preview Cypher feature. The table order is the
         /// registry order; rows are never renumbered, only appended.
         #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -102,13 +125,10 @@ macro_rules! preview_feature_registry {
                 }
             }
 
-            /// The front-side sites this feature gates at, from its
-            /// registry row (see [`GateSite`]); empty when the front
-            /// consults none. The front's tests check them against its
-            /// actual behavior.
+            /// The pipeline sites that check this feature's gate.
             pub fn gate_sites(self) -> &'static [GateSite] {
                 match self {
-                    $(PreviewFeature::$variant => $sites,)*
+                    $(PreviewFeature::$variant => &[$($site),*],)*
                 }
             }
 
@@ -125,11 +145,11 @@ macro_rules! preview_feature_registry {
 }
 
 preview_feature_registry! {
-    (HybridSearch, "CIP-278 hybrid search `COMBINE` (reserved; lands later).", "hybrid-search", &[GateSite::AstDetector]),
-    (LocalCallables, "CIP-231 local callables: DEFINE PROCEDURE/FUNCTION, ADR-0382.", "local-callables", &[GateSite::AstDetector]),
-    (GraphTypeOptProps, "CIP-283 graph-type optional properties (`prop :: ANY` in element types).", "graph-type-opt-props", &[GateSite::AstDetector]),
-    (GraphTypeDefaultValues, "CIP-262 graph-type property default values (`DEFAULT ON COMMIT <value expression>`).", "graph-type-default-values", &[GateSite::AstDetector]),
-    (GraphTypeImpliedLabels, "CIP-266 graph-type implied labels that identify node element types (inheritance).", "graph-type-implied-labels", &[GateSite::AstDetector]),
+    (HybridSearch, "CIP-278 hybrid search `COMBINE` (reserved; lands later).", "hybrid-search", [GateSite::AstDetector(DetectorKind::HybridSearch)]),
+    (LocalCallables, "CIP-231 local callables: DEFINE PROCEDURE/FUNCTION, ADR-0382.", "local-callables", [GateSite::AstDetector(DetectorKind::LocalCallables)]),
+    (GraphTypeOptProps, "CIP-283 graph-type optional properties (`prop :: ANY` in element types).", "graph-type-opt-props", [GateSite::AstDetector(DetectorKind::GraphTypeMembership)]),
+    (GraphTypeDefaultValues, "CIP-262 graph-type property default values (`DEFAULT ON COMMIT <value expression>`).", "graph-type-default-values", [GateSite::AstDetector(DetectorKind::GraphTypeMembership)]),
+    (GraphTypeImpliedLabels, "CIP-266 graph-type implied labels that identify node element types (inheritance).", "graph-type-implied-labels", [GateSite::AstDetector(DetectorKind::GraphTypeMembership)]),
     (
         Ontology,
         "The ontology feature's whole dialect surface: the `db.ontology.*` procedures \
@@ -140,7 +160,7 @@ preview_feature_registry! {
          document, so its listing advertises the same non-final surface the procedures \
          do). Row, mapping and gates are removed once the spec and CIP-287 are final.",
         "ontology",
-        &[]
+        [GateSite::ProcedureDispatch, GateSite::Namespace]
     ),
     (
         ObfuscatedLiterals,
@@ -149,9 +169,9 @@ preview_feature_registry! {
          behaviors differ: enabled it lexes as a literal, disabled the stream is the ordinary \
          `*` tokens and the parser's own syntax error -- Neo4j's disabled form is a syntax \
          error, not ADR-0371's authored preview error, so the gate never reaches the front \
-         detector loop (its arm returns false).",
+         detector loop (the registry names no detector site for it).",
         "obfuscated-literals",
-        &[GateSite::Lexer]
+        [GateSite::ParseOption(ParseOption::ObfuscatedLiterals)]
     ),
     (
         MixedLabelSyntax,
@@ -160,7 +180,7 @@ preview_feature_registry! {
          across the label expressions of one clause (gates at parse, threaded to the parser \
          as `ParseOptions`; mixing inside ONE label expression stays rejected).",
         "mixed-label-syntax",
-        &[GateSite::Parser]
+        [GateSite::ParseOption(ParseOption::MixedLabelSyntax)]
     ),
     (
         Float16CoordinateTypes,
@@ -169,7 +189,7 @@ preview_feature_registry! {
          `VECTOR<…>` type expression and the `vector(<list>, <dim>, <type>)` constructor. \
          Detected on the parsed AST; the disabled form is ADR-0371's authored error.",
         "float16-coordinate-types",
-        &[GateSite::AstDetector]
+        [GateSite::AstDetector(DetectorKind::Float16)]
     ),
     (
         ChronologicalComparisons,
@@ -178,7 +198,7 @@ preview_feature_registry! {
          Neo4j's own toggle. Detected on the \
          parsed AST; the disabled form is ADR-0371's authored error.",
         "chronological-comparisons",
-        &[GateSite::AstDetector]
+        [GateSite::AstDetector(DetectorKind::Chronological)]
     ),
     (
         ComplexSearchPatterns,
@@ -189,7 +209,7 @@ preview_feature_registry! {
          single-hop relationship. Widens the front's SEARCH validation; disabled, every \
          pattern-shape rejection keeps firing.",
         "complex-search-patterns",
-        &[]
+        []
     ),
     (
         CollectionZip,
@@ -199,7 +219,7 @@ preview_feature_registry! {
          -- no `SHOW FUNCTIONS` row, 42N48 under CYPHER 5 and 25 -- so the default dialect must \
          not advertise it. Row and gate are deleted when a Neo4j release ships the function.",
         "coll-zip",
-        &[]
+        [GateSite::NameAdmission]
     ),
     (
         CollectionHas,
@@ -207,7 +227,7 @@ preview_feature_registry! {
          `coll.hasNoneOf` collection functions, callable and `SHOW`-listed only under this \
          opt-in (ADR-0497). One row for the three-name family; deleted when CIP-286 ships.",
         "coll-has",
-        &[]
+        [GateSite::NameAdmission]
     ),
     (
         CypherAnnotations,
@@ -218,7 +238,7 @@ preview_feature_registry! {
          character: @` syntax error. Row and gate are deleted when the CIP ships in a \
          release.",
         "cypher-annotations",
-        &[GateSite::Lexer]
+        [GateSite::ParseOption(ParseOption::CypherAnnotations)]
     ),
     (
         GqlStddevAliases,
@@ -228,13 +248,13 @@ preview_feature_registry! {
          rows. The gate keeps the `@doc`-derived 78/78 reachable. Deleted when a release \
          registers the spellings (or the scenarios are re-pinned).",
         "gql-stddev-aliases",
-        &[]
+        [GateSite::NameAdmission]
     ),
     (
         GraphTypeShowVariants,
         "CIP-275 graph-type display variants of SHOW CURRENT GRAPH TYPE: consolidated and flattened.",
         "graph-type-show-variants",
-        &[GateSite::AstDetector]
+        [GateSite::AstDetector(DetectorKind::GraphTypeMembership)]
     ),
     (
         PathConstruction,
@@ -242,7 +262,7 @@ preview_feature_registry! {
          alternating node, relationship, ... list. Detected at the parse point (the \
          `PATH` word before `[`); the disabled form is ADR-0371's authored error.",
         "path-construction",
-        &[GateSite::Parser, GateSite::AstDetector]
+        [GateSite::ParseOption(ParseOption::PathConstruction), GateSite::AstDetector(DetectorKind::PathConstruction)]
     ),
     (
         PathConcatenation,
@@ -250,7 +270,7 @@ preview_feature_registry! {
          node. Gates the `||` operator over path operands at evaluation; the disabled \
          form is the existing `||` operand type error, not the authored error.",
         "path-concatenation",
-        &[]
+        []
     ),
 }
 
