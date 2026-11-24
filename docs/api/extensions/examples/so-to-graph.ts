@@ -66,8 +66,6 @@ import type {
 
 const NAME = "so-to-graph-ts";
 const VERSION = "0.1.0";
-const DEFAULT_TAG = "neo4j";
-const DEFAULT_PAGES = 1;
 
 /** The host's request envelope: the manifest's flags, resolved. */
 interface Envelope {
@@ -220,8 +218,17 @@ async function run(): Promise<void> {
   const transport = new ProcessStdioTransport();
   const client = new Client({ name: NAME, version: VERSION });
   await client.connect(transport);
-  const tag = envelope.tag === "" ? DEFAULT_TAG : envelope.tag;
-  const pages = envelope.pages > 0 ? envelope.pages : DEFAULT_PAGES;
+  // The host resolves the manifest's defaults (tag `neo4j`, pages `1`) into
+  // the envelope, so an empty tag or a non-positive page count is an explicit
+  // value the run refuses rather than overwriting silently.
+  if (envelope.tag === "") {
+    throw new Error("flag 'tag' is empty");
+  }
+  if (envelope.pages < 1) {
+    throw new Error(`flag 'pages' must be at least 1: ${envelope.pages}`);
+  }
+  const tag = envelope.tag;
+  const pages = envelope.pages;
   const body = envelope.body;
   const questions = await fetchQuestions(tag, pages);
   const answers = questions.flatMap((question) => question.answers ?? []);

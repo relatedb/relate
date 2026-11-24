@@ -47,8 +47,11 @@ main() {
     tag=$(mcp_flag_string tag)
     pages=$(mcp_flag_int pages)
     body=$(mcp_flag_bool body)
-    [ -n "$tag" ] || tag=neo4j
-    [ "$pages" -gt 0 ] || pages=1
+    # The host resolves the manifest's defaults (tag `neo4j`, pages `1`) into
+    # the envelope, so an empty tag or a non-positive page count is an
+    # explicit value the run refuses rather than overwriting silently.
+    [ -n "$tag" ] || mcp_fail "flag 'tag' is empty"
+    [ "$pages" -gt 0 ] || mcp_fail "flag 'pages' must be at least 1: $pages"
 
     # 1. The corpus: the Stack Exchange API's newest questions for the tag,
     # pages 1..N, the way the cookbook notebook's generator fetches them

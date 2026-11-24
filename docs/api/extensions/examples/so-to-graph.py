@@ -76,8 +76,6 @@ from mcp.shared.message import SessionMessage
 
 NAME = "so-to-graph-py"
 VERSION = "0.1.0"
-DEFAULT_TAG = "neo4j"
-DEFAULT_PAGES = 1
 
 # The public Stack Exchange API, the filter the cookbook notebook's generator
 # uses: answers, owners, tags and body_markdown embedded. The API's page size
@@ -201,8 +199,16 @@ async def run() -> None:
         envelope = transport.envelope
         if envelope is None:  # the transport reads it before the session
             raise SystemExit("so-to-graph: the transport read no request envelope")
-        tag = envelope.get("tag") or DEFAULT_TAG
-        pages = int(envelope["pages"]) or DEFAULT_PAGES
+        # The host resolves the manifest's defaults (tag ``neo4j``, pages
+        # ``1``) into the envelope, so an empty tag or a non-positive page
+        # count is an explicit value the run refuses rather than overwriting
+        # silently.
+        tag = envelope["tag"]
+        pages = int(envelope["pages"])
+        if not tag:
+            raise SystemExit("so-to-graph: flag 'tag' is empty")
+        if pages < 1:
+            raise SystemExit(f"so-to-graph: flag 'pages' must be at least 1: {pages}")
         # `--body` writes the API's own markdown body onto the question and
         # onto the ANSWERED relationship (the model has no Answer node).
         body = bool(envelope["body"])
