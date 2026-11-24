@@ -126,19 +126,6 @@ impl ConstraintDef {
         }
     }
 
-    /// Whether the two definitions name the same subject — entity side,
-    /// label, property set. The rule-identity probes
-    /// ([`conflicts_with`](Self::conflicts_with),
-    /// [`schema_equivalent`](Self::schema_equivalent)) ask it of the
-    /// name-free [`ConstraintSchema`] view; the cross-kind
-    /// [`claims_backing_subject_of`](Self::claims_backing_subject_of)
-    /// consults this definition-side form directly.
-    fn same_subject(&self, other: &ConstraintDef) -> bool {
-        self.relationship == other.relationship
-            && self.label == other.label
-            && self.properties == other.properties
-    }
-
     /// Whether `other` names the same subject and kind with different
     /// options: the same entity side, label, property set and kind, but a
     /// different property type (for the kinds that carry one). Distinct from
@@ -151,15 +138,18 @@ impl ConstraintDef {
     }
 
     /// Whether this definition and `existing` are both index-backed
-    /// rules on the same subject (entity side, label, property set) —
-    /// the *cross-kind* backing-index claim, deliberately not
+    /// rules on the same subject (entity side, label, property set,
+    /// [`ConstraintSchemaView::same_subject`]) — the *cross-kind*
+    /// backing-index claim, deliberately not
     /// [`conflicts_with`](Self::conflicts_with), which also requires the
     /// same kind and the same enforced label: any index-backed
     /// constraint, whatever its kind, claims the one backing index, so a
     /// second one — even of another kind — is still a conflict, and
     /// `IF NOT EXISTS` does not suppress it.
     pub fn claims_backing_subject_of(&self, existing: &ConstraintDef) -> bool {
-        self.is_index_backed() && existing.is_index_backed() && self.same_subject(existing)
+        self.is_index_backed()
+            && existing.is_index_backed()
+            && self.schema_view().same_subject(existing.schema_view())
     }
 
     /// The constraint's schema text — `kind node|relationship :Label(props)
@@ -284,6 +274,20 @@ impl ConstraintSchema {
             && own.kind == other.kind
             && own.enforced_label == other.enforced_label
             && own.property_type != other.property_type
+    }
+}
+
+impl ConstraintSchemaView<'_> {
+    /// Whether the two schemas name the same subject — entity side,
+    /// label, property set — the subject half of the six-field identity,
+    /// asked of views so neither side allocates. The one home of the
+    /// subject predicate: the catalog's cross-kind backing-index claim
+    /// and the executor's graph-type replacement gate both consult it
+    /// here, never a per-crate copy.
+    pub fn same_subject(self, other: Self) -> bool {
+        self.relationship == other.relationship
+            && self.label == other.label
+            && self.properties == other.properties
     }
 }
 

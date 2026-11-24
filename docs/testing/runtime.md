@@ -341,7 +341,7 @@ by the three first-party extension children
 0.06 s / 0.18 s / 0.53 s exec measured on the Apple-silicon laptop, so
 they ride the lighter mixed shard under the same balancing rule — the
 same day's review round completed the partition:
-`relate-ontology` (79 tests across unit/acceptance/depth, ~0.1 s
+`relate-ontology` (94 tests across unit/acceptance/depth, ~0.1 s
 exec) and `relate-markdown` (79 tests, <0.1 s) were members with
 no shard and no lane, and the test kit `relate-test-support`
 (20 tests, ~1.5 s) had its own suite running nowhere; all three

@@ -1,0 +1,51 @@
+{
+  "schema": "https://neo4j.com/docs/ontology-graph-spec/1.1.0/schema.json",
+  "version": "1",
+  "id": "movies",
+  "name": "Movies",
+  "nodes": {
+    "Actor": {
+      "label": "Actor",
+      "properties": {
+        "id":   { "type": "STRING", "key": true },
+        "name": { "type": "STRING", "must_exist": true },
+        "email": { "type": "STRING", "unique": true, "name": "e-mail" }
+      }
+    },
+    "Movie": {
+      "label": "Movie",
+      "labels": { "implied": ["Entity"], "optional": ["Trending"] },
+      "properties": {
+        "id":    { "type": "STRING", "key": true },
+        "genre": { "type": "STRING", "one_of": ["DRAMA", "COMEDY"] }
+      },
+      "constraints": {
+        "genre_uniqueness": { "type": "UNIQUE", "properties": ["genre"], "name": "unique_movie_genre" }
+      }
+    },
+    "Director": {
+      "label": "Director",
+      "properties": {
+        "id": { "type": "STRING", "key": true }
+      }
+    }
+  },
+  "relationships": {
+    "ACTED_IN": {
+      "type": "ACTED_IN",
+      "from": { "node": "Actor", "label": "Actor" },
+      "to":   { "node": "Movie", "label": "Movie", "min_count": 1 },
+      "properties": { "roles": { "type": "LIST<STRING>", "must_exist": true } },
+      "constraints": { "roles_key": { "type": "KEY", "properties": ["roles"], "name": "actedin_roles_key" } }
+    },
+    "DIRECTED": {
+      "type": "DIRECTED",
+      "from": { "node": "Director", "label": "Director" },
+      "to":   { "node": "Movie" },
+      "properties": { "score": { "type": "FLOAT", "description": "Critic score." } },
+      "description": "A director directed a movie.",
+      "aliases": ["helmed"],
+      "reference": "https://neo4j.com/docs/directed"
+    }
+  }
+}

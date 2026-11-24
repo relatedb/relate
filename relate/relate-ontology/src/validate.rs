@@ -19,6 +19,14 @@
 //! `format: regex` are annotations and are not checked, as JSON Schema
 //! prescribes.
 //!
+//! Two revisions ADR-0667 records against that schema: a relationship
+//! entry's `type` is optional here (the converter fails a type-less
+//! entry at `apply`, naming it), and the walk runs under an
+//! unknown-member [`UnknownMembers`] policy — the typed-parse path
+//! rejects unknown members as the schema's `additionalProperties: false`
+//! prescribes, while the canonicalize path drops them, so the canonical
+//! form carries only the schema's members.
+//!
 //! Spec-valid constructs stay accepted even when the ADR-0226 converter
 //! cannot express them: a missing identifier label, a label-only or empty
 //! relationship target, an empty property name and an empty constraint
@@ -28,13 +36,26 @@
 //! desugared into `labels.identifier` (a conflicting pair is rejected as
 //! ambiguous, per ADR-0364 §3), and an endpoint's `count` may not be
 //! combined with `min_count`/`max_count`.
+//!
+//! Issue collection is per entry map: a node or relationship entry that
+//! fails contributes its first issue and the walk continues with its
+//! siblings, so one bad entry does not hide the rest — the typed-parse
+//! path reports the first issue found (the same sentence the fail-fast
+//! walk produced), the canonicalize path renders all of them.
 
 mod ext;
 mod read;
+#[cfg(test)]
+mod tests;
+
+pub(crate) use ext::{
+    CUSTOM_ENVELOPE_KEYS, DOCUMENT_ENVELOPE_KEYS, NODE_ENVELOPE_KEYS, RELATIONSHIP_ENVELOPE_KEYS,
+};
+pub(crate) use read::UnknownMembers;
 
 use indexmap::IndexMap;
 
-use crate::error::{OntologyError, PINNED_SCHEMA_URI};
+use crate::error::{Issue, IssueCode, OntologyError, PINNED_SCHEMA_URI};
 use crate::model::{
     Constraint, ConstraintType, Labels, NodeType, OntologyDocument, Property, RelationshipTarget,
     RelationshipType, CONSTRAINTS,
@@ -47,11 +68,12 @@ use read::{
     req_string_list, req_sub, string_list, verr,
 };
 
-/// Allowed root keys (`additionalProperties: false` at the root).
+/// Allowed root keys (`additionalProperties: false` at the root), in the
+/// schema's member order — the order the canonical form emits them in.
 const ROOT_KEYS: &[&str] = &[
     "schema",
-    "id",
     "version",
+    "id",
     "name",
     "description",
     "nodes",
@@ -115,32 +137,51 @@ const TARGET_KEYS: &[&str] = &["node", "label", "count", "min_count", "max_count
 /// (ADR-0487 §2); the `label` spelling is rejected as unknown on both.
 const CONSTRAINT_KEYS: &[&str] = &["type", "properties", "extensions", "name"];
 
-/// Validate a parsed value model into a typed [`OntologyDocument`].
+/// The spec-version gate's one detection (ADR-0487 §1): the URI a root
+/// object's string `schema` member carries when it is not the pinned
+/// one. `None` for every other shape — an absent or non-string `schema`
+/// is the structural walk's to report. Both document paths consult this
+/// before structure: the typed parse fails with
+/// [`OntologyError::UnsupportedSpecVersion`], the canonicalize path with
+/// [`OntologyError::UnsupportedGraphSpecVersion`].
+pub(crate) fn schema_uri_mismatch(root: &Value) -> Option<String> {
+    match root.as_object()?.get("schema") {
+        Some(Value::String(uri)) if uri != PINNED_SCHEMA_URI => Some(uri.clone()),
+        _ => None,
+    }
+}
+
+/// Validate a parsed value model into a typed [`OntologyDocument`] under
+/// `policy` (the unknown-member rule; see [`UnknownMembers`]).
 ///
-/// The spec-version gate (ADR-0364 §1) runs before structural validation,
-/// so a newer-version document fails with the version error rather than
-/// incidental structural errors. A non-string `schema` is not a URI at all
-/// and falls through to the structural type error on that field.
-pub(crate) fn validate_document(root: Value) -> Result<OntologyDocument, OntologyError> {
+/// The spec-version gate runs before this walk (each caller renders its
+/// own failure for [`schema_uri_mismatch`]). A non-string `schema` is
+/// not a URI at all and falls through to the structural type error on
+/// that field. The walk is fail-fast within an entry and per-entry
+/// across the node and relationship maps: `Err` carries every issue
+/// found, in walk order, so the first is the sentence the fail-fast
+/// parse reported.
+pub(crate) fn validate_document(
+    root: Value,
+    policy: UnknownMembers,
+) -> Result<OntologyDocument, Vec<Issue>> {
     let obj = expect_object(&root, "/", "the document root")?;
 
-    // ADR-0487 §1: the exact published 1.1.0 URI is the only accepted
-    // gate value, checked before structural validation.
-    if let Some(Value::String(uri)) = obj.get("schema") {
-        if uri != PINNED_SCHEMA_URI {
-            return Err(OntologyError::UnsupportedSpecVersion { uri: uri.clone() });
-        }
-    }
-
-    check_allowed(obj, ROOT_KEYS, "/")?;
+    check_allowed(obj, ROOT_KEYS, "/", policy)?;
     let schema = req_string(obj, "schema", "/")?;
     let version = req_string(obj, "version", "/")?;
     let id = req_string(obj, "id", "/")?;
     let name = opt_string(obj, "name", "/")?;
     let description = opt_string(obj, "description", "/")?;
-    let nodes = opt_sub(obj, "nodes", "/", validate_node_entries)?;
-    let relationships = opt_sub(obj, "relationships", "/", validate_relationship_entries)?;
-    opt_sub(obj, "extensions", "/", ext::validate_document_extensions)?;
+    let nodes = opt_sub(obj, "nodes", "/", |v, p| {
+        validate_node_entries(v, p, policy)
+    })?;
+    let relationships = opt_sub(obj, "relationships", "/", |v, p| {
+        validate_relationship_entries(v, p, policy)
+    })?;
+    opt_sub(obj, "extensions", "/", |v, p| {
+        ext::validate_document_extensions(v, p, policy)
+    })?;
 
     Ok(OntologyDocument::new(
         root,
@@ -154,36 +195,81 @@ pub(crate) fn validate_document(root: Value) -> Result<OntologyDocument, Ontolog
     ))
 }
 
-fn validate_node_entries(value: &Value, path: &str) -> Result<Vec<NodeType>, OntologyError> {
-    let obj = expect_object(value, path, "'nodes'")?;
+/// One entry-map walk under per-entry collection: every entry that
+/// validates is kept, every failed entry contributes its first issue,
+/// and the walk fails with the accumulated issues only once at least one
+/// entry failed — so one bad entry does not hide its siblings'
+/// findings. The two element maps share it; their per-entry validators
+/// stay fail-fast.
+fn collect_entries<T>(
+    obj: &IndexMap<String, Value>,
+    path: &str,
+    validate: impl Fn(&str, &str, &Value) -> Result<T, Issue>,
+) -> Result<Vec<T>, Vec<Issue>> {
     let mut out = Vec::with_capacity(obj.len());
+    let mut issues = Vec::new();
     for (key, entry) in obj {
-        let path = &join(path, key);
-        let obj = expect_object(entry, path, "a node entry")?;
-        check_allowed(obj, NODE_KEYS, path)?;
-
-        let shorthand = opt_nullable_string(obj, "label", path)?;
-        let labels = opt_sub(obj, "labels", path, |v, p| validate_labels(v, p).map(Some))?;
-        let labels = desugar_labels(shorthand, labels, path)?;
-
-        let properties = opt_sub(obj, "properties", path, validate_properties)?;
-        let constraints = opt_sub(obj, "constraints", path, validate_constraints)?;
-        let aliases = opt_string_list(obj, "aliases", path)?;
-        let reference = opt_string(obj, "reference", path)?;
-        let description = opt_string(obj, "description", path)?;
-        opt_sub(obj, "extensions", path, ext::validate_node_extensions)?;
-
-        out.push(NodeType {
-            key: key.clone(),
-            labels,
-            properties,
-            constraints,
-            aliases,
-            reference,
-            description,
-        });
+        let at = join(path, key);
+        match validate(key, &at, entry) {
+            Ok(value) => out.push(value),
+            Err(issue) => issues.push(issue),
+        }
     }
-    Ok(out)
+    if issues.is_empty() {
+        Ok(out)
+    } else {
+        Err(issues)
+    }
+}
+
+fn validate_node_entries(
+    value: &Value,
+    path: &str,
+    policy: UnknownMembers,
+) -> Result<Vec<NodeType>, Vec<Issue>> {
+    let obj = expect_object(value, path, "'nodes'")?;
+    collect_entries(obj, path, |key, at, entry| {
+        validate_node_entry(key, at, entry, policy)
+    })
+}
+
+fn validate_node_entry(
+    key: &str,
+    at: &str,
+    entry: &Value,
+    policy: UnknownMembers,
+) -> Result<NodeType, Issue> {
+    let obj = expect_object(entry, at, "a node entry")?;
+    check_allowed(obj, NODE_KEYS, at, policy)?;
+
+    let shorthand = opt_nullable_string(obj, "label", at)?;
+    let labels = opt_sub(obj, "labels", at, |v, p| {
+        validate_labels(v, p, policy).map(Some)
+    })?;
+    let labels = desugar_labels(shorthand, labels, at)?;
+
+    let properties = opt_sub(obj, "properties", at, |v, p| {
+        validate_properties(v, p, policy)
+    })?;
+    let constraints = opt_sub(obj, "constraints", at, |v, p| {
+        validate_constraints(v, p, policy)
+    })?;
+    let aliases = opt_string_list(obj, "aliases", at)?;
+    let reference = opt_string(obj, "reference", at)?;
+    let description = opt_string(obj, "description", at)?;
+    opt_sub(obj, "extensions", at, |v, p| {
+        ext::validate_node_extensions(v, p, policy)
+    })?;
+
+    Ok(NodeType {
+        key: key.to_owned(),
+        labels,
+        properties,
+        constraints,
+        aliases,
+        reference,
+        description,
+    })
 }
 
 /// Desugar the `label` shorthand into `labels.identifier` (ADR-0364
@@ -193,13 +279,14 @@ fn desugar_labels(
     shorthand: Option<String>,
     labels: Option<Labels>,
     path: &str,
-) -> Result<Labels, OntologyError> {
+) -> Result<Labels, Issue> {
     let mut labels = labels.unwrap_or_default();
     let Some(shorthand) = shorthand else {
         return Ok(labels);
     };
     match &labels.identifier {
         Some(identifier) if *identifier != shorthand => Err(verr(
+            IssueCode::ConflictingMembers,
             path,
             format!(
                 "a node entry's 'label' ('{shorthand}') and 'labels.identifier' \
@@ -214,13 +301,15 @@ fn desugar_labels(
     }
 }
 
-fn validate_labels(value: &Value, path: &str) -> Result<Labels, OntologyError> {
+fn validate_labels(value: &Value, path: &str, policy: UnknownMembers) -> Result<Labels, Issue> {
     let obj = expect_object(value, path, "'labels'")?;
-    check_allowed(obj, LABELS_KEYS, path)?;
+    check_allowed(obj, LABELS_KEYS, path, policy)?;
     let identifier = opt_nullable_string(obj, "identifier", path)?;
     let implied = opt_string_list(obj, "implied", path)?;
     let optional = opt_string_list(obj, "optional", path)?;
-    opt_sub(obj, "extensions", path, validate_custom_extensions)?;
+    opt_sub(obj, "extensions", path, |v, p| {
+        validate_custom_extensions(v, p, policy)
+    })?;
     Ok(Labels {
         identifier,
         implied,
@@ -231,48 +320,64 @@ fn validate_labels(value: &Value, path: &str) -> Result<Labels, OntologyError> {
 fn validate_relationship_entries(
     value: &Value,
     path: &str,
-) -> Result<Vec<RelationshipType>, OntologyError> {
+    policy: UnknownMembers,
+) -> Result<Vec<RelationshipType>, Vec<Issue>> {
     let obj = expect_object(value, path, "'relationships'")?;
-    let mut out = Vec::with_capacity(obj.len());
-    for (key, entry) in obj {
-        let path = &join(path, key);
-        let obj = expect_object(entry, path, "a relationship entry")?;
-        check_allowed(obj, RELATIONSHIP_KEYS, path)?;
-        let rel_type = req_string(obj, "type", path)?;
-        let from = req_sub(obj, "from", path, validate_relationship_target)?;
-        let to = req_sub(obj, "to", path, validate_relationship_target)?;
-        let properties = opt_sub(obj, "properties", path, validate_properties)?;
-        let constraints = opt_sub(obj, "constraints", path, validate_constraints)?;
-        let aliases = opt_string_list(obj, "aliases", path)?;
-        let reference = opt_string(obj, "reference", path)?;
-        let description = opt_string(obj, "description", path)?;
-        opt_sub(
-            obj,
-            "extensions",
-            path,
-            ext::validate_relationship_extensions,
-        )?;
-        out.push(RelationshipType {
-            key: key.clone(),
-            rel_type,
-            from,
-            to,
-            properties,
-            constraints,
-            aliases,
-            reference,
-            description,
-        });
-    }
-    Ok(out)
+    collect_entries(obj, path, |key, at, entry| {
+        validate_relationship_entry(key, at, entry, policy)
+    })
+}
+
+fn validate_relationship_entry(
+    key: &str,
+    at: &str,
+    entry: &Value,
+    policy: UnknownMembers,
+) -> Result<RelationshipType, Issue> {
+    let obj = expect_object(entry, at, "a relationship entry")?;
+    check_allowed(obj, RELATIONSHIP_KEYS, at, policy)?;
+    // ADR-0667: `type` is optional here — the published schema requires
+    // it, the revised gate accepts a type-less entry, and the converter
+    // fails it at `apply` naming the entry.
+    let rel_type = opt_string(obj, "type", at)?;
+    let from = req_sub(obj, "from", at, |v, p| {
+        validate_relationship_target(v, p, policy)
+    })?;
+    let to = req_sub(obj, "to", at, |v, p| {
+        validate_relationship_target(v, p, policy)
+    })?;
+    let properties = opt_sub(obj, "properties", at, |v, p| {
+        validate_properties(v, p, policy)
+    })?;
+    let constraints = opt_sub(obj, "constraints", at, |v, p| {
+        validate_constraints(v, p, policy)
+    })?;
+    let aliases = opt_string_list(obj, "aliases", at)?;
+    let reference = opt_string(obj, "reference", at)?;
+    let description = opt_string(obj, "description", at)?;
+    opt_sub(obj, "extensions", at, |v, p| {
+        ext::validate_relationship_extensions(v, p, policy)
+    })?;
+    Ok(RelationshipType {
+        key: key.to_owned(),
+        rel_type,
+        from,
+        to,
+        properties,
+        constraints,
+        aliases,
+        reference,
+        description,
+    })
 }
 
 fn validate_relationship_target(
     value: &Value,
     path: &str,
-) -> Result<RelationshipTarget, OntologyError> {
+    policy: UnknownMembers,
+) -> Result<RelationshipTarget, Issue> {
     let obj = expect_object(value, path, "a relationship target")?;
-    check_allowed(obj, TARGET_KEYS, path)?;
+    check_allowed(obj, TARGET_KEYS, path, policy)?;
     let node = opt_string(obj, "node", path)?;
     let label = opt_string(obj, "label", path)?;
     let count = opt_nullable_int(obj, "count", path)?;
@@ -282,6 +387,7 @@ fn validate_relationship_target(
     // the exact count with a range bound would silently drop one side.
     if count.is_some() && (min_count.is_some() || max_count.is_some()) {
         return Err(verr(
+            IssueCode::ConflictingMembers,
             path,
             "'count' cannot be combined with 'min_count' or 'max_count'",
         ));
@@ -295,13 +401,17 @@ fn validate_relationship_target(
     })
 }
 
-fn validate_properties(value: &Value, path: &str) -> Result<Vec<Property>, OntologyError> {
+fn validate_properties(
+    value: &Value,
+    path: &str,
+    policy: UnknownMembers,
+) -> Result<Vec<Property>, Issue> {
     let obj = expect_object(value, path, "'properties'")?;
     let mut out = Vec::with_capacity(obj.len());
     for (id, entry) in obj {
         let path = &join(path, id);
         let obj = expect_object(entry, path, "a property")?;
-        check_allowed(obj, PROPERTY_KEYS, path)?;
+        check_allowed(obj, PROPERTY_KEYS, path, policy)?;
         let property_type = opt_neo4j_type(obj, "type", path)?;
         let dimension = opt_nullable_int(obj, "dimension", path)?;
         let must_exist = opt_nullable_bool(obj, "must_exist", path)?;
@@ -313,7 +423,9 @@ fn validate_properties(value: &Value, path: &str) -> Result<Vec<Property>, Ontol
         let aliases = opt_string_list(obj, "aliases", path)?;
         let reference = opt_string(obj, "reference", path)?;
         let description = opt_string(obj, "description", path)?;
-        opt_sub(obj, "extensions", path, validate_custom_extensions)?;
+        opt_sub(obj, "extensions", path, |v, p| {
+            validate_custom_extensions(v, p, policy)
+        })?;
         out.push(Property {
             id: id.clone(),
             property_type,
@@ -342,16 +454,21 @@ fn expected_constraint_types() -> String {
         .join(" or ")
 }
 
-fn validate_constraints(value: &Value, path: &str) -> Result<Vec<Constraint>, OntologyError> {
+fn validate_constraints(
+    value: &Value,
+    path: &str,
+    policy: UnknownMembers,
+) -> Result<Vec<Constraint>, Issue> {
     let obj = expect_object(value, path, "'constraints'")?;
     let mut out = Vec::with_capacity(obj.len());
     for (id, entry) in obj {
         let path = &join(path, id);
         let obj = expect_object(entry, path, "a constraint")?;
-        check_allowed(obj, CONSTRAINT_KEYS, path)?;
+        check_allowed(obj, CONSTRAINT_KEYS, path, policy)?;
         let token = req_string(obj, "type", path)?;
         let constraint_type = ConstraintType::parse(&token).ok_or_else(|| {
             verr(
+                IssueCode::InvalidEnumToken,
                 &join(path, "type"),
                 format!(
                     "invalid constraint type '{token}': expected {}",
@@ -361,7 +478,9 @@ fn validate_constraints(value: &Value, path: &str) -> Result<Vec<Constraint>, On
         })?;
         let properties = req_string_list(obj, "properties", path)?;
         let name = opt_nullable_string(obj, "name", path)?;
-        opt_sub(obj, "extensions", path, validate_custom_extensions)?;
+        opt_sub(obj, "extensions", path, |v, p| {
+            validate_custom_extensions(v, p, policy)
+        })?;
         out.push(Constraint {
             id: id.clone(),
             constraint_type,
@@ -374,22 +493,36 @@ fn validate_constraints(value: &Value, path: &str) -> Result<Vec<Constraint>, On
 
 /// A `custom`-object-only extensions envelope: `custom`, when present,
 /// must be an object.
-fn validate_custom_extensions(value: &Value, path: &str) -> Result<(), OntologyError> {
+fn validate_custom_extensions(
+    value: &Value,
+    path: &str,
+    policy: UnknownMembers,
+) -> Result<(), Issue> {
     let obj = expect_object(value, path, "'extensions'")?;
-    check_allowed(obj, &["custom"], path)?;
+    check_allowed(obj, CUSTOM_ENVELOPE_KEYS, path, policy)?;
     validate_custom_object(obj, path)
 }
 
 /// A present `custom` member must be an object; its members are free-form.
-fn validate_custom_object(obj: &IndexMap<String, Value>, path: &str) -> Result<(), OntologyError> {
+fn validate_custom_object(obj: &IndexMap<String, Value>, path: &str) -> Result<(), Issue> {
     match obj.get("custom") {
         None | Some(Value::Object(_)) => Ok(()),
         Some(v) => Err(verr(
+            IssueCode::InvalidType,
             &join(path, "custom"),
             format!("'custom' must be an object, found {}", kind_of(v)),
         )),
     }
 }
 
-#[cfg(test)]
-mod tests;
+/// The first issue of a validated document as the typed-parse path's
+/// [`OntologyError::Validation`] — the sentence and path the fail-fast
+/// walk reported. An `Err` from [`validate_document`] carries at least
+/// one issue by construction.
+pub(crate) fn first_issue(issues: Vec<Issue>) -> OntologyError {
+    issues
+        .into_iter()
+        .next()
+        .map(Issue::into_validation_error)
+        .expect("a failed validation carries at least one issue")
+}

@@ -708,8 +708,10 @@ YIELD relationship, score
 RETURN relationship.note, score;
 ```
 
-The `db.ontology.*` procedures (ADR-0121, ADR-0226, ADR-0227, ADR-0364 —
-Neo4j's CIP-287 surface) manage the store's single ontology document. They
+The `db.ontology.*` procedures (ADR-0121, ADR-0226, ADR-0227, ADR-0364)
+manage the store's single ontology document, their contracts revised
+(ADR-0667 — see the
+[ontology procedures reference](ontology-procedures.md)). They
 require `RELATE_PREVIEW=ontology` (ADR-0378; ADR-0371's opt-in): with it
 off, every call fails with `SemanticError: preview feature 'ontology' is not
 enabled: set RELATE_PREVIEW=ontology` and `SHOW PROCEDURES` omits them;
@@ -719,24 +721,18 @@ same opt-in gates the `system_ontologies` namespace's visibility
 act on the session or `USE`-target database, which must be `neo4j`:
 
 ```cypher
-CALL db.ontology.set($ontology);        -- validate + store a JSON or YAML document (implicit transactions only)
+CALL db.ontology.set($ontology);        -- validate + store a JSON or YAML document (a null or empty argument clears)
 CALL db.ontology.get() YIELD ontology;  -- the stored document, 'yaml' by default, 'json' on request, null when unset
-CALL db.ontology.apply();               -- set the current graph type from the stored ontology (fails on violating data)
+CALL db.ontology.apply() YIELD ontology, constraintsCreated, constraintsDropped, skipped;
+                                        -- set the current graph type from the stored ontology and report the delta
 CALL db.ontology.drop();                -- remove the stored ontology (succeeds when unset)
 ```
 
 `set` accepts the published Ontology Graph Spec 1.1.0 document shape
-(ADR-0364, raised by ADR-0487)
-under the exact `schema` URI
-`https://neo4j.com/docs/ontology-graph-spec/1.1.0/schema.json`: `version` is
-a string, property existence is `must_exist`, and `constraints` is an
-id-keyed map with `type: EXISTS | KEY | UNIQUE | PROPERTY_TYPE`. A pre-bump
-document (including the 1.0.0 main dialect) fails at `set`; there is no
-dual gate or migration.
-
-`set` and `drop` run only in implicit (auto-commit) transactions, and a
-statement calling them may not write anything else. `get` reads the calling
-transaction's captured document; `apply` may run in explicit transactions.
+(ADR-0364, raised by ADR-0487): `version` is a string, property existence
+is `must_exist`, and `constraints` is an id-keyed map with `type: EXISTS |
+KEY | UNIQUE | PROPERTY_TYPE`. A pre-bump document (including the 1.0.0
+main dialect) fails at `set`; there is no dual gate or migration.
 The `system_ontologies` namespace is visible only under the same
 `RELATE_PREVIEW=ontology` opt-in (ADR-0593): without it the namespace is
 invisible — `SHOW DATABASES` lists the two CE rows, and `USE
@@ -751,9 +747,9 @@ fails with 42N17 `This database is not queryable. Use the db.ontology.*
 procedures on the user database 'neo4j' instead.`; only the ADR-0116 §2
 database-administration commands still run from there, and the stored
 document is reachable only through the procedures. See the
-[ontology procedures reference](ontology-procedures.md) for the full
-signatures, modes, transaction and namespace rules, storage behavior and
-runnable examples.
+[ontology procedures reference](ontology-procedures.md) for the preview
+and namespace gates, the accepted document shape, the storage behavior
+and runnable examples.
 
 `db.schema.nodeTypeProperties()` infers the property schema of the stored node
 categories by scanning the data (ADR-0112). `nodeType` is the full sorted label

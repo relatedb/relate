@@ -21,6 +21,7 @@ REFERENCES:
   - "[[adr/0371-preview-feature-gating]]"
   - "[[adr/0378-ontology-procedures-preview-gate]]"
   - "[[adr/0593-system-ontologies-visibility-preview-gate]]"
+  - "[[adr/0667-ontology-procedure-parity]]"
 ---
 
 # 0121. `db.ontology.*` procedures manage the single ontology
@@ -168,3 +169,6 @@ CypherLite has no role-based access control.
   `system_ontologies` is visible only while the opt-in is set —
   unlisted by `SHOW DATABASES` and refused as an unknown database
   otherwise — so §7's listing, like §6's callability, rides the opt-in.
+- [ADR-0667](./0667-ontology-procedure-parity.md) supersedes §3: the
+  transaction rules are revised, and the revised contract's specifics live
+  in the reference documentation, not in the ADR.

@@ -180,8 +180,11 @@ pub struct Labels {
 pub struct RelationshipType {
     /// The map key — the intra-document identifier.
     pub key: String,
-    /// The relationship type (`type` in the schema).
-    pub rel_type: String,
+    /// The relationship type (`type` in the schema). Optional at
+    /// validation: the published schema requires it, but the revised
+    /// gate accepts a type-less entry and the converter fails it at
+    /// `apply` naming the entry (ADR-0667).
+    pub rel_type: Option<String>,
     /// The start endpoint.
     pub from: RelationshipTarget,
     /// The end endpoint.
@@ -251,6 +254,19 @@ pub struct Property {
     pub description: Option<String>,
 }
 
+impl Property {
+    /// The property's resolved name — the display `name` when the entry
+    /// carries one, the id otherwise. The one resolution rule, consulted
+    /// by the canonical form's flag-derived constraint entries and the
+    /// graph-type converter alike: the generated constraint names are
+    /// what makes the canonical form a fixed point, so the two must
+    /// agree (ADR-0667).
+    #[must_use]
+    pub fn resolved_name(&self) -> &str {
+        self.name.as_deref().unwrap_or(&self.id)
+    }
+}
+
 /// A constraint object (the nameable alternative to the shorthand flags),
 /// carried as an ordered id-keyed map entry.
 #[derive(Debug, Clone, PartialEq)]
@@ -310,6 +326,42 @@ pub(crate) const CONSTRAINTS: &[(&str, ConstraintType)] = &[
     ("PROPERTY_TYPE", ConstraintType::PropertyType),
     ("UNIQUE", ConstraintType::Unique),
 ];
+
+/// The one generated-constraint-name policy (ADR-0667): a property's
+/// `key`/`unique` flags compile into a named single-property constraint
+/// — `<name>_<element>_<kind>`, [`generated_constraint_name`]'s shape —
+/// with `key` winning over `unique` when both are set. The canonical
+/// form's flag-derived entries and the converter's flag-derived
+/// definitions both consult this home, so one document derives the same
+/// generated names whichever path reads it.
+pub(crate) fn flagged_constraint(
+    name: &str,
+    element_key: &str,
+    key: Option<bool>,
+    unique: Option<bool>,
+) -> Option<(ConstraintType, String)> {
+    if key == Some(true) {
+        Some((
+            ConstraintType::Key,
+            generated_constraint_name(name, element_key, "key"),
+        ))
+    } else if unique == Some(true) {
+        Some((
+            ConstraintType::Unique,
+            generated_constraint_name(name, element_key, "uniq"),
+        ))
+    } else {
+        None
+    }
+}
+
+/// The name of a flag-derived constraint entry —
+/// `<name>_<element>_<kind>` — the one spelling, read by
+/// [`flagged_constraint`] and by the canonical form's existence entry,
+/// which derives beside the key/unique ones with the same shape.
+pub(crate) fn generated_constraint_name(name: &str, element_key: &str, kind: &str) -> String {
+    format!("{name}_{element_key}_{kind}")
+}
 
 /// A property `type` token from main's closed 39-token `Neo4jType` enum
 /// (ADR-0364 §2).

@@ -219,33 +219,61 @@ pub static BUILTIN_PROCEDURE_SIGNATURES: &[ProcSignature] = &[
         .works_on_system()
         .described("List all locks at this database.")
         .executable(false),
-    // ADR-0121 as amended by ADR-0227 (CIP-287): the ontology procedures.
-    // No database argument — each acts on the session/USE-target database,
-    // which must be `neo4j`. `set`/`drop` are store-level ops (facade
-    // gates them to implicit transactions and forbids mixed writes, ADR-0121
-    // §3) whose redo the executor pushes; `apply` is an ordinary in-overlay
-    // write; `get` is a read. `writes: true` on set/drop/apply routes their
-    // statements to the write path (the facade's `write_route`, ADR-0121);
+    // ADR-0121 as amended by ADR-0227, revised by ADR-0667: the ontology
+    // procedures. No database
+    // argument — each acts on the session/USE-target database, which must
+    // be `neo4j`. `set`/`drop` are store-level ops whose redo the executor
+    // pushes; `apply` is an ordinary in-overlay write; `get` is a read.
+    // `writes: true` on set/drop/apply routes their statements to the
+    // write path (the facade's `write_route`, ADR-0121);
     // `store_level: true` on set/drop alone is the store-op classification
-    // the implicit-only / no-mixed-writes gates read (ADR-0120 §3);
-    // statements routed to `system_ontologies` fail ADR-0229 §1's gate
-    // before `writes` could matter there.
-    ProcSignature::write("db.ontology.apply")
-        .described("Convert the stored ontology to a graph type and apply it to the database with ALTER CURRENT GRAPH TYPE SET semantics, failing when existing data violates it.")
-        .writes(),
-    ProcSignature::write("db.ontology.drop")
-        .described("Drop the stored ontology document. Succeeds when none is set.")
+    // the facade's statement-level gates read (ADR-0120 §3); statements
+    // routed to `system_ontologies` fail ADR-0229 §1's gate before
+    // `writes` could matter there.
+    ProcSignature::schema("db.ontology.apply")
+        .described(
+            "Apply the stored ontology of the current database to its graph type, replacing the existing \
+             graph type: properties become property types, must_exist becomes NOT NULL, key/unique become \
+             constraints, implied labels and relationship endpoints become label constraints. Ontology parts \
+             without a graph type equivalent are reported in `skipped`.",
+        )
+        .writes()
+        .returns(&[
+            ProcArgMeta::described("ontology", "Name or id of the applied ontology model.", "STRING"),
+            ProcArgMeta::described("constraintsCreated", "Number of constraints created.", "INTEGER"),
+            ProcArgMeta::described("constraintsDropped", "Number of constraints dropped.", "INTEGER"),
+            ProcArgMeta::described(
+                "skipped",
+                "Ontology parts without a graph type equivalent, not applied.",
+                "LIST<STRING>",
+            ),
+        ]),
+    ProcSignature::schema("db.ontology.drop")
+        .described("Remove the ontology document of the current database.")
         .writes()
         .store_level(),
     ProcSignature::read("db.ontology.get")
-        .described("Return the stored ontology document in the requested format, or null when none is set.")
-        .args(&[ProcArgMeta::with_default("format", "The format to return the ontology in: 'yaml' (default) or 'json'.", "STRING", "\"yaml\"")])
-        .returns(&[ProcArgMeta::described("ontology", "The stored ontology document in the requested format.", "STRING")]),
-    ProcSignature::write("db.ontology.set")
-        .described("Validate and store the ontology document (JSON or YAML) of the database, replacing any current one.")
+        .described("Get the ontology document of the current database.")
+        .args(&[ProcArgMeta::with_default(
+            "format",
+            "The format of the returned document.",
+            "STRING",
+            "\"yaml\"",
+        )])
+        .returns(&[ProcArgMeta::described(
+            "ontology",
+            "The ontology document of the database, or `null` if no ontology is set.",
+            "STRING",
+        )]),
+    ProcSignature::schema("db.ontology.set")
+        .described("Set the ontology document of the current database, replacing any existing ontology.")
         .writes()
         .store_level()
-        .args(&[ProcArgMeta::described("ontology", "The ontology document, in JSON or YAML.", "STRING")]),
+        .args(&[ProcArgMeta::described(
+            "ontology",
+            "The ontology document to set. `null` or empty removes it.",
+            "STRING",
+        )]),
     ProcSignature::read("db.ping")
         .works_on_system()
         .described("This procedure can be used by client side tooling to test whether they are correctly connected to a database. The procedure is available in all databases and always returns true. A faulty connection can be detected by not being able to call this procedure.")

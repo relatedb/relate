@@ -1,23 +1,28 @@
 //! The graph-type schema commands (`CREATE GRAPH TYPE`, `ALTER CURRENT GRAPH
-//! TYPE`): OPTIONS resolution and the per-kind policy behind it, the create and
-//! set-current entry points, and the conflict gates the alteration pipeline runs
-//! before the first catalog write. Extracted from `catalog_schema`, which keeps
-//! index / constraint / database DDL.
+//! TYPE`): OPTIONS resolution and the per-kind policy behind it, the create
+//! and set-current entry points, and the prepare/commit pipeline the
+//! alteration runs. The conflict gates the pipeline runs before the first
+//! catalog write live in the [`gates`] submodule. Extracted from
+//! `catalog_schema`, which keeps index / constraint / database DDL.
 
-use crate::exec::ddl::{drop_target_exists, SchemaTarget};
+mod gates;
+
 use std::collections::BTreeMap;
-use std::str::FromStr;
 
-use relate_catalog::{rule_disposition, ConstraintDef, RuleDisposition};
+use relate_catalog::ConstraintDef;
 use relate_core::{Error, Result, Value};
-use relate_error::NestedErrorClass;
-use relate_model::ConstraintType;
 
 use crate::overlay::ExecGraph;
 use crate::redo::RedoOp;
 use crate::row::Row;
 
 use super::ddl_options::{parameter_map, ADMITTED_OPTION_KEYS};
+
+use gates::{
+    add_named_drop_targets, graph_type_delta, introduced_element_types,
+    reject_added_equivalent_constraints, reject_renamed_equivalent_constraints,
+    reject_same_command_constraint_replacement, reject_uncovered_independent_constraints,
+};
 
 /// The graph-type body's non-MAP `OPTIONS` rejection, raised by both
 /// resolvers so the two spellings cannot drift to different text.
@@ -126,25 +131,25 @@ enum GraphTypeOptionsPolicy {
 }
 
 impl GraphTypeOptionsPolicy {
-    /// The kind's policy — one variant per kind, no absent mode. The
-    /// index-backed split is the model's predicate
-    /// ([`constraint_type_of`](crate::graph_type::constraint_type_of)), not a
-    /// KEY/UNIQUE list restated here.
+    /// The kind's policy — one exhaustive match over the constraint-verb
+    /// vocabulary, no absent mode: the four verbs are the OPTIONS
+    /// surface's whole input vocabulary, so a verb added to the enum
+    /// fails this match until it is classified. The KEY/UNIQUE pair is
+    /// the model's index-backed set —
+    /// [`constraint_type_of`](crate::graph_type::constraint_type_of)
+    /// maps the verbs onto `relate_model::ConstraintType`, whose
+    /// `is_index_backed` answers exactly those two — and the pin test
+    /// at this module's foot holds the two spellings together.
     fn for_kind(kind: &relate_parser::GraphTypeConstraintVerb) -> Self {
-        if crate::graph_type::constraint_type_of(kind).is_index_backed() {
-            return Self::IndexBacked;
-        }
         match kind {
+            relate_parser::GraphTypeConstraintVerb::Key
+            | relate_parser::GraphTypeConstraintVerb::Unique => Self::IndexBacked,
             relate_parser::GraphTypeConstraintVerb::Exists => Self::NoOptions {
                 label: "property existence",
             },
             relate_parser::GraphTypeConstraintVerb::PropertyType => Self::NoOptions {
                 label: "property type",
             },
-            // `constraint_type_of` marks exactly KEY/UNIQUE index-backed, so
-            // the test above returned for them.
-            relate_parser::GraphTypeConstraintVerb::Key
-            | relate_parser::GraphTypeConstraintVerb::Unique => Self::IndexBacked,
         }
     }
 
@@ -276,6 +281,24 @@ struct PreparedGraphType {
     purge: Vec<String>,
     derived: Vec<crate::graph_type::DerivedConstraint>,
     spec: crate::graph_type::GraphTypeSpec,
+    /// The rule-level delta of the SET (ADR-0667): the derived rules the
+    /// live constraints do not already hold (`created`) and the live rules
+    /// the new derivation retires (`dropped`) — what
+    /// `db.ontology.apply` reports. Matched by rule identity, so the
+    /// statement's mechanical purge-and-resync of unchanged rules counts
+    /// as neither.
+    delta: GraphTypeDelta,
+    /// The live constraints under the statement's one captured snapshot:
+    /// the uncovered-independent and added-equivalent gates and the delta
+    /// read it inside prepare, and `db.ontology.apply`'s rename gate
+    /// reads it from here — one derivation per statement, never a
+    /// re-taken snapshot or a re-derived list between views.
+    live: Vec<ConstraintDef>,
+    /// The derived rules mapped to their catalog comparison shape: the
+    /// uncovered-independent gate's coverage check reads it inside
+    /// prepare, the delta counts it, and `db.ontology.apply`'s rename
+    /// gate reads it from here — one mapping per statement.
+    defs: Vec<ConstraintDef>,
 }
 
 /// The plain DDL `ALTER CURRENT GRAPH TYPE` pipeline tail: prepare, then
@@ -287,297 +310,35 @@ fn set_current_graph_type(
     body: &relate_parser::GraphTypeBody,
 ) -> Result<()> {
     let prepared = prepare_current_graph_type(graph, verb, body)?;
-    commit_current_graph_type(graph, prepared)
+    commit_current_graph_type(graph, prepared)?;
+    Ok(())
 }
 
-/// `db.ontology.apply`'s entry into the same pipeline, with ADR-0226 §3's
-/// validate-first data scan spliced between derivation and the first
-/// catalog write.
-pub(crate) fn set_current_graph_type_validate_first(
+/// The delta one `ALTER CURRENT GRAPH TYPE SET` applies (ADR-0667): the
+/// derived rules the live constraints do not already hold, and the live
+/// rules the new derivation retires. `db.ontology.apply`'s result row
+/// reports it.
+#[derive(Clone, Copy)]
+pub(crate) struct GraphTypeDelta {
+    pub(crate) created: usize,
+    pub(crate) dropped: usize,
+}
+
+/// `db.ontology.apply`'s entry into the same pipeline (ADR-0226 §3,
+/// revised by ADR-0667): prepare, the equivalent-constraint rename gate,
+/// ADR-0226 §3's validate-first data scan, then the commit. Answers the
+/// delta the statement applied — the procedure's result row.
+pub(crate) fn set_current_graph_type_apply(
     graph: &ExecGraph<'_>,
     verb: relate_parser::AlterGraphTypeVerb,
     body: &relate_parser::GraphTypeBody,
-) -> Result<()> {
+) -> Result<GraphTypeDelta> {
     let prepared = prepare_current_graph_type(graph, verb, body)?;
+    reject_renamed_equivalent_constraints(&prepared.live, &prepared.defs)?;
     super::constraint_validation::validate_derived_constraints(graph, &prepared.derived)?;
-    commit_current_graph_type(graph, prepared)
-}
-
-/// Classifies every name an `ALTER CURRENT GRAPH TYPE DROP` body lists and
-/// adds the independent catalog constraints it names to the purge set. The
-/// body's own constraint elements are [`apply_drop`]'s to remove; a name the
-/// graph type derives on its own (any dependent kind) cannot be dropped
-/// individually (Neo4j 22N68); an independent `CREATE CONSTRAINT` rule may be
-/// dropped together with the element type that shares its label
-/// (live corpus: `AlterCurrentGraphTypeDrop`).
-///
-/// [`apply_drop`]: crate::graph_type::apply_drop
-fn add_named_drop_targets(
-    graph: &ExecGraph<'_>,
-    state: &crate::graph::ShowSchema,
-    current: &relate_parser::GraphTypeBody,
-    body: &relate_parser::GraphTypeBody,
-    purge: &mut Vec<String>,
-) -> Result<()> {
-    for name in &body.drop_constraint_names {
-        if current
-            .constraints
-            .iter()
-            .any(|constraint| constraint.name.as_ref() == Some(name))
-        {
-            continue;
-        }
-        if let Some(derived) = state.data.derived_constraints.get(&name.to_string()) {
-            if crate::graph_type::classify_constraint(current, derived)
-                == relate_model::ConstraintClassification::Dependent
-            {
-                return Err(Error::syntax(
-                    "DependentConstraintManagedIndividually: dependent constraints cannot be \
-                     dropped individually",
-                ));
-            }
-            continue;
-        }
-        if name
-            .with_str(|text| drop_target_exists(graph, SchemaTarget::ConstraintName(text)))
-            .is_none()
-        {
-            return Err(Error::syntax("SchemaError: constraint does not exist"));
-        }
-        if !purge.iter().any(|existing| name == existing.as_str()) {
-            purge.push(name.to_string());
-        }
-    }
-    Ok(())
-}
-
-/// The kind tag of a *stored* constraint, parsed fail-closed. The engine
-/// writes every tag itself, so an unparseable one is a corrupted or foreign
-/// catalog row: skipping it would let that constraint escape the gate reading
-/// it (fail open here, exactly the silent drop
-/// [`index_backed_declarations`] refuses for an unresolved target).
-fn stored_constraint_kind(constraint: &ConstraintDef) -> Result<ConstraintType> {
-    ConstraintType::from_str(&constraint.kind).map_err(|reason| {
-        Error::internal(format!(
-            "stored constraint '{}' carries an unparseable kind tag: {reason}",
-            constraint.name
-        ))
-    })
-}
-
-/// Rejects a graph type that introduces an element type on a label (or
-/// relationship type) an *independent* property existence / property type
-/// constraint occupies, unless the element type's derived constraints cover
-/// that rule exactly -- in that case Neo4j lets the rule switch from
-/// independent to dependent (live corpus:
-/// `GraphTypeAndConstraintCommandCombinations`).
-///
-/// Every key in `introduced` is absent from the previous body by construction
-/// ([`introduced_element_types`] is a set difference), so a matching stored
-/// rule was independent under that body: the introduced-set membership alone
-/// proves the rule is not graph-type-managed yet.
-fn reject_uncovered_independent_constraints(
-    graph: &ExecGraph<'_>,
-    state: &crate::graph::ShowSchema,
-    introduced: &std::collections::HashSet<ElementTypeKey>,
-    derived: &[crate::graph_type::DerivedConstraint],
-) -> Result<()> {
-    if introduced.is_empty() {
-        return Ok(());
-    }
-    for constraint in graph.effective_constraints_in(state) {
-        let kind = stored_constraint_kind(&constraint)?;
-        if !matches!(kind, ConstraintType::Exists | ConstraintType::PropertyType) {
-            continue;
-        }
-        let entity = relate_model::EntityKind::from_relationship_flag(constraint.relationship);
-        if !introduced.contains(&(entity, constraint.label.clone())) {
-            continue;
-        }
-        let covered = derived.iter().any(|derived| {
-            ConstraintDef::from_model(&derived.constraint, derived.entity)
-                .schema()
-                .matches(constraint.schema_view())
-        });
-        if !covered {
-            return Err(Error::syntax(format!(
-                "IndependentConstraintOnLabel: the independent constraint '{}' is using the \
-                 same {} `{}` as an element type",
-                constraint.schema_text(),
-                if entity.is_relationship() {
-                    "relationship type"
-                } else {
-                    "label"
-                },
-                constraint.label
-            )));
-        }
-    }
-    Ok(())
-}
-
-/// Rejects an `ADD` declaration that is schema-equivalent to a committed
-/// constraint on a subject the statement does not (re)declare as an element
-/// type (Neo4j 22N65: an equivalent constraint already exists). When the
-/// statement also declares that element type, the inline and standalone rules
-/// are one rule and the re-statement is accepted.
-fn reject_added_equivalent_constraints(
-    graph: &ExecGraph<'_>,
-    state: &crate::graph::ShowSchema,
-    statement: &relate_parser::GraphTypeBody,
-    after: &relate_parser::GraphTypeBody,
-) -> Result<()> {
-    let existing = graph.effective_constraints_in(state);
-    for derived in crate::graph_type::derive_constraints_typed(statement)? {
-        if crate::graph_type::label_identifies_type(
-            after,
-            derived.entity.is_relationship(),
-            &derived.constraint.label,
-        ) {
-            continue;
-        }
-        let def = ConstraintDef::from_model(&derived.constraint, derived.entity);
-        if let RuleDisposition::Equivalent(existing) =
-            rule_disposition(existing.iter(), &def.schema())
-        {
-            return Err(Error::syntax(format!(
-                "{}: an equivalent constraint already exists: '{}'",
-                NestedErrorClass::EquivalentConstraintAlreadyExists.as_str(),
-                existing.name
-            )));
-        }
-    }
-    Ok(())
-}
-
-/// One index-backed constraint declaration resolved to its comparison shape.
-/// `kind` stays the typed catalog tag, so a future verb cannot silently
-/// collapse into "unique" through a wildcard arm.
-struct IndexBackedDecl {
-    relationship: bool,
-    label: String,
-    properties: Vec<String>,
-    kind: relate_model::ConstraintType,
-    name: Option<String>,
-}
-
-impl IndexBackedDecl {
-    /// The same `(entity, label, properties)` subject — one backing index.
-    fn same_subject(&self, other: &Self) -> bool {
-        self.relationship == other.relationship
-            && self.label == other.label
-            && self.properties == other.properties
-    }
-
-    /// The same rule restated: subject, kind and name.
-    fn same_rule(&self, other: &Self) -> bool {
-        self.same_subject(other) && self.kind == other.kind && self.name == other.name
-    }
-}
-
-/// Every KEY/UNIQUE declaration resolved to its `(entity, label, properties)`
-/// subject. The target label is resolved through the shared
-/// [`resolved_constraint_label`](crate::graph_type::resolved_constraint_label),
-/// so an unresolved alias is a loud internal invariant violation -- dropping
-/// the declaration here would let a same-command replacement escape
-/// detection.
-fn index_backed_declarations(body: &relate_parser::GraphTypeBody) -> Result<Vec<IndexBackedDecl>> {
-    let (node_aliases, edge_aliases) = crate::graph_type::alias_tables(body);
-    body.constraints
-        .iter()
-        .filter(|c| crate::graph_type::constraint_type_of(&c.kind).is_index_backed())
-        .map(|c| {
-            let table = if c.is_edge {
-                &edge_aliases
-            } else {
-                &node_aliases
-            };
-            Ok(IndexBackedDecl {
-                relationship: c.is_edge,
-                label: crate::graph_type::resolved_constraint_label(c, table)?,
-                properties: c
-                    .properties
-                    .iter()
-                    .map(|property| property.to_string())
-                    .collect(),
-                kind: crate::graph_type::constraint_type_of(&c.kind),
-                name: c.name.as_ref().map(|name| name.to_string()),
-            })
-        })
-        .collect()
-}
-
-/// Neo4j refuses to drop and re-create a *similar* index-backed constraint in
-/// one command (the same subject under a new name or another kind), because
-/// both would be backed by the same index (live corpus:
-/// `AlterCurrentGraphTypeSetPart2`, 50N11 with cause 22N66).
-fn reject_same_command_constraint_replacement(
-    before: &relate_parser::GraphTypeBody,
-    after: &relate_parser::GraphTypeBody,
-) -> Result<()> {
-    let old = index_backed_declarations(before)?;
-    let new = index_backed_declarations(after)?;
-    for created in &new {
-        // The first dropped declaration sharing the subject: a replacement
-        // unless it is the same rule. A declaration survives only as the
-        // *same* rule; a same-name declaration of another kind still drops
-        // the old rule.
-        let Some(dropped) = old
-            .iter()
-            .find(|dropped| created.same_subject(dropped) && !created.same_rule(dropped))
-        else {
-            continue;
-        };
-        if !new.iter().any(|candidate| candidate.same_rule(dropped)) {
-            return Err(Error::semantic(format!(
-                "Trying to create constraint '{}' in same transaction as dropping '{}'. \
-                 This is not supported because they are both backed by similar indexes. \
-                 Please drop constraint in a separate transaction before creating the new \
-                 one.",
-                created.name.as_deref().unwrap_or("constraint_(generated)"),
-                dropped.name.as_deref().unwrap_or("constraint_(generated)")
-            )));
-        }
-    }
-    Ok(())
-}
-
-/// The element-type identity: `(entity kind, identifying label)`. Text
-/// render: the label is String.
-type ElementTypeKey = (relate_model::EntityKind, String);
-
-/// The element-type identity set a body declares: one key per node and edge
-/// type.
-fn element_type_keys(
-    body: &relate_parser::GraphTypeBody,
-) -> std::collections::HashSet<ElementTypeKey> {
-    body.node_types
-        .iter()
-        .map(|node| {
-            (
-                relate_model::EntityKind::Node,
-                node.identifying_label.to_string(),
-            )
-        })
-        .chain(body.edge_types.iter().map(|edge| {
-            (
-                relate_model::EntityKind::Relationship,
-                edge.identifying_label.to_string(),
-            )
-        }))
-        .collect()
-}
-
-/// The element-type identities the new body introduces relative to the
-/// previous one -- the subjects an `ALTER` newly makes an element type.
-fn introduced_element_types(
-    before: &relate_parser::GraphTypeBody,
-    after: &relate_parser::GraphTypeBody,
-) -> std::collections::HashSet<ElementTypeKey> {
-    element_type_keys(after)
-        .difference(&element_type_keys(before))
-        .cloned()
-        .collect()
+    let delta = prepared.delta;
+    commit_current_graph_type(graph, prepared)?;
+    Ok(delta)
 }
 
 /// The prepare step shared by both entry points: purge decision, verb
@@ -613,11 +374,23 @@ fn prepare_current_graph_type(
     // Body came through the verb algebra's validation; derivation is total
     // over a validated body, so propagate rather than assume.
     let derived = crate::graph_type::derive_constraints_typed(&merged)?;
-    reject_uncovered_independent_constraints(graph, &state, &introduced, &derived)?;
+    // One derivation of the live constraints and one mapping of the
+    // derived rules to their comparison shape under the statement's one
+    // snapshot: every gate below, the delta and the apply-path rename
+    // gate all read these two lists — a reader that must not re-take
+    // the snapshot or re-derive a list between views is
+    // effective_constraints_in's own contract.
+    let live = graph.effective_constraints_in(&state);
+    let defs: Vec<ConstraintDef> = derived
+        .iter()
+        .map(|record| ConstraintDef::from_model(&record.constraint, record.entity))
+        .collect();
+    reject_uncovered_independent_constraints(&live, &introduced, &defs)?;
     if matches!(verb, relate_parser::AlterGraphTypeVerb::Add) {
-        reject_added_equivalent_constraints(graph, &state, verb_body, &merged)?;
+        reject_added_equivalent_constraints(&live, verb_body, &merged)?;
     }
     reject_same_command_constraint_replacement(&before, &merged)?;
+    let delta = graph_type_delta(&live, &defs);
     Ok(PreparedGraphType {
         purge,
         derived,
@@ -625,6 +398,9 @@ fn prepare_current_graph_type(
         // already rejected -- never a lossy capture.
         spec: crate::graph_type::GraphTypeSpec::from_body(&merged)
             .map_err(|e| Error::semantic(e.to_string()))?,
+        delta,
+        live,
+        defs,
     })
 }
 
@@ -642,63 +418,12 @@ fn commit_current_graph_type(graph: &ExecGraph<'_>, prepared: PreparedGraphType)
 mod tests {
     use super::*;
 
-    fn constraint_body(query: &str) -> relate_parser::GraphTypeBody {
-        let stmt = relate_parser::parse(query).expect("should parse");
-        match stmt.clauses.into_iter().next().expect("one clause") {
-            relate_parser::Clause::AlterCurrentGraphType(agt) => match agt.target {
-                relate_parser::AlterCurrentGraphTypeTarget::Body(body) => body,
-                relate_parser::AlterCurrentGraphTypeTarget::Named(name) => {
-                    panic!("expected an inline body, got named type {name}")
-                }
-            },
-            other => panic!("expected ALTER CURRENT GRAPH TYPE, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn an_unresolved_key_declaration_fails_loud() {
-        // A deserialized body can carry an alias reference the current body
-        // no longer declares. Skipping the declaration would let a
-        // same-command replacement escape detection, so the unresolved
-        // target is an internal invariant violation, never a silent drop.
-        let body = constraint_body(
-            "ALTER CURRENT GRAPH TYPE SET { CONSTRAINT FOR (n) REQUIRE n.prop IS KEY }",
-        );
-        let err = index_backed_declarations(&body)
-            .err()
-            .expect("an unresolved target must fail loud");
-        assert!(
-            err.to_string()
-                .contains("constraint target resolves to no declared element type"),
-            "{err}"
-        );
-    }
-
-    #[test]
-    fn an_unparseable_stored_constraint_kind_fails_loud() {
-        // The stored tag is engine-written, so an unknown one is a corrupted
-        // catalog row. Skipping it would let the constraint escape the
-        // independent-constraint gate (fail open) -- the same silent-drop
-        // hazard the unresolved-target test above pins.
-        let constraint = ConstraintDef {
-            name: "constraint_typo".into(),
-            relationship: false,
-            label: "Person".into(),
-            properties: vec!["id".into()],
-            kind: "uniqeu".into(),
-            property_type: None,
-            enforced_label: None,
-        };
-        let err = stored_constraint_kind(&constraint)
-            .expect_err("an unparseable stored kind must fail loud");
-        assert!(err.to_string().contains("unknown constraint type"), "{err}");
-        assert!(err.to_string().contains("constraint_typo"), "{err}");
-    }
-
     #[test]
     fn the_option_policy_splits_on_the_models_index_backed_predicate() {
-        // One fact, one owner: the policy never re-spells the KEY/UNIQUE set
-        // the model's `is_index_backed` names.
+        // The policy's KEY/UNIQUE arms and the model's `is_index_backed`
+        // set are one fact, spelled twice (the exhaustive match names
+        // the verbs; the predicate owns the set) — pinned here so the
+        // two spellings cannot drift.
         use relate_parser::GraphTypeConstraintVerb;
         for verb in [
             GraphTypeConstraintVerb::Key,

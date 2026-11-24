@@ -16,10 +16,23 @@ original vendoring decision.
 - `example.json` — a **Relate-authored** document in the 1.1.0 shape,
   used as a validation fixture in this crate's tests. It is validation
   only: it deliberately contains spec-valid constructs that
-  `db.ontology.apply` rejects, so it pins the accepted schema rather than
-  convertibility (ADR-0364 §6, reworked for 1.1.0 by ADR-0487 §4). It
-  covers every `Neo4jType` token, all four constraint types, the
-  nullable/empty forms and every typed extension member.
+  `db.ontology.apply` rejects (a node with no identifying label, an
+  empty endpoint, an empty constraint property list, a
+  `PROPERTY_TYPE` constraint and an empty declared property name), so it
+  pins the accepted schema rather than convertibility (ADR-0364 §6,
+  reworked for 1.1.0 by ADR-0487 §4, the revision recorded by
+  ADR-0667). It covers every `Neo4jType` token, all four constraint
+  types, the nullable/empty forms and every typed extension member.
+- `movies.json` — a movies ontology in the 1.1.0 shape, the converter's
+  fixture (ADR-0667): applying its graph type creates 21 constraints —
+  15 derived from the element types (the property type declarations,
+  the `NOT NULL` existences, Movie's implied label and the four
+  endpoint label references) and the 6 named `KEY`/`UNIQUE`
+  definitions — and its descriptive fields produce exactly the seven
+  skip reports the converter test pins (optional labels on Movie,
+  one_of on Movie.genre, cardinality on ACTED_IN.to, and the aliases,
+  description and reference decorations on DIRECTED and its score
+  property).
 
 Upstream still ships **no root-level `example.json`**: the pinned
 README's curl URLs are stale. Upstream's

@@ -1,5 +1,6 @@
 //! Private write overlay for optimistic execute (ADR-0016).
 
+use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 
@@ -251,8 +252,10 @@ impl<'a> ExecGraph<'a> {
     /// transactions. Per-admission state on the view, like
     /// [`Self::with_cancel`] (ADR-0111); the `db.ontology.get` /
     /// `db.ontology.apply` procedure arms read it through
-    /// [`Self::ontology_document`]. A view without one behaves as if the
-    /// store holds no ontology, which preserves test/diagnostic behavior.
+    /// [`Self::effective_ontology_document`], which overlays the write
+    /// log's pending ontology op on it. A view without one behaves as if
+    /// the store holds no ontology, which preserves test/diagnostic
+    /// behavior.
     pub fn with_ontology_document(mut self, document: Option<&'a str>) -> Self {
         self.ontology_document = document;
         self
@@ -271,9 +274,26 @@ impl<'a> ExecGraph<'a> {
         self.transaction_clock
     }
 
-    /// The ontology document attached by [`Self::with_ontology_document`].
-    pub(crate) fn ontology_document(&self) -> Option<&'a str> {
-        self.ontology_document
+    /// The ontology document this view's readers must serve (ADR-0667):
+    /// the write overlay's pending state when the statement or transaction
+    /// pushed an ontology op — the log's last op wins, exactly as the
+    /// commit pipeline's own last-op-wins rule — else the attached capture.
+    /// This is the read-own-writes fact: a `get` after a `set` in the same
+    /// transaction sees the pending document, and a rollback (the scratch
+    /// discarded) returns every later read to the committed capture.
+    pub(crate) fn effective_ontology_document(&self) -> Option<Cow<'a, str>> {
+        if let Some(cell) = self.scratch {
+            let scratch = cell.borrow();
+            match scratch.redo.last_ontology_op() {
+                Some(crate::redo::OntologyOp::Set(spec)) => {
+                    return Some(Cow::Owned(spec.to_string()));
+                }
+                // A pending drop hides the committed document.
+                Some(crate::redo::OntologyOp::Drop) => return None,
+                None => {}
+            }
+        }
+        self.ontology_document.map(Cow::Borrowed)
     }
 
     /// Check the attached [`CancelToken`], returning

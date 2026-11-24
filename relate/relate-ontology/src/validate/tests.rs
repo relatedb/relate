@@ -10,9 +10,9 @@ use super::expected_constraint_types;
 use super::ext::{validate_index_option, INDEX_OPTION_TYPES};
 use super::read::{
     expected_neo4j_types, neo4j_type_list, opt_nullable_bool, opt_nullable_int,
-    opt_nullable_number, opt_nullable_string,
+    opt_nullable_number, opt_nullable_string, UnknownMembers,
 };
-use crate::error::OntologyError;
+use crate::error::{Issue, IssueCode};
 use crate::model::{CONSTRAINTS, NEO4J_TYPES};
 use crate::tests::doc;
 use crate::value::Value;
@@ -28,20 +28,14 @@ fn the_label_shorthand_desugars_into_the_labels_form() {
     assert!(doc.nodes()[0].labels.optional.is_empty());
 }
 
-fn assert_validation_error(err: OntologyError, path: &str, message: &str) {
-    let OntologyError::Validation {
-        path: at,
-        message: got,
-    } = err
-    else {
-        panic!("expected a validation error, got {err}");
-    };
-    assert_eq!(at, path);
-    assert_eq!(got, message);
+fn assert_issue(err: Issue, code: IssueCode, path: &str, message: &str) {
+    assert_eq!(err.code, code, "{err:?}");
+    assert_eq!(err.path, path, "{err:?}");
+    assert_eq!(err.message, message, "{err:?}");
 }
 
 /// Every nullable scalar accessor derives from the one nullable shape: one
-/// sentence, one `or null` suffix, one path.
+/// sentence, one `or null` suffix, one path — and one rule family's code.
 #[test]
 fn nullable_scalar_reads_share_the_or_null_message() {
     let mut obj = IndexMap::new();
@@ -51,23 +45,27 @@ fn nullable_scalar_reads_share_the_or_null_message() {
     obj.insert("number".to_owned(), Value::String("1".to_owned()));
     obj.insert("absent".to_owned(), Value::Null);
 
-    assert_validation_error(
+    assert_issue(
         opt_nullable_string(&obj, "string", "/p").unwrap_err(),
+        IssueCode::InvalidType,
         "/p/string",
         "'string' must be a string or null, found an integer",
     );
-    assert_validation_error(
+    assert_issue(
         opt_nullable_bool(&obj, "boolean", "/p").unwrap_err(),
+        IssueCode::InvalidType,
         "/p/boolean",
         "'boolean' must be a boolean or null, found a string",
     );
-    assert_validation_error(
+    assert_issue(
         opt_nullable_int(&obj, "integer", "/p").unwrap_err(),
+        IssueCode::InvalidType,
         "/p/integer",
         "'integer' must be an integer or null, found a float",
     );
-    assert_validation_error(
+    assert_issue(
         opt_nullable_number(&obj, "number", "/p").unwrap_err(),
+        IssueCode::InvalidType,
         "/p/number",
         "'number' must be a number or null, found a string",
     );
@@ -85,14 +83,16 @@ fn nullable_scalar_reads_share_the_or_null_message() {
 fn neo4j_type_lists_share_the_array_shape() {
     let value = Value::Array(vec![Value::String("STRING".to_owned()), Value::Integer(1)]);
     let err = neo4j_type_list(&value, "supported", "/p").unwrap_err();
-    assert_validation_error(
+    assert_issue(
         err,
+        IssueCode::InvalidType,
         "/p/1",
         "'supported' items must be Neo4jType strings, found an integer",
     );
 
-    assert_validation_error(
+    assert_issue(
         neo4j_type_list(&Value::String("STRING".to_owned()), "supported", "/p").unwrap_err(),
+        IssueCode::InvalidType,
         "/p",
         "'supported' must be an array, found a string",
     );
@@ -146,7 +146,7 @@ fn index_option_types_dispatch_from_one_vocabulary() {
         let mut options = IndexMap::new();
         options.insert("type".to_owned(), Value::String(token.to_owned()));
         assert_eq!(
-            validate_index_option(&Value::Object(options), "/p").is_ok(),
+            validate_index_option(&Value::Object(options), "/p", UnknownMembers::Reject).is_ok(),
             INDEX_OPTION_TYPES
                 .iter()
                 .any(|(listed, _)| *listed == token),
@@ -160,10 +160,11 @@ fn index_option_types_dispatch_from_one_vocabulary() {
         let mut options = IndexMap::new();
         options.insert("type".to_owned(), Value::String((*token).to_owned()));
         options.insert("unknown".to_owned(), Value::Boolean(true));
-        let err = validate_index_option(&Value::Object(options), "/p")
+        let err = validate_index_option(&Value::Object(options), "/p", UnknownMembers::Reject)
             .expect_err("a row's validator must reject unknown members");
-        assert_validation_error(
+        assert_issue(
             err,
+            IssueCode::UnknownField,
             "/p/unknown",
             "unknown field 'unknown' (additional properties are not allowed here)",
         );
@@ -171,10 +172,11 @@ fn index_option_types_dispatch_from_one_vocabulary() {
 
     let mut options = IndexMap::new();
     options.insert("type".to_owned(), Value::String("RANGE".to_owned()));
-    let err = validate_index_option(&Value::Object(options), "/p")
+    let err = validate_index_option(&Value::Object(options), "/p", UnknownMembers::Reject)
         .expect_err("an option type outside the table must be rejected");
-    assert_validation_error(
+    assert_issue(
         err,
+        IssueCode::InvalidEnumToken,
         "/p/type",
         "invalid index options type 'RANGE': expected 'FULLTEXT', 'POINT' or 'VECTOR'",
     );

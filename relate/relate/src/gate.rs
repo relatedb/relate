@@ -23,19 +23,48 @@ use crate::connection::Connection;
 use crate::procedures::{call_is_write, validate_calls};
 use crate::{Error, Result, Value};
 
+/// A statement's transaction-mixing class (ADR-0667) — the one
+/// three-valued fact behind the mixing rule, shared by the admission
+/// classification and the open transaction's history: an ontology write
+/// call (`set`, `drop`, `apply`) is a schema update, a data update is
+/// the other class, and a read or a schema command (`CREATE CONSTRAINT`,
+/// …) is neither. The two non-`None` classes are mutually exclusive by
+/// construction: [`Connection::gates_classify_under_guard`] refuses a
+/// statement carrying both, so no stamp, history cell or gate arm ever
+/// re-spells the exclusivity as a negation guard.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MixClass {
+    /// Neither class: a read or a schema command — a statement that
+    /// records nothing into an open transaction's history.
+    None,
+    /// The statement calls an ontology write procedure (`set`, `drop`,
+    /// `apply`) and performs no data update — a schema update in the
+    /// transaction-mixing sense.
+    OntologySchema,
+    /// The statement performs data updates and calls no ontology write —
+    /// the other side of the mixing rule. Schema commands are not data
+    /// updates (the query type's `s` class excludes them).
+    Data,
+}
+
 /// The metadata stamped onto every `QueryResult` at construction: the
 /// namespace the statement ran in (ADR-0117 §7) and its plan-derived query
 /// type (ADR-0162), plus the auto-commit write-route decision (ADR-0121:
 /// statements calling a `writes`-flagged built-in such as the ontology
 /// write procedures must reach the write path even when no data clause
-/// classifies them as writes). All are resolved in `plan_gate_classify`
-/// above the EXPLAIN/dispatch split and carried into `dispatch` as one
-/// bundle.
+/// classifies them as writes) and the statement's transaction-mixing
+/// class (ADR-0667) — the fact the explicit-transaction arm records into
+/// the open transaction's history after the statement succeeds. All are
+/// resolved in `plan_gate_classify` above the EXPLAIN/dispatch split and
+/// carried into `dispatch` as one bundle.
 #[derive(Clone, Copy)]
 pub(crate) struct ResultStamp {
     pub(crate) namespace: Namespace,
     pub(crate) qtype: QueryType,
     pub(crate) write_route: bool,
+    /// The statement's transaction-mixing class (ADR-0667) — exclusive
+    /// by construction (see [`MixClass`]).
+    pub(crate) mix_class: MixClass,
 }
 
 /// Every procedure call name in a plan (ADR-0121, ADR-0227, ADR-0378),
@@ -209,6 +238,37 @@ impl Connection {
         // run — the metadata is per statement, never cached.
         let mut is_write_proc = |name: &str| call_is_write(&self.inner.graph, name);
         let qtype = query_type(logical, &mut is_write_proc);
+        // The statement's transaction-mixing class (ADR-0667) and the
+        // mixing gate that reads it against the open transaction's
+        // history at the sequence's tail — the one gate that reads
+        // transaction state (see `mixing_gate_error`). The classes are
+        // mutually exclusive by construction: the match has no both arm,
+        // and a statement whose ontology write call rides beside data
+        // updates (`CREATE … CALL db.ontology.apply()`, either clause
+        // order, implicit or explicit transaction) is refused here, at
+        // the plan gate, with the schema-after-data text the transaction
+        // rule uses — the ontology write is the schema update, the data
+        // clauses beside it are the data updates it refuses to mix with.
+        let ontology_schema_update = call_names
+            .ontology
+            .iter()
+            .any(|name| is_ontology_write_procedure(name));
+        // The data arm masks the write bits the ontology write call
+        // itself sets back out (the writers are writes-flagged, so a
+        // bare `CALL db.ontology.set` classifies `w` yet is a schema
+        // update, not a data update): with the call present, only a
+        // clause beside it — `is_write`, whose procedure predicate is
+        // write-blind — turns the query type's write classes into a
+        // data update.
+        let data_update = matches!(qtype, QueryType::Write | QueryType::ReadWrite)
+            && (!ontology_schema_update || is_write(logical));
+        let mix_class = match (ontology_schema_update, data_update) {
+            (false, false) => MixClass::None,
+            (true, false) => MixClass::OntologySchema,
+            (false, true) => MixClass::Data,
+            (true, true) => return Err(ce_messages::ontology_schema_after_data()),
+        };
+        passes(self.mixing_gate_error(mix_class))?;
         // Auto-commit routing: the write path is also required by a
         // statement whose only write is an ontology write procedure
         // (set/drop/apply push redo; `is_write` alone classifies a
@@ -216,18 +276,13 @@ impl Connection {
         // write-blind). Deliberately NOT `plan_calls_write_procedure` with
         // the full predicate: routing user-registered or other
         // writes-flagged procedures to the write path would change their
-        // admission semantics for nothing — they push no redo. The names
-        // are the ontology subset of the collected call names, filtered by
-        // the executor's registry predicate, not a literal list.
-        let write_route = is_write(logical)
-            || call_names
-                .ontology
-                .iter()
-                .any(|name| is_ontology_write_procedure(name));
+        // admission semantics for nothing — they push no redo.
+        let write_route = is_write(logical) || ontology_schema_update;
         Ok(ResultStamp {
             namespace,
             qtype,
             write_route,
+            mix_class,
         })
     }
 
@@ -239,6 +294,28 @@ impl Connection {
     fn transaction_gate_error(&self, logical: &LogicalPlan) -> Option<Error> {
         (self.in_transaction() && relate_planner::plan_contains_in_transactions(logical))
             .then(ce_messages::call_in_transactions_implicit_only)
+    }
+
+    /// ADR-0667: the transaction-mixing gate — the one gate that reads
+    /// transaction state (its siblings above are plan-only), which is why
+    /// it sits at the classification tail in
+    /// [`Self::gates_classify_under_guard`], after the plan-only gates:
+    /// an ontology write is a schema update, so it refuses a transaction
+    /// whose history holds data updates, and a data update refuses one
+    /// whose history holds an ontology write. A statement carrying both
+    /// classes never reaches here — the classification refuses it with
+    /// the schema-after-data text before a class exists.
+    fn mixing_gate_error(&self, class: MixClass) -> Option<Error> {
+        let txn = self.txn.as_ref()?;
+        match (class, txn.mix_class_performed()) {
+            (MixClass::OntologySchema, MixClass::Data) => {
+                Some(ce_messages::ontology_schema_after_data())
+            }
+            (MixClass::Data, MixClass::OntologySchema) => {
+                Some(ce_messages::ontology_data_after_schema())
+            }
+            _ => None,
+        }
     }
 
     /// The preview gate (ADR-0371, ADR-0378), enforced at compile time under
@@ -258,12 +335,18 @@ impl Connection {
         })
     }
 
-    /// The ontology-procedure gates (ADR-0121 §3, ADR-0227 §1), enforced
-    /// at compile time — the layer that sees the whole statement — under
-    /// the same read guard as the other gates. `calls` is [`plan_call_names`]'
-    /// one collection: [`PlanCallNames::ontology`] is its ontology subset,
-    /// in walk order, and the other-write predicate below runs over
-    /// [`PlanCallNames::all`], so neither check re-walks the plan.
+    /// The ontology-procedure statement gates (ADR-0121 §3, ADR-0227 §1,
+    /// amended by ADR-0667), enforced at compile time — the layer that
+    /// sees the whole statement — under the same read guard as the other
+    /// gates. `calls` is [`plan_call_names`]'s one collection:
+    /// [`PlanCallNames::ontology`] is its ontology subset, in walk order,
+    /// and the other-write predicate below runs over
+    /// [`PlanCallNames::all`], so neither check re-walks the plan. The
+    /// transaction-mixing rule (set/drop/apply as schema updates) is NOT
+    /// here: it reads the statement's own classes and the open
+    /// transaction's history, so it lives at the classification tail —
+    /// the class derivation and [`Self::mixing_gate_error`] in
+    /// [`Self::gates_classify_under_guard`].
     fn ontology_gate_error(
         &self,
         logical: &LogicalPlan,
@@ -281,17 +364,16 @@ impl Connection {
         if namespace != Namespace::Neo4j {
             return Some(ce_messages::ontology_neo4j_only());
         }
-        let set_or_drop = calls
+        // The no-mixed-writes arm below applies to a statement calling a
+        // store op; a statement whose ontology call is only `apply` (or
+        // `get`) runs it only through the other-write predicate's own
+        // `apply` count.
+        calls
             .ontology
             .iter()
             .find(|name| is_ontology_store_op(name.as_str()))?;
-        // ADR-0121 §3: set/drop are store-level commits of their own —
-        // implicit (auto-commit) transactions only.
-        if self.in_transaction() {
-            return Some(ce_messages::ontology_implicit_transaction_only(set_or_drop));
-        }
         // ADR-0121 §3: a statement calling set/drop may not write anything
-        // else (Neo4j's 42N03 text). "Anything else" is a data/schema write
+        // else (the 42N03 text). "Anything else" is a data/schema write
         // (`is_write`'s procedure predicate is write-blind, so the set/drop
         // call itself is not counted) or another write procedure — the
         // predicate below excludes the two ontology store ops themselves

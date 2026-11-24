@@ -1,10 +1,11 @@
 //! Graph-type derivation on 1.1.0-shape documents (ADR-0226 §2,
-//! ADR-0364 §5, ADR-0487 §3): a convertible example derives a body, and
-//! every spec-valid construct the body cannot express fails loudly.
+//! ADR-0364 §5, ADR-0487 §3, the revision of ADR-0667): a convertible
+//! example derives a body, and every spec-valid construct the body
+//! cannot express fails loudly.
 
 use relate_names::SmallName;
 use relate_ontology::{parse_ontology_document, to_graph_type_body, OntologyError};
-use relate_parser::{PredefinedKind, TypeExpr};
+use relate_parser::{PredefinedKind, TypeExpr, VectorCoordKind};
 
 use crate::support::{json_doc, mapping_error, EXAMPLE_JSON};
 
@@ -12,10 +13,11 @@ use crate::support::{json_doc, mapping_error, EXAMPLE_JSON};
 // Graph-type derivation (ADR-0226 §2, ADR-0364 §5)
 // ---------------------------------------------------------------------------
 
-/// A convertible spec-shape example: keys, a `must_exist` declaration, a
+/// A convertible spec-shape example: keys, `must_exist` declarations, a
 /// `UUID`, implied labels and a node-referenced relationship. The
-/// validation-only `schema/example.json` deliberately is not convertible,
-/// so `apply` coverage uses this separate document (ADR-0364 §6).
+/// validation-only `schema/example.json` deliberately is not
+/// convertible, so `apply` coverage uses this separate document
+/// (ADR-0364 §6).
 const APPLY_EXAMPLE_JSON: &str = concat!(
     "{\"schema\":\"https://neo4j.com/docs/ontology-graph-spec/1.1.0/schema.json\",",
     "\"id\":\"people\",\"version\":\"1\",",
@@ -36,13 +38,14 @@ const APPLY_EXAMPLE_JSON: &str = concat!(
 #[test]
 fn graph_type_derivation_from_a_spec_shape_example() {
     let doc = parse_ontology_document(APPLY_EXAMPLE_JSON.as_bytes()).expect("example validates");
-    let body = to_graph_type_body(&doc).expect("convertible example derives a graph type");
+    let mapping = to_graph_type_body(&doc).expect("convertible example derives a graph type");
+    let body = &mapping.body;
 
-    // Node type specs, in document order, with the map key as the alias and
-    // the identifying label as the node label.
+    // Node type specs, in document order, with the identifying label as
+    // the node label and no aliases: references resolve by label.
     assert_eq!(body.node_types.len(), 2);
     let person = &body.node_types[0];
-    assert_eq!(person.alias.as_ref(), Some(&SmallName::from_name("person")));
+    assert_eq!(person.alias, None);
     assert_eq!(person.identifying_label, "Person");
     assert_eq!(person.implied_labels, ["Human"]);
     assert_eq!(person.properties.len(), 2);
@@ -54,6 +57,7 @@ fn graph_type_derivation_from_a_spec_shape_example() {
             not_null: false
         }
     );
+    // The `must_exist` flag compiles into the declaration's NOT NULL.
     assert_eq!(
         person.properties[1].value_type,
         TypeExpr::Predefined {
@@ -71,39 +75,52 @@ fn graph_type_derivation_from_a_spec_shape_example() {
         }
     );
 
-    // The edge type resolves both endpoints through the node aliases.
+    // The edge type resolves both endpoints to the referenced nodes'
+    // identifying labels.
     assert_eq!(body.edge_types.len(), 1);
     let works_at = &body.edge_types[0];
-    assert_eq!(
-        works_at.alias.as_ref(),
-        Some(&SmallName::from_name("works-at"))
-    );
+    assert_eq!(works_at.alias, None);
     assert_eq!(works_at.identifying_label, "WORKS_AT");
     assert_eq!(
         works_at.source,
-        relate_parser::GraphTypeElementRef::AliasRef(SmallName::from_name("person"))
+        relate_parser::GraphTypeElementRef::InSitu {
+            alias: None,
+            label: SmallName::from_name("Person"),
+            implies: true,
+        }
     );
     assert_eq!(
         works_at.target,
-        relate_parser::GraphTypeElementRef::AliasRef(SmallName::from_name("company"))
+        relate_parser::GraphTypeElementRef::InSitu {
+            alias: None,
+            label: SmallName::from_name("Company"),
+            implies: true,
+        }
     );
 
-    // The explicit constraint object survives with its name and replaces
-    // the `key` flag it restates; the company's shorthand `key` is the
-    // second, flag-derived constraint.
-    assert_eq!(body.constraints.len(), 2);
+    // The `key` flags become named single-property definitions and the
+    // explicit object keeps its own name: three definitions, none
+    // dropped.
+    assert_eq!(body.constraints.len(), 3);
     assert_eq!(
         body.constraints[0].name.as_ref(),
-        Some(&SmallName::from_name("person_id_key"))
+        Some(&SmallName::from_name("id_person_key"))
     );
     assert_eq!(body.constraints[0].properties, ["id"]);
     assert_eq!(
         body.constraints[0].kind,
         relate_parser::GraphTypeConstraintVerb::Key
     );
-    assert_eq!(body.constraints[1].name, None);
-    assert_eq!(body.constraints[1].properties, ["id"]);
+    assert_eq!(
+        body.constraints[1].name.as_ref(),
+        Some(&SmallName::from_name("person_id_key"))
+    );
+    assert_eq!(
+        body.constraints[2].name.as_ref(),
+        Some(&SmallName::from_name("id_company_key"))
+    );
     assert!(body.drop_constraint_names.is_empty());
+    assert!(mapping.skipped.is_empty());
 }
 
 #[test]
@@ -111,8 +128,13 @@ fn the_validation_only_example_is_not_silently_converted() {
     let doc = parse_ontology_document(EXAMPLE_JSON.as_bytes()).unwrap();
     let err = to_graph_type_body(&doc).expect_err("the validation-only example is not convertible");
     assert!(matches!(err, OntologyError::Mapping(_)), "{err}");
-    assert!(err.to_string().contains("node 'person'"), "{err}");
-    assert!(err.to_string().contains("non-empty"), "{err}");
+    // The first failure names the relationship entry whose `from`
+    // endpoint carries neither a node nor a label.
+    assert!(
+        err.to_string()
+            .contains("Ontology relationship 'empty-targets' references unknown 'from' node ''."),
+        "{err}"
+    );
 }
 
 #[test]
@@ -125,84 +147,95 @@ fn property_type_constraints_fail_loudly_at_apply() {
     assert!(err.to_string().contains("PROPERTY_TYPE"), "{err}");
 }
 
+/// The narrow numerics widen for scalars and lists, and keep their
+/// exact coordinate kinds inside vectors (ADR-0667): each base token
+/// pins its widened `PredefinedKind` and its exact `VectorCoordKind`,
+/// so a converter that widened or dropped a vector's coordinates —
+/// mapping `VECTOR<INTEGER8>` to `Float` coordinates, say — fails the
+/// row.
 #[test]
-fn unsupported_neo4j_scalars_fail_loudly_at_apply() {
-    // `FLOAT32`, `INTEGER8`, `INTEGER16`, `INTEGER32` and their list forms
-    // validate but have no plain CIP-176 property type: silent widening is
-    // forbidden (ADR-0364 §5.2).
-    for token in [
-        "FLOAT32",
-        "LIST<FLOAT32>",
-        "INTEGER8",
-        "LIST<INTEGER8>",
-        "INTEGER16",
-        "LIST<INTEGER16>",
-        "INTEGER32",
-        "LIST<INTEGER32>",
+fn narrow_numeric_tokens_widen_with_exact_vector_kinds() {
+    for (token, scalar_kind, coord) in [
+        ("FLOAT32", PredefinedKind::Float, VectorCoordKind::Float32),
+        ("INTEGER8", PredefinedKind::Integer, VectorCoordKind::Int8),
+        ("INTEGER16", PredefinedKind::Integer, VectorCoordKind::Int16),
+        ("INTEGER32", PredefinedKind::Integer, VectorCoordKind::Int32),
     ] {
-        let doc = parse_ontology_document(
-            json_doc(&format!(
-                ",\"nodes\":{{\"N\":{{\"label\":\"N\",\"properties\":{{\"p\":{{\"type\":\"{token}\"}}}}}}}}"
-            ))
-            .as_bytes(),
-        )
-        .unwrap_or_else(|e| panic!("{token} is spec-valid: {e}"));
-        let err = to_graph_type_body(&doc).expect_err("no plain CIP-176 counterpart");
-        assert!(matches!(err, OntologyError::Mapping(_)), "{token}: {err}");
-        assert!(
-            err.to_string().contains(token),
-            "{token}: the error names the token: {err}"
-        );
-        assert!(err.to_string().contains("'p'"), "{token}: {err}");
-    }
+        // The scalar and list forms widen to the row's kind.
+        for form in [token.to_owned(), format!("LIST<{token}>")] {
+            let doc = parse_ontology_document(
+                json_doc(&format!(
+                    ",\"nodes\":{{\"N\":{{\"label\":\"N\",\"properties\":{{\"p\":{{\"type\":\"{form}\"}}}}}}}}"
+                ))
+                .as_bytes(),
+            )
+            .unwrap_or_else(|e| panic!("{form} is spec-valid: {e}"));
+            let mapping = to_graph_type_body(&doc).unwrap_or_else(|e| panic!("{form}: {e}"));
+            let declared = match &mapping.body.node_types[0].properties[0].value_type {
+                TypeExpr::Predefined { kind, .. } => *kind,
+                TypeExpr::List { element, .. } => match **element {
+                    TypeExpr::Predefined { kind, .. } => kind,
+                    _ => panic!("{form}: a list of a predefined kind"),
+                },
+                other => panic!("{form}: expected a scalar or list, got {other:?}"),
+            };
+            assert_eq!(declared, scalar_kind, "{form}");
+        }
 
-    // The vector coordinate forms do convert (CIP-216), including the
-    // 8/16/32-bit element types that fail as plain scalars.
-    for token in [
-        "VECTOR<FLOAT32>",
-        "VECTOR<INTEGER8>",
-        "VECTOR<INTEGER16>",
-        "VECTOR<INTEGER32>",
-    ] {
+        // The vector form keeps the exact inner kind (CIP-216) with the
+        // declared dimension — including the 8/16/32-bit element types
+        // that widen as plain scalars.
         let doc = parse_ontology_document(
             json_doc(&format!(
-                ",\"nodes\":{{\"N\":{{\"label\":\"N\",\"properties\":{{\"p\":{{\"type\":\"{token}\",\"dimension\":3}}}}}}}}"
+                ",\"nodes\":{{\"N\":{{\"label\":\"N\",\"properties\":{{\"p\":{{\"type\":\"VECTOR<{token}>\",\"dimension\":3}}}}}}}}"
             ))
             .as_bytes(),
         )
         .unwrap();
-        let body = to_graph_type_body(&doc).unwrap_or_else(|e| panic!("{token}: {e}"));
-        assert!(matches!(
-            body.node_types[0].properties[0].value_type,
+        let mapping = to_graph_type_body(&doc).unwrap_or_else(|e| panic!("VECTOR<{token}>: {e}"));
+        match &mapping.body.node_types[0].properties[0].value_type {
             TypeExpr::Vector {
+                coord: Some(actual),
                 dimension: Some(3),
                 ..
-            }
-        ));
+            } => assert_eq!(*actual, coord, "VECTOR<{token}>"),
+            other => panic!("VECTOR<{token}>: expected a dimension-3 vector, got {other:?}"),
+        }
     }
 }
 
+/// A label-only endpoint converts to a plain label reference; an
+/// endpoint with neither a node nor a label fails naming the
+/// relationship, the end and the empty node.
 #[test]
-fn label_only_and_empty_endpoints_fail_loudly_at_apply() {
-    let err = mapping_error(
-        ",\"nodes\":{\"N\":{\"label\":\"N\"}},\"relationships\":{\
-         \"label-only\":{\"type\":\"L\",\"from\":{\"label\":\"N\"},\"to\":{\"node\":\"N\"}},\
-         \"empty\":{\"type\":\"E\",\"from\":{\"node\":\"N\"},\"to\":{}}}",
+fn label_only_endpoints_convert_and_bare_endpoints_fail() {
+    let doc = parse_ontology_document(
+        json_doc(
+            ",\"nodes\":{\"N\":{\"label\":\"N\"}},\"relationships\":{\"R\":{\"type\":\"R\",\
+             \"from\":{\"label\":\"N\"},\"to\":{\"node\":\"N\"}}}",
+        )
+        .as_bytes(),
+    )
+    .expect("a label-only from endpoint is spec-valid");
+    let mapping = to_graph_type_body(&doc).expect("a label-only endpoint converts");
+    assert_eq!(
+        mapping.body.edge_types[0].source,
+        relate_parser::GraphTypeElementRef::InSitu {
+            alias: None,
+            label: SmallName::from_name("N"),
+            implies: false,
+        }
     );
-    assert!(
-        err.to_string().contains("relationship 'label-only'"),
-        "{err}"
-    );
-    assert!(err.to_string().contains("'from'"), "{err}");
-    assert!(err.to_string().contains("no node"), "{err}");
 
     let err = mapping_error(
         ",\"nodes\":{\"N\":{\"label\":\"N\"}},\"relationships\":{\
          \"empty\":{\"type\":\"E\",\"from\":{\"node\":\"N\"},\"to\":{}}}",
     );
-    assert!(err.to_string().contains("relationship 'empty'"), "{err}");
-    assert!(err.to_string().contains("'to'"), "{err}");
-    assert!(err.to_string().contains("no node"), "{err}");
+    assert!(
+        err.to_string()
+            .contains("Ontology relationship 'empty' references unknown 'to' node ''."),
+        "{err}"
+    );
 }
 
 #[test]
@@ -241,15 +274,14 @@ fn nullable_and_empty_main_forms_validate_but_fail_loudly_at_apply() {
     assert!(err.to_string().contains("constraint 'c'"), "{err}");
     assert!(err.to_string().contains("no properties"), "{err}");
 
-    // A purely descriptive empty-named property is carried and compiles to
-    // nothing; one that declares a type fails loudly.
+    // A purely descriptive empty-named property is carried and reported
+    // skipped; one that declares a type fails loudly.
     let doc = parse_ontology_document(
         json_doc(",\"nodes\":{\"N\":{\"label\":\"N\",\"properties\":{\"\":{}}}}").as_bytes(),
     )
     .expect("a descriptive empty-named property is spec-valid");
-    assert!(to_graph_type_body(&doc).unwrap().node_types[0]
-        .properties
-        .is_empty());
+    let mapping = to_graph_type_body(&doc).unwrap();
+    assert!(mapping.body.node_types.is_empty());
     let doc = parse_ontology_document(
         json_doc(
             ",\"nodes\":{\"N\":{\"label\":\"N\",\"properties\":{\"\":{\"type\":\"STRING\"}}}}",

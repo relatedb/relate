@@ -34,7 +34,7 @@ use crate::row::Row;
 use super::compose::ComposeSource;
 use super::feed::StreamedFeed;
 use super::QueryResult;
-use ontology::{exec_ontology_write_call, ontology_get_source, OntologyProc, OntologyWrite};
+use ontology::{exec_ontology_write_call, OntologyProc, OntologyWrite};
 
 pub use contract::{check_explicit_arity, check_implicit_passing_mode};
 pub(crate) use contract::{pad_or_each, CallSpec};
@@ -111,11 +111,11 @@ pub(crate) fn divert_call(
 /// source a row-producing call carries; the materializing run
 /// ([`exec_resolved_call`]) executes the resolution's own arms.
 pub(crate) enum CallResolution<'a> {
-    /// The `db.ontology.*` write divert — the narrowed write vocabulary
-    /// alone: all three writes declare no return columns, so the variant
-    /// is void by construction. The read variant (`get`) answers its
-    /// composition source through [`CallResolution::Compose`] like every
-    /// row-producing call.
+    /// The `db.ontology.set`/`drop` store ops — the narrowed void store-op
+    /// vocabulary alone: both declare no return columns, so the variant is
+    /// void by construction. The row-producing arms (`get`, `apply`)
+    /// answer their composition sources through
+    /// [`CallResolution::Compose`] like every row-producing call.
     Ontology { write: OntologyWrite },
     /// A void call: its per-row binding — the arguments are still bound and
     /// type-checked, no rows are produced.
@@ -132,9 +132,10 @@ impl CallResolution<'_> {
     /// resolution decides it, never re-derived per arm downstream.
     pub(crate) fn yields_unit(&self) -> bool {
         match self {
-            // The ontology writes are void — enforced by the pin in
-            // `ontology.rs` (each write's registry signature declares no
-            // return columns), like the registry path's void resolution.
+            // The ontology store ops are void — enforced by the pin in
+            // `ontology.rs` (each store op's registry signature declares
+            // no return columns), like the registry path's void
+            // resolution.
             CallResolution::Ontology { .. } | CallResolution::Void { .. } => true,
             CallResolution::Compose(_) => false,
         }
@@ -152,14 +153,25 @@ pub(crate) fn resolve_call<'a>(ctx: ExecCtx<'a>, call: CallSpec<'a>) -> Result<C
         Some((signature, CallDivert::Ontology(proc))) => {
             // The ontology divert runs the same runtime contract (passing
             // mode, arity) the generic path runs, at this same site, over
-            // the classification's own signature — then the one
-            // read/write partition: `get` answers its composition source
-            // like every row-producing call (a folding consumer parks it,
-            // ADR-0555), the writes the narrowed write arm.
+            // the classification's own signature — then the one partition
+            // into its arms, matched exhaustively over the dispatch enum:
+            // `get` and `apply` answer composition sources like every
+            // row-producing call (a folding consumer parks them,
+            // ADR-0555), the store ops the narrowed void write arm.
             call.check_diverted_contract(signature)?;
-            match proc.write() {
-                Some(write) => CallResolution::Ontology { write },
-                None => CallResolution::Compose(ontology_get_source(ctx, call)?),
+            match proc {
+                OntologyProc::Get => {
+                    CallResolution::Compose(ontology::ontology_get_source(ctx, call, signature)?)
+                }
+                OntologyProc::Apply => {
+                    CallResolution::Compose(ontology::ontology_apply_source(ctx, call, signature)?)
+                }
+                OntologyProc::Set => CallResolution::Ontology {
+                    write: OntologyWrite::Set,
+                },
+                OntologyProc::Drop => CallResolution::Ontology {
+                    write: OntologyWrite::Drop,
+                },
             }
         }
         Some((signature, CallDivert::Vector(entity))) => {

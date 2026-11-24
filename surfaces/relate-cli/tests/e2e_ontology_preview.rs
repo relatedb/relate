@@ -50,11 +50,13 @@ fn fresh_store() -> (tempfile::TempDir, String) {
 }
 
 /// One gate-on `db.ontology.set` of the fixture document into `db`, in the
-/// suite's JSONL output mode. Returns the document value a later `get` must
-/// serve.
+/// suite's JSONL output mode. Returns the document value a later `get`
+/// must serve: what the store actually serves back after the `set` — the
+/// codec's canonical form of the fixture — parsed once here, so the later
+/// legs pin that the served form is stable across reopens (the storage
+/// contract), without the test restating the codec's canonical form.
 fn store_ontology(db: &str) -> Value {
     let document = ontology_document();
-    let expected: Value = serde_json::from_str(&document).expect("the fixture is JSON");
     let param = ontology_param(&document);
 
     let (status, _stdout, stderr) = run_cli(
@@ -71,7 +73,20 @@ fn store_ontology(db: &str) -> Value {
         .with_envs(GATE_ON),
     );
     assert!(status.success(), "db.ontology.set failed: {stderr}");
-    expected
+
+    let (status, stdout, stderr) = run_cli(
+        CliRunOptions::new(&[
+            "query",
+            "CALL db.ontology.get('json') YIELD ontology RETURN ontology",
+            "--mode",
+            "jsonl",
+            "-d",
+            db,
+        ])
+        .with_envs(GATE_ON),
+    );
+    assert!(status.success(), "db.ontology.get failed: {stderr}");
+    returned_ontology(&stdout)
 }
 
 /// The valid main-shape Ontology Graph Spec 1.0.0 document the tests store

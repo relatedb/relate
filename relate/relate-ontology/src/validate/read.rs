@@ -13,18 +13,22 @@
 //! whose expected list derives from [`NEO4J_TYPES`].
 //!
 //! These items stay inside the `validate` module tree (`pub(super)`): they
-//! are an internal decomposition, not public surface. Error paths and
-//! messages are behavior the acceptance suite pins, so every helper keeps
-//! the exact sentence of the call site it replaced.
+//! are an internal decomposition, not public surface. Every failure is one
+//! [`Issue`] — the code names the rule family, the message and path stay
+//! the exact sentences the acceptance suite pins, and the fail-fast parse
+//! path turns the first issue into
+//! [`OntologyError::Validation`](crate::OntologyError::Validation)
+//! verbatim through [`Issue::into_validation_error`].
 
 use indexmap::IndexMap;
 
-use crate::error::OntologyError;
+use crate::error::{Issue, IssueCode};
 use crate::model::{Neo4jType, NEO4J_TYPES};
 use crate::value::Value;
 
-pub(super) fn verr(path: &str, message: impl Into<String>) -> OntologyError {
-    OntologyError::Validation {
+pub(super) fn verr(code: IssueCode, path: &str, message: impl Into<String>) -> Issue {
+    Issue {
+        code,
         path: path.to_owned(),
         message: message.into(),
     }
@@ -54,23 +58,44 @@ pub(super) fn expect_object<'a>(
     value: &'a Value,
     path: &str,
     what: &str,
-) -> Result<&'a IndexMap<String, Value>, OntologyError> {
+) -> Result<&'a IndexMap<String, Value>, Issue> {
     value.as_object().ok_or_else(|| {
         verr(
+            IssueCode::InvalidType,
             path,
             format!("{what} must be an object, found {}", kind_of(value)),
         )
     })
 }
 
+/// What a closed object does with a member outside its allowed set:
+/// reject it (the typed-parse path — an unknown member is a loud
+/// validation failure naming it) or drop it (the canonicalize path — the
+/// member never enters the model, so the canonical form omits it).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum UnknownMembers {
+    /// An unknown member is an [`IssueCode::UnknownField`] issue.
+    Reject,
+    /// An unknown member is silently absent from the validated model.
+    Drop,
+}
+
+/// Check a closed object's members against its allowed set under
+/// `policy`. Under [`UnknownMembers::Drop`] the check is a no-op: the
+/// model reads only allowed members, so an unknown one never reaches it.
 pub(super) fn check_allowed(
     obj: &IndexMap<String, Value>,
     allowed: &[&str],
     path: &str,
-) -> Result<(), OntologyError> {
+    policy: UnknownMembers,
+) -> Result<(), Issue> {
+    if policy == UnknownMembers::Drop {
+        return Ok(());
+    }
     for key in obj.keys() {
         if !allowed.contains(&key.as_str()) {
             return Err(verr(
+                IssueCode::UnknownField,
                 &join(path, key),
                 format!("unknown field '{key}' (additional properties are not allowed here)"),
             ));
@@ -81,8 +106,12 @@ pub(super) fn check_allowed(
 
 /// The one absent-required sentence: every required reader — scalar, array
 /// or sub-value — reports it at the holder's `path`, naming the field.
-fn missing_field(path: &str, key: &str) -> OntologyError {
-    verr(path, format!("missing required field '{key}'"))
+fn missing_field(path: &str, key: &str) -> Issue {
+    verr(
+        IssueCode::MissingRequiredField,
+        path,
+        format!("missing required field '{key}'"),
+    )
 }
 
 /// The one scalar presence policy: absent → `None`; present → `parse` at
@@ -97,11 +126,12 @@ fn read_scalar<T>(
     path: &str,
     expected: &str,
     parse: impl FnOnce(&Value) -> Option<T>,
-) -> Result<Option<T>, OntologyError> {
+) -> Result<Option<T>, Issue> {
     match obj.get(key) {
         None => Ok(None),
         Some(v) => parse(v).map(Some).ok_or_else(|| {
             verr(
+                IssueCode::InvalidType,
                 &join(path, key),
                 format!("'{key}' must be {expected}, found {}", kind_of(v)),
             )
@@ -113,7 +143,7 @@ pub(super) fn req_string(
     obj: &IndexMap<String, Value>,
     key: &str,
     path: &str,
-) -> Result<String, OntologyError> {
+) -> Result<String, Issue> {
     read_scalar(obj, key, path, "a string", |v| {
         v.as_str().map(str::to_owned)
     })?
@@ -124,7 +154,7 @@ pub(super) fn opt_string(
     obj: &IndexMap<String, Value>,
     key: &str,
     path: &str,
-) -> Result<Option<String>, OntologyError> {
+) -> Result<Option<String>, Issue> {
     read_scalar(obj, key, path, "a string", |v| {
         v.as_str().map(str::to_owned)
     })
@@ -142,7 +172,7 @@ fn opt_nullable<T>(
     path: &str,
     expected: &str,
     read: impl FnOnce(&Value) -> Option<T>,
-) -> Result<Option<T>, OntologyError> {
+) -> Result<Option<T>, Issue> {
     match obj.get(key) {
         Some(Value::Null) => Ok(None),
         _ => read_scalar(obj, key, path, &format!("{expected} or null"), read),
@@ -155,7 +185,7 @@ pub(super) fn opt_nullable_string(
     obj: &IndexMap<String, Value>,
     key: &str,
     path: &str,
-) -> Result<Option<String>, OntologyError> {
+) -> Result<Option<String>, Issue> {
     opt_nullable(obj, key, path, "a string", |v| {
         v.as_str().map(str::to_owned)
     })
@@ -165,7 +195,7 @@ pub(super) fn opt_bool(
     obj: &IndexMap<String, Value>,
     key: &str,
     path: &str,
-) -> Result<Option<bool>, OntologyError> {
+) -> Result<Option<bool>, Issue> {
     read_scalar(obj, key, path, "a boolean", Value::as_boolean)
 }
 
@@ -173,7 +203,7 @@ pub(super) fn opt_nullable_bool(
     obj: &IndexMap<String, Value>,
     key: &str,
     path: &str,
-) -> Result<Option<bool>, OntologyError> {
+) -> Result<Option<bool>, Issue> {
     opt_nullable(obj, key, path, "a boolean", Value::as_boolean)
 }
 
@@ -181,7 +211,7 @@ pub(super) fn opt_int(
     obj: &IndexMap<String, Value>,
     key: &str,
     path: &str,
-) -> Result<Option<i64>, OntologyError> {
+) -> Result<Option<i64>, Issue> {
     read_scalar(obj, key, path, "an integer", Value::as_integer)
 }
 
@@ -190,7 +220,7 @@ pub(super) fn opt_nullable_int(
     obj: &IndexMap<String, Value>,
     key: &str,
     path: &str,
-) -> Result<Option<i64>, OntologyError> {
+) -> Result<Option<i64>, Issue> {
     opt_nullable(obj, key, path, "an integer", Value::as_integer)
 }
 
@@ -199,7 +229,7 @@ pub(super) fn opt_nullable_number(
     obj: &IndexMap<String, Value>,
     key: &str,
     path: &str,
-) -> Result<Option<f64>, OntologyError> {
+) -> Result<Option<f64>, Issue> {
     opt_nullable(obj, key, path, "a number", as_number)
 }
 
@@ -207,14 +237,15 @@ pub(super) fn req_number(
     obj: &IndexMap<String, Value>,
     key: &str,
     path: &str,
-) -> Result<f64, OntologyError> {
+) -> Result<f64, Issue> {
     read_scalar(obj, key, path, "a number", as_number)?.ok_or_else(|| missing_field(path, key))
 }
 
 /// A JSON `number` (integer or float), with its field's error sentence.
-fn number(value: &Value, key: &str, path: &str) -> Result<f64, OntologyError> {
+fn number(value: &Value, key: &str, path: &str) -> Result<f64, Issue> {
     as_number(value).ok_or_else(|| {
         verr(
+            IssueCode::InvalidType,
             path,
             format!("'{key}' must be a number, found {}", kind_of(value)),
         )
@@ -234,7 +265,7 @@ pub(super) fn opt_string_list(
     obj: &IndexMap<String, Value>,
     key: &str,
     path: &str,
-) -> Result<Vec<String>, OntologyError> {
+) -> Result<Vec<String>, Issue> {
     match obj.get(key) {
         None => Ok(Vec::new()),
         Some(v) => string_list(v, key, &join(path, key)),
@@ -249,8 +280,8 @@ pub(super) fn opt_list<T>(
     obj: &IndexMap<String, Value>,
     key: &str,
     path: &str,
-    read: impl FnOnce(&Value, &str, &str) -> Result<Vec<T>, OntologyError>,
-) -> Result<Option<Vec<T>>, OntologyError> {
+    read: impl FnOnce(&Value, &str, &str) -> Result<Vec<T>, Issue>,
+) -> Result<Option<Vec<T>>, Issue> {
     match obj.get(key) {
         None => Ok(None),
         Some(v) => read(v, key, &join(path, key)).map(Some),
@@ -261,7 +292,7 @@ pub(super) fn req_string_list(
     obj: &IndexMap<String, Value>,
     key: &str,
     path: &str,
-) -> Result<Vec<String>, OntologyError> {
+) -> Result<Vec<String>, Issue> {
     match obj.get(key) {
         None => Err(missing_field(path, key)),
         Some(v) => string_list(v, key, &join(path, key)),
@@ -278,10 +309,11 @@ pub(super) fn read_list<T>(
     value: &Value,
     key: &str,
     path: &str,
-    parse_item: impl Fn(&Value, &str) -> Result<T, OntologyError>,
-) -> Result<Vec<T>, OntologyError> {
+    parse_item: impl Fn(&Value, &str) -> Result<T, Issue>,
+) -> Result<Vec<T>, Issue> {
     let items = value.as_array().ok_or_else(|| {
         verr(
+            IssueCode::InvalidType,
             path,
             format!("'{key}' must be an array, found {}", kind_of(value)),
         )
@@ -296,31 +328,23 @@ pub(super) fn read_list<T>(
 /// One string-shaped item of a list at `at`: the shared item boundary for
 /// the string list readers. A non-string reports `'<key>' items must be
 /// <expected>, found <kind>` at the item's path.
-fn string_item<'a>(
-    item: &'a Value,
-    key: &str,
-    at: &str,
-    expected: &str,
-) -> Result<&'a str, OntologyError> {
+fn string_item<'a>(item: &'a Value, key: &str, at: &str, expected: &str) -> Result<&'a str, Issue> {
     item.as_str().ok_or_else(|| {
         verr(
+            IssueCode::InvalidType,
             at,
             format!("'{key}' items must be {expected}, found {}", kind_of(item)),
         )
     })
 }
 
-pub(super) fn string_list(
-    value: &Value,
-    key: &str,
-    path: &str,
-) -> Result<Vec<String>, OntologyError> {
+pub(super) fn string_list(value: &Value, key: &str, path: &str) -> Result<Vec<String>, Issue> {
     read_list(value, key, path, |item, at| {
         Ok(string_item(item, key, at, "strings")?.to_owned())
     })
 }
 
-pub(super) fn number_list(value: &Value, key: &str, path: &str) -> Result<Vec<f64>, OntologyError> {
+pub(super) fn number_list(value: &Value, key: &str, path: &str) -> Result<Vec<f64>, Issue> {
     read_list(value, key, path, |item, at| number(item, key, at))
 }
 
@@ -330,13 +354,16 @@ pub(super) fn number_list(value: &Value, key: &str, path: &str) -> Result<Vec<f6
 /// entries, properties, constraints, labels) routes through this,
 /// [`opt_nullable_sub`] or [`req_sub`] — no call site open-codes the
 /// `match obj.get(..)` dispatch. A site that needs the present/absent
-/// distinction passes `T = Option<_>`, defaulting to `None`.
-pub(super) fn opt_sub<T: Default>(
+/// distinction passes `T = Option<_>`, defaulting to `None`; the error
+/// type is free — `Issue` at the fail-fast sub-validators,
+/// `Vec<Issue>` at the per-entry aggregating dispatches, the two
+/// lifted across by `?`.
+pub(super) fn opt_sub<T: Default, E>(
     obj: &IndexMap<String, Value>,
     key: &str,
     path: &str,
-    validate: impl FnOnce(&Value, &str) -> Result<T, OntologyError>,
-) -> Result<T, OntologyError> {
+    validate: impl FnOnce(&Value, &str) -> Result<T, E>,
+) -> Result<T, E> {
     match obj.get(key) {
         None => Ok(T::default()),
         Some(v) => validate(v, &join(path, key)),
@@ -349,8 +376,8 @@ pub(super) fn opt_nullable_sub(
     obj: &IndexMap<String, Value>,
     key: &str,
     path: &str,
-    validate: impl FnOnce(&Value, &str) -> Result<(), OntologyError>,
-) -> Result<(), OntologyError> {
+    validate: impl FnOnce(&Value, &str) -> Result<(), Issue>,
+) -> Result<(), Issue> {
     match obj.get(key) {
         None | Some(Value::Null) => Ok(()),
         Some(v) => validate(v, &join(path, key)),
@@ -364,8 +391,8 @@ pub(super) fn req_sub<T>(
     obj: &IndexMap<String, Value>,
     key: &str,
     path: &str,
-    validate: impl FnOnce(&Value, &str) -> Result<T, OntologyError>,
-) -> Result<T, OntologyError> {
+    validate: impl FnOnce(&Value, &str) -> Result<T, Issue>,
+) -> Result<T, Issue> {
     match obj.get(key) {
         None => Err(missing_field(path, key)),
         Some(v) => validate(v, &join(path, key)),
@@ -389,9 +416,10 @@ pub(super) fn expected_neo4j_types() -> String {
 
 /// The one `Neo4jType` token reader: a string outside the closed vocabulary
 /// fails at `path` naming the offending token and the derived vocabulary.
-fn neo4j_type(token: &str, path: &str) -> Result<Neo4jType, OntologyError> {
+fn neo4j_type(token: &str, path: &str) -> Result<Neo4jType, Issue> {
     Neo4jType::parse(token).ok_or_else(|| {
         verr(
+            IssueCode::InvalidEnumToken,
             path,
             format!(
                 "invalid Neo4jType token '{token}': {}",
@@ -408,7 +436,7 @@ pub(super) fn neo4j_type_list(
     value: &Value,
     key: &str,
     path: &str,
-) -> Result<Vec<Neo4jType>, OntologyError> {
+) -> Result<Vec<Neo4jType>, Issue> {
     read_list(value, key, path, |item, at| {
         neo4j_type(string_item(item, key, at, "Neo4jType strings")?, at)
     })
@@ -422,7 +450,7 @@ pub(super) fn opt_neo4j_type(
     obj: &IndexMap<String, Value>,
     key: &str,
     path: &str,
-) -> Result<Option<Neo4jType>, OntologyError> {
+) -> Result<Option<Neo4jType>, Issue> {
     match opt_string(obj, key, path)? {
         None => Ok(None),
         Some(token) => neo4j_type(&token, &join(path, key)).map(Some),
@@ -435,6 +463,6 @@ pub(super) fn opt_neo4j_type_list(
     obj: &IndexMap<String, Value>,
     key: &str,
     path: &str,
-) -> Result<Option<Vec<Neo4jType>>, OntologyError> {
+) -> Result<Option<Vec<Neo4jType>>, Issue> {
     opt_list(obj, key, path, neo4j_type_list)
 }

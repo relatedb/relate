@@ -126,17 +126,12 @@ first: `RELATE_PREVIEW=ontology relate query "CALL db.ontology.get()"
 set RELATE_PREVIEW=ontology`, and `SHOW PROCEDURES` does not list them.
 With the opt-in, `CALL db.ontology.get()` returns the stored ontology
 document as YAML (labels, relationship types, property names with types);
-`get('json')` converts to JSON. Steer the generated Cypher's labels,
-relationship types, and property names from it. The document is main's
-graph-spec shape (ADR-0364): `version` is a string,
-node/relationship/property ids are map keys, property existence is
-`must_exist`, and constraints are id-keyed maps
-with `type: EXISTS | KEY | UNIQUE | PROPERTY_TYPE`. A document exists only
-after `CALL db.ontology.set($ontology)` stored one — `set` accepts only the
-exact `schema` URI
-`https://neo4j.com/docs/ontology-graph-spec/1.1.0/schema.json`, so a
-pre-bump document fails and must be resubmitted in the new shape — and
-`null` means none is set.
+`get('json')` returns it as JSON. Steer the generated Cypher's labels,
+relationship types, and property names from it. The procedures' contracts
+are revised (ADR-0667); the accepted document
+is the published Ontology Graph Spec 1.1.0 shape, and `null` from `get`
+means none is set — a document exists only after `CALL
+db.ontology.set($ontology)` stored one.
 The procedures act on the session database and only `neo4j` holds the
 ontology, so stay on the default session. If `get` returns `null`, the call
 errors, or you cannot set the opt-in, fall back to the schema discovery

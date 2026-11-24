@@ -237,7 +237,7 @@ pub fn database_does_not_exist(name: &str) -> Error {
     graph_not_found(name)
 }
 
-/// ADR-0121 §2 as amended by ADR-0227 §1 (CIP-287): the `db.ontology.*`
+/// ADR-0121 §2 as amended by ADR-0227 §1: the `db.ontology.*`
 /// procedures act on the session/`USE`-target database, which must be
 /// `neo4j`. Raised at the facade's target-namespace check when a statement
 /// calling one of them resolves to another namespace and no earlier
@@ -249,15 +249,23 @@ pub fn ontology_neo4j_only() -> Error {
     ))
 }
 
-/// ADR-0121 §3: `db.ontology.set`/`db.ontology.drop` run only in implicit
-/// (auto-commit) transactions. The wording follows Neo4j's error for
-/// `CALL { … } IN TRANSACTIONS`; `procedure` is the called name
-/// (`db.ontology.set` or `db.ontology.drop`).
-pub fn ontology_implicit_transaction_only(procedure: &str) -> Error {
+/// ADR-0121 §3 as amended by ADR-0667: an ontology write (`set`, `drop`,
+/// `apply`) is a schema update, so it may not run in a transaction that
+/// has already performed data updates.
+pub fn ontology_schema_after_data() -> Error {
     Error::semantic(format!(
-        "{}: '{procedure}' can only be executed in an implicit transaction, \
-         but tried to execute in an explicit transaction.",
-        TckErrorClass::SemanticError.as_str()
+        "{}: Cannot perform schema updates in a transaction that has performed data updates",
+        ErrorKind::TransactionError.as_str()
+    ))
+}
+
+/// ADR-0121 §3 as amended by ADR-0667: a data update may not run in a
+/// transaction that has already performed an ontology write (`set`,
+/// `drop`, `apply`) — the write is a schema update.
+pub fn ontology_data_after_schema() -> Error {
+    Error::semantic(format!(
+        "{}: Cannot perform data updates in a transaction that has performed schema updates",
+        ErrorKind::TransactionError.as_str()
     ))
 }
 
@@ -531,12 +539,12 @@ mod tests {
             "SemanticError: Ontologies can only be stored for the user database 'neo4j'.",
         );
         assert_ce_text(
-            &ontology_implicit_transaction_only("db.ontology.set"),
-            "SemanticError: 'db.ontology.set' can only be executed in an implicit transaction, but tried to execute in an explicit transaction.",
+            &ontology_schema_after_data(),
+            "TransactionError: Cannot perform schema updates in a transaction that has performed data updates",
         );
         assert_ce_text(
-            &ontology_implicit_transaction_only("db.ontology.drop"),
-            "SemanticError: 'db.ontology.drop' can only be executed in an implicit transaction, but tried to execute in an explicit transaction.",
+            &ontology_data_after_schema(),
+            "TransactionError: Cannot perform data updates in a transaction that has performed schema updates",
         );
         assert_ce_text(
             &cross_database_write(),

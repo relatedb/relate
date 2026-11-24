@@ -1,40 +1,40 @@
 //! The `db.ontology.*` procedures (ADR-0121 as amended by ADR-0227, the
-//! CIP-287 surface): `set`, `get`, `drop`, `apply`. No database argument —
-//! each acts on the session/`USE`-target database, which the facade's
-//! plan-time gates restrict to `neo4j` before execution.
+//! shells revised per ADR-0667): `set`, `get`, `drop`, `apply`. No database argument — each acts on the
+//! session/`USE`-target database, which the facade's plan-time gates
+//! restrict to `neo4j` before execution.
 //!
 //! Chosen seams (the executor's `ExecCtx`/`ExecRequest` carry no store
 //! handle):
 //!
 //! - `set`/`drop` push the store-level [`RedoOp::OntologySet`] /
 //!   [`RedoOp::OntologyDrop`] into the statement's write overlay, exactly
-//!   like a catalog op. The facade's compile-time gates (implicit-only,
-//!   no-mixed-writes 42N03, namespace) guarantee the statement commits
-//!   nothing else, and the group-commit pipeline
-//!   (`relate::ontology::prepare_committed` / `install_committed`)
-//!   already turns those ops into the store-level document swap before and
-//!   after the WAL append — the same path the doc-hidden
-//!   `Database::commit_ontology_set`/`commit_ontology_drop` facades use.
-//!   Validation happens here, at execution time, so an invalid document
-//!   fails the statement before any WAL write (the WAL preflight's 16 MiB
-//!   envelope check backstops it).
-//! - `get` is an ordinary read row producer; the facade pins the
-//!   document the calling transaction sees on the graph view
-//!   (`ExecGraph::with_ontology_document` — begin-time capture in explicit
-//!   transactions, admission-time capture auto-commit), so `YIELD`/`RETURN`
-//!   compose as for any procedure.
-//! - `apply` is a normal in-overlay write procedure: it converts the
-//!   stored document with [`relate_ontology::to_graph_type_body`],
-//!   runs ADR-0226 §3's validate-first scan against the captured snapshot,
-//!   and only then pushes the `ALTER CURRENT GRAPH TYPE SET` redo through
-//!   the existing pipeline (`apply_verb` → `derive_constraints_typed` →
-//!   `sync_derived_constraints` → `RedoOp::SetCurrentGraphType`).
+//!   like a catalog op. `set`'s argument runs through the crate codec
+//!   first (ADR-0667): a `null` or empty argument pushes the clear — the
+//!   same redo `drop` pushes — and a non-empty one is canonicalized before
+//!   the redo, so validation failures fail the statement before any WAL
+//!   write (the WAL preflight's 16 MiB envelope check backstops it).
+//! - `get` is an ordinary read row producer; the view's ontology document
+//!   ([`ExecGraph::with_ontology_document`], overridden by the overlay's
+//!   pending op through [`ExecGraph::effective_ontology_document`]) is
+//!   re-rendered in the requested format through the same codec
+//!   (ADR-0667), so `YIELD`/`RETURN` compose as for any procedure.
+//! - `apply` is a row-producing in-overlay write procedure: it converts
+//!   the stored document with [`relate_ontology::to_graph_type_body`],
+//!   runs ADR-0226 §3's validate-first scan against the captured
+//!   snapshot, and only then pushes the `ALTER CURRENT GRAPH TYPE SET`
+//!   redo through the existing pipeline (`apply_verb` →
+//!   `derive_constraints_typed` → `sync_derived_constraints` →
+//!   `RedoOp::SetCurrentGraphType`), answering one delta row
+//!   (ADR-0667): the applied model's name else id, the constraints the
+//!   statement created and dropped, and the converter's skip reports.
 
-use std::borrow::Cow;
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use relate_core::{Error, Result, Value};
-use relate_ontology::DocumentFormat;
+use relate_ontology::{
+    parse_stored_ontology_document, render_ontology_document, DocumentFormat, OntologyError,
+};
 
 use crate::ctx::ExecCtx;
 use crate::overlay::ExecGraph;
@@ -45,20 +45,15 @@ use super::super::compose::{ComposeSource, Produced};
 use super::CallSpec;
 use relate_ir::CallArgs;
 
-/// `db.ontology.get`'s one output column, used both as the default-yield
-/// name and as the produced row's key so the declared and produced column
-/// cannot drift.
-const ONTOLOGY_COLUMN: &str = "ontology";
-
 /// The database every stored ontology belongs to (ADR-0121 §2) — the
 /// `database` payload the store-level redo ops carry.
 const ONTOLOGY_DATABASE: &str = "neo4j";
 
-/// The four `db.ontology.*` procedures (ADR-0121/ADR-0227), classified
-/// ONCE at the `exec_call` divert by the single `OntologyProc::try_from`
-/// classification below — the divert site's one name-matching scheme —
-/// so every downstream dispatch matches this enum exhaustively instead of
-/// re-matching name strings.
+/// The four `db.ontology.*` procedures (ADR-0121/ADR-0227, revised by
+/// ADR-0667), classified ONCE at the `exec_call` divert by the single
+/// `OntologyProc::try_from` classification below — the divert site's one
+/// name-matching scheme — so every downstream dispatch matches this enum
+/// exhaustively instead of re-matching name strings.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum OntologyProc {
     Get,
@@ -67,28 +62,17 @@ pub(crate) enum OntologyProc {
     Apply,
 }
 
-/// The ontology write vocabulary — the three ops [`exec_ontology_call`]
-/// partitions from `get`, so the write path's own type cannot carry the
-/// read variant it never runs.
+/// The ontology store-op vocabulary — the two void writes
+/// [`exec_ontology_write_call`] runs, partitioned from the row-producing
+/// `get`/`apply`, so the write path's own type cannot carry a variant it
+/// never runs.
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum OntologyWrite {
     Set,
     Drop,
-    Apply,
 }
 
 impl OntologyProc {
-    /// The write op this procedure is — `None` for `get`, the one
-    /// partition between the read and the write path.
-    pub(crate) fn write(self) -> Option<OntologyWrite> {
-        match self {
-            OntologyProc::Get => None,
-            OntologyProc::Set => Some(OntologyWrite::Set),
-            OntologyProc::Drop => Some(OntologyWrite::Drop),
-            OntologyProc::Apply => Some(OntologyWrite::Apply),
-        }
-    }
-
     /// Every dispatch arm, in this enum's order (`get`, `set`, `drop`,
     /// `apply`) — deliberately not the registry table's `set`, `get`,
     /// `drop`, `apply` order — the one name list `try_from` matches (each
@@ -130,14 +114,14 @@ impl TryFrom<&str> for OntologyProc {
     }
 }
 
-/// Execute one `db.ontology.*` write call over the input rows: the void
+/// Execute one `db.ontology.*` store-op call over the input rows: the void
 /// write op runs once per input row and passes the rows through
 /// unchanged; the void-optional pad's own row is answered as data — the
-/// clause arm completes it. The write vocabulary is narrowed here (the
-/// read variant answers its composition source through the resolution).
-/// The resolution site (`resolve_call`) classified the name once and ran
-/// the runtime contract over the classification's own signature; nothing
-/// is re-checked here.
+/// clause arm completes it. The store-op vocabulary is narrowed here (the
+/// row-producing arms answer their composition sources through the
+/// resolution). The resolution site (`resolve_call`) classified the name
+/// once and ran the runtime contract over the classification's own
+/// signature; nothing is re-checked here.
 pub(crate) fn exec_ontology_write_call(
     ctx: ExecCtx<'_>,
     rows: Vec<Row>,
@@ -159,9 +143,9 @@ pub(crate) fn exec_ontology_write_call(
     Ok((rows, pad))
 }
 
-/// One void write op for one input row, over the narrowed write
-/// vocabulary — the read variant is not representable here. The name
-/// renders to text only on the error branches, never per row.
+/// One void store op for one input row, over the narrowed store-op
+/// vocabulary. The name renders to text only on the error branches, never
+/// per row.
 fn exec_ontology_write(
     ctx: ExecCtx<'_>,
     row: &Row,
@@ -172,77 +156,165 @@ fn exec_ontology_write(
     let graph = ctx.graph;
     if !graph.has_write_overlay() {
         // Unreachable by construction: the facade routes write-procedure
-        // statements to the write path and rejects set/drop in explicit
-        // transactions. Fail closed rather than panic on the read-only
-        // view.
+        // statements to the write path. Fail closed rather than panic on
+        // the read-only view.
         return name.with_str(|name| {
             Err(Error::internal(format!(
                 "{name} executed on a read-only graph view"
             )))
         });
     }
-    match write {
-        OntologyWrite::Set => {
-            let document = super::contract::string_arg(ctx, row, source, 0, "ontology", name)?;
-            // ADR-0227 §4/§6/§7: validate the document against the pinned
-            // schema — before anything is committed. (ADR-0229 §3: only the
-            // derived-graph build check is gone with the derived graph; the
-            // 16 MiB ADR-0120 §3 envelope is `RedoOp::validate_ids`, checked
-            // by the commit preflight and replay paths.)
-            validate_document(&document)?;
-            graph.push_catalog_redo(RedoOp::OntologySet {
-                database: ONTOLOGY_DATABASE.to_string(),
-                spec: document,
-            });
-            Ok(())
-        }
-        OntologyWrite::Drop => {
-            graph.push_catalog_redo(RedoOp::OntologyDrop {
-                database: ONTOLOGY_DATABASE.to_string(),
-            });
-            Ok(())
-        }
-        OntologyWrite::Apply => exec_ontology_apply(graph, graph.ontology_document()),
+    // Normalize first: `drop` is the clear, and `set`'s `null`/empty
+    // argument is the same clear (ADR-0667) — the "null clears" rule is
+    // a fact of the one pending-document decision, not of a store-op
+    // arm. A non-empty argument is canonicalized through the crate
+    // codec here, before the redo, so an invalid document fails the
+    // statement before any commit (the 16 MiB ADR-0120 §3 envelope is
+    // `RedoOp::validate_ids`, checked by the commit preflight and
+    // replay paths).
+    let pending = match write {
+        OntologyWrite::Drop => None,
+        OntologyWrite::Set => set_argument(ctx, row, source, name)?
+            .map(|document| canonicalize_argument(&document))
+            .transpose()?,
+    };
+    // One construction of each redo: the set with a document, the clear
+    // every cleared path pushes.
+    match pending {
+        Some(spec) => graph.push_catalog_redo(RedoOp::OntologySet {
+            database: ONTOLOGY_DATABASE.to_string(),
+            spec,
+        }),
+        None => graph.push_catalog_redo(RedoOp::OntologyDrop {
+            database: ONTOLOGY_DATABASE.to_string(),
+        }),
+    }
+    Ok(())
+}
+
+/// The canonical storage form of `set`'s argument (ADR-0667): the crate
+/// codec's canonical JSON, each failure rendered as its user-facing
+/// envelope in the argument-error class.
+fn canonicalize_argument(document: &str) -> Result<String> {
+    relate_ontology::canonicalize_ontology_document(document.as_bytes())
+        .map_err(|err| Error::argument_error(err.to_string()))
+}
+
+/// `set`'s one argument (ADR-0667): a `null` or empty STRING is the clear
+/// (`None`), a non-empty STRING the document. The argument is required —
+/// absence is the required-argument rejection (the runtime arity contract
+/// already refused the explicit empty call, so absence here is the
+/// paren-less form), unlike `get`'s defaulted format, which is why this
+/// reads through the per-argument resolver instead of the optional reader.
+fn set_argument(
+    ctx: ExecCtx<'_>,
+    row: &Row,
+    source: &CallArgs,
+    name: &relate_names::SmallName,
+) -> Result<Option<String>> {
+    match super::contract::call_arg_value(&ctx, row, source, 0, "ontology")? {
+        None => name.with_str(|name| {
+            Err(Error::invalid_number_of_arguments(format!(
+                "{name} argument `ontology` is required"
+            )))
+        }),
+        // `null` and the empty document are the clear.
+        Some(Value::Null) => Ok(None),
+        Some(Value::String(document)) if document.is_empty() => Ok(None),
+        Some(Value::String(document)) => Ok(Some(document.to_string())),
+        Some(_) => name.with_str(|name| {
+            Err(Error::invalid_argument_type(format!(
+                "{name} argument `ontology` expects STRING"
+            )))
+        }),
     }
 }
 
-/// `db.ontology.apply` (ADR-0226 §2/§3): convert the stored document to
-/// the graph-type body, then run the shared `ALTER CURRENT GRAPH TYPE
-/// SET` pipeline with the validate-first scan (ADR-0226 §3) spliced in
-/// before the first catalog redo.
-fn exec_ontology_apply(graph: &ExecGraph<'_>, ontology_document: Option<&str>) -> Result<()> {
-    let document = ontology_document.ok_or_else(|| {
-        Error::semantic("OntologyNotFound: no ontology is set for database 'neo4j'")
-    })?;
+/// `db.ontology.apply`'s one result row (ADR-0667): the applied model's
+/// name else id, the delta the statement applied, and the converter's
+/// skip reports.
+struct ApplyOutcome {
+    ontology: Arc<str>,
+    created: usize,
+    dropped: usize,
+    skipped: Vec<String>,
+}
+
+/// `db.ontology.apply` (ADR-0226 §2/§3, revised by ADR-0667): read the
+/// effective document — the pending one when the calling transaction set
+/// or dropped it — parse and validate it through the stored-document
+/// codec, convert it to the graph-type body, and run the shared `ALTER
+/// CURRENT GRAPH TYPE SET` pipeline with the validate-first scan
+/// (ADR-0226 §3) spliced in before the first catalog redo. Answers the
+/// delta row's four cells.
+fn exec_ontology_apply(graph: &ExecGraph<'_>) -> Result<ApplyOutcome> {
+    let Some(document) = graph.effective_ontology_document() else {
+        return Err(Error::procedure_call(
+            "This database has no stored ontology.",
+        ));
+    };
     // ADR-0364 §4: `apply` is the one operation that must interpret the
-    // stored document into the typed model. The stored bytes were accepted
-    // by `set` at the time they were committed, but a document written by a
-    // pre-bump binary never passed today's gate — so a parse failure here
-    // is a loud semantic failure (the gate error names the supported URI),
-    // never an internal one, and `get` keeps returning the bytes unchanged.
-    let doc = relate_ontology::parse_ontology_document(document.as_bytes())
-        .map_err(|err| Error::semantic(err.to_string()))?;
-    let body = relate_ontology::to_graph_type_body(&doc)
-        .map_err(|err| Error::semantic(err.to_string()))?;
-    super::super::graph_type_schema::set_current_graph_type_validate_first(
+    // stored document into the typed model. The stored bytes were
+    // accepted by `set` at the time they were committed, but a document
+    // written by an older binary never passed today's gate — a parse or
+    // version failure is the undecodable-stored-document rejection, a
+    // validation failure the stored-document envelope, both loud
+    // procedure-call failures (ADR-0667), never internal ones.
+    let doc = parse_stored_ontology_document(document.as_bytes()).map_err(stored_document_error)?;
+    let mapping = relate_ontology::to_graph_type_body(&doc)
+        .map_err(|err| Error::procedure_call(err.to_string()))?;
+    let delta = super::super::graph_type_schema::set_current_graph_type_apply(
         graph,
         relate_parser::AlterGraphTypeVerb::Set,
-        &body,
-    )
+        &mapping.body,
+    )?;
+    Ok(ApplyOutcome {
+        ontology: doc.name().unwrap_or_else(|| doc.id()).into(),
+        created: delta.created,
+        dropped: delta.dropped,
+        skipped: mapping.skipped,
+    })
+}
+
+/// The `db.ontology` family's one rendering of a stored-document codec
+/// failure (ADR-0667): a document-shaped failure — the stored bytes did
+/// not decode as a document at all — is wrapped as an undecodable stored
+/// document; the validation envelope is already the stored-document
+/// wording, verbatim. `get`'s re-render and `apply`'s interpretation
+/// route their decode failures through this one path, so the class and
+/// the framing cannot drift between the family's two readers; the
+/// document-shaped classification itself is the ontology crate's own
+/// ([`OntologyError::is_document_shaped`], exhaustive over the
+/// variants).
+fn stored_document_error(err: OntologyError) -> Error {
+    if err.is_document_shaped() {
+        Error::procedure_call(format!(
+            "The stored ontology is not a valid ontology document: {err}"
+        ))
+    } else {
+        Error::procedure_call(err.to_string())
+    }
 }
 
 /// `db.ontology.get(format = "yaml") :: (ontology :: STRING)` (ADR-0227
-/// §3): the stored document unchanged when the requested format matches
-/// the stored one (strict-JSON sniff), else parsed and canonically
-/// re-serialized; `null` when no ontology is set. Answers its composition
-/// source — the one-per-row producer under the shared compose policy
-/// (YIELD defaulting with the typed star/default modes, aliasing, WHERE,
-/// OPTIONAL padding) — so the resolution carries it like every other
-/// row-producing call: a folding consumer parks it (ADR-0555), a plain
-/// projection materializes it with the ADR-0463 charge.
+/// §3, revised by ADR-0667): the effective document — the pending one when
+/// the calling transaction set or dropped it — re-rendered in the
+/// requested format through the same codec, `null` when no ontology is
+/// set. The document resolves once per clause execution — the overlay
+/// cannot change during a read clause's row production — and the
+/// one-per-row producer only re-renders it in each row's requested
+/// format. Answers its composition source — the one-per-row producer
+/// under the shared compose policy (YIELD defaulting with the typed
+/// star/default modes, aliasing, WHERE, OPTIONAL padding) — so the
+/// resolution carries it like every other row-producing call: a folding
+/// consumer parks it (ADR-0555), a plain projection materializes it with
+/// the ADR-0463 charge. The signature's declared return columns are the
+/// default yields and the produced cells' keys — the registry row is the
+/// one column table, exactly as the scan sources read it.
 pub(crate) fn ontology_get_source<'a>(
     ctx: ExecCtx<'a>,
     call: CallSpec<'a>,
+    signature: &'static crate::procedure_registry::ProcSignature,
 ) -> Result<ComposeSource<'a>> {
     let CallSpec {
         source,
@@ -251,127 +323,143 @@ pub(crate) fn ontology_get_source<'a>(
         optional,
         where_clause,
     } = call;
+    let columns: Vec<&'static str> = signature.returns.iter().map(|ret| ret.name).collect();
+    // The defaults handed to the composition's YIELD resolution; the
+    // one column the produced cells key on is bound below — 'static
+    // slices, pointer copies, never per-row work.
+    let defaults = columns.clone();
+    // The effective document resolves once per clause execution, never
+    // per produced row: the source constructs at this clause's own
+    // execution point — after the clauses before it ran — and nothing
+    // can push an ontology op between this clause's rows (a pending op
+    // comes from a write clause's redo, never from a read's row
+    // production), so every row of one clause answers the same
+    // document without copying the pending one per row.
+    let document = ctx.graph.effective_ontology_document();
+    // The one declared return column, bound once at construction: the
+    // registry signature's returns table is the row's one column — a
+    // static fact of the registry row, never a per-row runtime index.
+    let column = *columns
+        .first()
+        .expect("the get signature declares its one return column");
     Ok(ComposeSource::new(
-        &[ONTOLOGY_COLUMN],
+        &defaults,
         yield_items,
         optional,
         where_clause,
         move |input| {
-            let format = optional_format_arg(ctx, input, source, name)?;
-            let value = match ctx.graph.ontology_document() {
+            let format = format_arg(ctx, input, source, name)?;
+            let value = match &document {
                 None => Value::Null,
-                Some(document) => Value::String(render_document(document, format)?.into()),
+                // A stored document that no longer decodes fails through
+                // the family's one stored-document error path — the same
+                // class and framing `apply` fails with (ADR-0667), never
+                // an argument error blaming the format argument.
+                Some(document) => Value::String(
+                    render_ontology_document(document.as_bytes(), format)
+                        .map_err(stored_document_error)?
+                        .into(),
+                ),
             };
-            Ok(Produced::Rows(vec![BTreeMap::from([(
-                ONTOLOGY_COLUMN.to_string(),
-                value,
-            )])]))
+            let mut row = BTreeMap::new();
+            row.insert(column.to_string(), value);
+            Ok(Produced::Rows(vec![row]))
         },
     ))
 }
 
-fn optional_format_arg(
+/// `db.ontology.apply() :: (ontology :: STRING, constraintsCreated ::
+/// INTEGER, constraintsDropped :: INTEGER, skipped :: LIST<STRING>)`
+/// (ADR-0667): the row-producing write arm — the pipeline runs once per
+/// input row (a standalone call is one input row, so one row) and pushes
+/// its catalog redos into the statement's overlay exactly like the DDL it
+/// mirrors, then answers the delta row through the same compose policy as
+/// `get`, its columns read from the registry signature like every
+/// row-producing call's.
+pub(crate) fn ontology_apply_source<'a>(
+    ctx: ExecCtx<'a>,
+    call: CallSpec<'a>,
+    signature: &'static crate::procedure_registry::ProcSignature,
+) -> Result<ComposeSource<'a>> {
+    let CallSpec {
+        yield_items,
+        optional,
+        where_clause,
+        ..
+    } = call;
+    let columns: Vec<&'static str> = signature.returns.iter().map(|ret| ret.name).collect();
+    // The defaults handed to the composition's YIELD resolution; the
+    // same declared columns stay with the producer for the produced
+    // cells' keys (two 'static slices — pointer copies, never per-row
+    // work).
+    let defaults = columns.clone();
+    Ok(ComposeSource::new(
+        &defaults,
+        yield_items,
+        optional,
+        where_clause,
+        move |_input| {
+            let ApplyOutcome {
+                ontology,
+                created,
+                dropped,
+                skipped,
+            } = exec_ontology_apply(ctx.graph)?;
+            let cells = [
+                Value::String(ontology),
+                Value::Int(created as i64),
+                Value::Int(dropped as i64),
+                Value::List(
+                    skipped
+                        .iter()
+                        .map(|report| Value::String(report.as_str().into()))
+                        .collect::<Vec<_>>()
+                        .into(),
+                ),
+            ];
+            let row: BTreeMap<String, Value> = columns
+                .iter()
+                .zip(cells)
+                .map(|(column, cell)| (column.to_string(), cell))
+                .collect();
+            Ok(Produced::Rows(vec![row]))
+        },
+    ))
+}
+
+/// `get`'s format argument decode (ADR-0667): absent or `null` is `yaml`,
+/// the two names are case-insensitive, and any other value is the
+/// argument-error rejection naming the vocabulary — the one list
+/// [`DocumentFormat::ALL`] that `from_name` searches, so the message
+/// cannot drift from the decode's acceptance set.
+fn format_arg(
     ctx: ExecCtx<'_>,
     row: &Row,
     source: &CallArgs,
     name: &relate_names::SmallName,
 ) -> Result<DocumentFormat> {
-    // The one optional-STRING reader the CALL paths share (absent/null →
-    // None, the name rendered on the error branch alone); the ontology's
-    // own policy is only the format decode on top of it.
     match super::contract::optional_string_arg(ctx, row, source, 0, "format", name)? {
         None => Ok(DocumentFormat::Yaml),
-        Some(format) => DocumentFormat::from_name(format.as_ref()).ok_or_else(|| {
-            name.with_str(|name| {
-                Error::invalid_argument_value(format!(
-                    "unknown {name} format '{format}'; expected 'yaml' or 'json'"
+        Some(format) => {
+            let lowered = format.to_ascii_lowercase();
+            DocumentFormat::from_name(&lowered).ok_or_else(|| {
+                let valid = DocumentFormat::ALL
+                    .iter()
+                    .map(|known| format!("'{}'", known.as_str()))
+                    .collect::<Vec<_>>()
+                    .join(" and ");
+                Error::argument_error(format!(
+                    "Unknown ontology format '{format}'. Valid formats are {valid}."
                 ))
             })
-        }),
+        }
     }
-}
-
-/// The document in the requested format (ADR-0227 §3): byte-identical
-/// when the stored syntax matches (a strict JSON parse sniffs the stored
-/// format), else the canonical re-serialization with the document's key
-/// order preserved.
-fn render_document(document: &str, format: DocumentFormat) -> Result<Cow<'_, str>> {
-    if relate_ontology::detect_format(document.as_bytes()) == format {
-        // Identity: the stored bytes are returned with no copy — the one
-        // `Value::String` conversion happens at the call site.
-        return Ok(Cow::Borrowed(document));
-    }
-    // ADR-0364 §4: a cross-format `get` is syntax-only — parse the stored
-    // bytes into the value model and serialize canonically, with no version
-    // gate and no structural validator, so a pre-bump document still
-    // converts between JSON and YAML. A failure here is a corrupt stored
-    // record: the open path already screened the syntax.
-    let (value, _) = relate_ontology::parse_document_value(document.as_bytes())
-        .map_err(|err| Error::internal(format!("stored ontology document: {err}")))?;
-    Ok(match format {
-        DocumentFormat::Json => Cow::Owned(
-            relate_ontology::to_json_string(&value)
-                .map_err(|err| Error::internal(format!("stored ontology document: {err}")))?,
-        ),
-        DocumentFormat::Yaml => Cow::Owned(
-            relate_ontology::to_yaml_string(&value)
-                .map_err(|err| Error::internal(format!("stored ontology document: {err}")))?,
-        ),
-    })
-}
-
-/// Entry-point validation of `db.ontology.set`'s document (ADR-0227 §6/§7):
-/// parses against the pinned schema (the version gate's error names 1.1.0 as
-/// the highest supported version) and runs the structural validation. The
-/// typed error names the violated field. No derived-graph build check
-/// remains — no graph is derived from a set (ADR-0229 §3).
-fn validate_document(document: &str) -> Result<()> {
-    relate_ontology::parse_ontology_document(document.as_bytes())
-        .map_err(|err| Error::semantic(err.to_string()))?;
-    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use relate_names::SmallName;
-
-    /// ADR-0227 §3: the stored-format sniff and the canonical conversion.
-    #[test]
-    fn render_document_round_trips_and_converts() {
-        let json = "{\"schema\":\"https://neo4j.com/docs/ontology-graph-spec/1.1.0/schema.json\",\"id\":\"t\",\"version\":\"1\"}";
-        // Stored JSON, requested JSON: unchanged bytes.
-        assert_eq!(
-            render_document(json, DocumentFormat::Json).expect("stored JSON renders as JSON"),
-            json
-        );
-        // Stored JSON, requested YAML: canonical block-style conversion.
-        let yaml =
-            render_document(json, DocumentFormat::Yaml).expect("stored JSON converts to YAML");
-        assert!(yaml.contains("schema:"), "{yaml}");
-        assert!(yaml.contains("id: t"), "{yaml}");
-        // And the YAML converts back to the canonical JSON.
-        let back =
-            render_document(&yaml, DocumentFormat::Json).expect("the YAML converts back to JSON");
-        assert_eq!(back, json);
-        // Stored YAML, requested YAML: unchanged bytes (comments survive).
-        let commented = "# a comment\nschema: https://neo4j.com/docs/ontology-graph-spec/1.1.0/schema.json\nid: t\nversion: \"1\"\n";
-        assert_eq!(
-            render_document(commented, DocumentFormat::Yaml).expect("stored YAML renders as YAML"),
-            commented
-        );
-        // ADR-0364 §4: a pre-bump document still converts across formats —
-        // the conversion is syntax-only and runs neither the gate nor the
-        // structural validator.
-        let pre_bump = "{\"schema\":\"https://neo4j.com/ontology-graph-spec/1.0.0/schema.json\",\"id\":\"old\",\"version\":1}";
-        let converted = render_document(pre_bump, DocumentFormat::Yaml)
-            .expect("a pre-bump document converts across formats");
-        assert!(
-            converted.contains("https://neo4j.com/ontology-graph-spec/1.0.0/schema.json"),
-            "{converted}"
-        );
-        assert!(converted.contains("version: 1"), "{converted}");
-    }
 
     /// The dispatch vocabulary, spelled literally once in test: each arm is
     /// reachable from exactly its registered procedure name. (`Self::name`
@@ -390,22 +478,29 @@ mod tests {
             assert_eq!(OntologyProc::try_from(name), Ok(proc), "{name}");
             let signature = crate::procedure_registry::builtin_procedure_signature(name)
                 .unwrap_or_else(|| panic!("{name} must be registered"));
-            // The enum's read/write partition and the registry's `writes`
-            // flag are one fact — pinned both ways here so neither home
-            // can drift from the other.
+            // The enum's read/write partition and the registry's flags are
+            // one fact — pinned here so neither home can drift from the
+            // other. The row-producing `apply` writes without being a
+            // store op; the store ops are void; `get` reads.
             assert_eq!(
-                proc.write().is_some(),
-                signature.writes,
-                "{name}: the executor's read/write partition must match the registry's writes flag"
+                matches!(proc, OntologyProc::Set | OntologyProc::Drop),
+                signature.store_level,
+                "{name}: the store-op vocabulary must match the registry's store-level flag"
             );
-            // And the write arm's void-by-construction fact: every write
-            // signature declares no return columns, so the resolution's
-            // `yields_unit` for the write variant is the registry's own
-            // void fact, never a hardcoded constant unmoored from it.
             assert_eq!(
-                proc.write().is_some(),
+                !matches!(proc, OntologyProc::Get),
+                signature.writes,
+                "{name}: every arm but get writes"
+            );
+            assert_eq!(
+                matches!(proc, OntologyProc::Set | OntologyProc::Drop),
                 signature.is_void(),
-                "{name}: the write vocabulary must be exactly the void signatures"
+                "{name}: the store-op vocabulary must be exactly the void signatures"
+            );
+            assert_eq!(
+                proc == OntologyProc::Apply,
+                signature.writes && !signature.is_void(),
+                "{name}: apply is the one row-producing write"
             );
         }
         assert!(OntologyProc::try_from("db.ontology.nope").is_err());
@@ -438,6 +533,71 @@ mod tests {
                 signature.name
             );
         }
+    }
+
+    /// `get`'s format decode (ADR-0667): absent and null default to yaml,
+    /// the names decode case-insensitively, and an unknown value is the
+    /// exact argument-error text naming the two.
+    #[test]
+    fn format_arg_decodes_case_insensitively_and_rejects_unknown_values() {
+        let graph = crate::graph::Graph::default();
+        let view = ExecGraph::read(&graph);
+        let params = std::collections::BTreeMap::new();
+        let ctx = ExecCtx::new(&view, &params);
+        let row = Row::new();
+        let name = &SmallName::from_name("db.ontology.get");
+        for (given, expected) in [
+            (None, DocumentFormat::Yaml),
+            (Some("yaml"), DocumentFormat::Yaml),
+            (Some("YAML"), DocumentFormat::Yaml),
+            (Some("YamL"), DocumentFormat::Yaml),
+            (Some("json"), DocumentFormat::Json),
+            (Some("JSON"), DocumentFormat::Json),
+            (Some("Json"), DocumentFormat::Json),
+        ] {
+            let source = given
+                .map(|value| {
+                    relate_ir::CallArgs::Explicit(vec![relate_ir::Expr::String(value.to_string())])
+                })
+                .unwrap_or_else(|| relate_ir::CallArgs::Explicit(Vec::new()));
+            assert_eq!(
+                format_arg(ctx, &row, &source, name).unwrap_or_else(|e| panic!("{given:?}: {e}")),
+                expected
+            );
+        }
+        // A null argument is the default too.
+        assert_eq!(
+            format_arg(
+                ctx,
+                &row,
+                &CallArgs::Explicit(vec![relate_ir::Expr::Null]),
+                name
+            )
+            .expect("a null format argument defaults"),
+            DocumentFormat::Yaml
+        );
+        // An unknown value fails with the exact text.
+        let err = format_arg(
+            ctx,
+            &row,
+            &CallArgs::Explicit(vec![relate_ir::Expr::String("xml".to_string())]),
+            name,
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string()
+                .ends_with("Unknown ontology format 'xml'. Valid formats are 'json' and 'yaml'."),
+            "{err}"
+        );
+        // A non-string argument is a type error.
+        let err = format_arg(
+            ctx,
+            &row,
+            &CallArgs::Explicit(vec![relate_ir::Expr::Int(1)]),
+            name,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("InvalidArgumentType"), "{err}");
     }
 
     /// The generic path's passing-mode backstop covers the ontology divert
@@ -516,57 +676,6 @@ mod tests {
             text.contains("InvalidArgumentPassingMode")
                 && text.contains("cannot pass arguments implicitly"),
             "{text}"
-        );
-    }
-
-    #[test]
-    fn unknown_format_is_an_argument_error_naming_both() {
-        let graph = crate::graph::Graph::default();
-        let view = ExecGraph::read(&graph);
-        let params = std::collections::BTreeMap::new();
-        let ctx = ExecCtx::new(&view, &params);
-        let row = Row::new();
-        let err = optional_format_arg(
-            ctx,
-            &row,
-            &CallArgs::Explicit(vec![relate_ir::Expr::String("xml".to_string())]),
-            &SmallName::from_name("db.ontology.get"),
-        )
-        .unwrap_err();
-        let text = err.to_string();
-        assert!(
-            text.contains("unknown db.ontology.get format 'xml'; expected 'yaml' or 'json'"),
-            "{text}"
-        );
-        // A non-string argument is a type error.
-        let err = optional_format_arg(
-            ctx,
-            &row,
-            &CallArgs::Explicit(vec![relate_ir::Expr::Int(1)]),
-            &SmallName::from_name("db.ontology.get"),
-        )
-        .unwrap_err();
-        assert!(err.to_string().contains("InvalidArgumentType"), "{err}");
-        // Absent and null both default to yaml.
-        assert_eq!(
-            optional_format_arg(
-                ctx,
-                &row,
-                &CallArgs::Explicit(Vec::new()),
-                &SmallName::from_name("db.ontology.get")
-            )
-            .expect("an absent format argument defaults"),
-            DocumentFormat::Yaml
-        );
-        assert_eq!(
-            optional_format_arg(
-                ctx,
-                &row,
-                &CallArgs::Explicit(vec![relate_ir::Expr::Null]),
-                &SmallName::from_name("db.ontology.get"),
-            )
-            .expect("a null format argument defaults"),
-            DocumentFormat::Yaml
         );
     }
 }

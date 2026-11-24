@@ -16,6 +16,7 @@ REFERENCES:
   - "[[adr/0226-ontology-mappings]]"
   - "[[adr/0229-remove-system-ontologies-cypher-surface]]"
   - "[[adr/0364-ontology-spec-main-gate]]"
+  - "[[adr/0667-ontology-procedure-parity]]"
 ---
 
 # 0227. Ontology document format: JSON or YAML, stored verbatim
@@ -229,3 +230,6 @@ heavy-dependency decision ([ADR-0103](./0103-engine-surfaces-testing-layout.md))
   "extension payloads are never validated" for everything except
   `custom` objects. §2/§3 (verbatim store, format conversion) stand, and
   stored documents are never re-validated against either schema.
+- [ADR-0667](./0667-ontology-procedure-parity.md) supersedes §2/§3: the
+  stored document's form is revised, and the revised contract's specifics
+  live in the reference documentation, not in the ADR.

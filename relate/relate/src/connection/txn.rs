@@ -5,7 +5,7 @@
 //! consecutive eligible CREATE-only auto-commit statements sharing one WAL
 //! commit at the framed batch's end).
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -18,6 +18,7 @@ use relate_planner::LogicalPlan;
 use relate_storage::PayloadTally;
 
 use crate::commit::try_wal_commit;
+use crate::gate::MixClass;
 use crate::{CancelToken, Connection, Value};
 
 /// Why an open transaction exists (ADR-0642). The explicit `begin()`
@@ -72,10 +73,26 @@ pub(crate) struct OpenTxn {
     pub(super) pin_slot: usize,
     /// The store's ontology document captured at `BEGIN` (ADR-0121 §3):
     /// the document is store-level state, not graph-snapshot state, so the
-    /// transaction's consistent read of it is pinned here — `db.ontology.get`
-    /// and `db.ontology.apply` in this transaction see exactly this. A
-    /// shared handle (pointer clone), never a document-sized copy.
+    /// transaction's consistent read of it is pinned here — the committed
+    /// fallback `db.ontology.get` / `db.ontology.apply` in this
+    /// transaction read through the overlay's pending-op override
+    /// (ADR-0667). A shared handle (pointer clone), never a
+    /// document-sized copy.
     ontology_document: Option<Arc<str>>,
+    /// The explicit transaction's statement-history mixing class
+    /// (ADR-0667): the class of the successful statements it has run —
+    /// a read or a schema command is [`MixClass::None`] and records
+    /// nothing. One cell, not a flag per class: the mixing gate at
+    /// admission (`gates_classify_under_guard`) refuses a statement of
+    /// the other class, so the transaction's statements all carry one
+    /// class and the recorded value never changes once set. The gate
+    /// reads it; `settle_statement` records the successful statement's
+    /// class. The history is the explicit mode's business alone
+    /// (ADR-0667's rule is the explicit-transaction one): a pipelined
+    /// write batch records nothing — [`Self::record_statement_class`]
+    /// returns without touching the cell — so a batch's statements
+    /// never consult, and never trip, a mixing history.
+    mix_class: Cell<MixClass>,
     /// The running tally of the transaction's prospective commit record
     /// (LABS-858). An explicit transaction commits as one WAL record, so
     /// its size is bounded by the store's resolved payload cap (ADR-0650,
@@ -102,6 +119,31 @@ pub(crate) struct OpenTxn {
 }
 
 impl OpenTxn {
+    /// The mixing class a successful statement of this transaction
+    /// performed (ADR-0667) — the history half of the mixing gate.
+    pub(crate) fn mix_class_performed(&self) -> MixClass {
+        self.mix_class.get()
+    }
+
+    /// Record a successful statement's transaction-mixing class into the
+    /// history (ADR-0667): the class comes from the admission's
+    /// `ResultStamp`, and a failed statement never reaches here (the
+    /// transaction is failed and admits nothing further). `None` records
+    /// nothing — a read or schema command leaves the history alone — and
+    /// the mixing gate has already refused the other class, so the
+    /// recorded value never changes once set.
+    /// ADR-0667's mixing history is the explicit transaction's rule: a
+    /// pipelined write batch shares this `OpenTxn` but keeps no history —
+    /// the cell stays [`MixClass::None`] for its whole life, so the
+    /// admission gate's mixing arm never refuses a batch statement.
+    pub(crate) fn record_statement_class(&self, class: MixClass) {
+        if self.mode.is_batch() {
+            return;
+        }
+        if !matches!(class, MixClass::None) {
+            self.mix_class.set(class);
+        }
+    }
     /// Refuse the statement that takes the transaction's prospective commit
     /// record over `payload_cap` (the store's resolved cap, ADR-0650), with
     /// the same refusal the commit would have produced (ADR-0494). Each op
@@ -201,12 +243,15 @@ impl OpenTxn {
 
     /// The statement epilogue: a failure hands over to
     /// [`Self::abort_statement`]; a success commits the statement's work
-    /// into the batch (its captured pre-state is simply dropped).
-    fn settle_statement(&self, result: Result<ExecResult>) -> Result<ExecResult> {
+    /// into the batch (its captured pre-state is simply dropped) and —
+    /// for an explicit transaction — joins the mixing history
+    /// (ADR-0667). The one place the success outcome is discriminated.
+    fn settle_statement(&self, result: Result<ExecResult>, class: MixClass) -> Result<ExecResult> {
         if result.is_err() {
             self.abort_statement();
         } else {
             *self.in_flight.borrow_mut() = InFlight::Idle;
+            self.record_statement_class(class);
         }
         result
     }
@@ -260,6 +305,10 @@ pub(super) struct TxnRun<'a> {
     pub(super) txn: &'a OpenTxn,
     pub(super) target: &'a crate::engines::LiveQuery,
     pub(super) schema: &'a SchemaSnapshot,
+    /// The statement's admission-derived mixing class (ADR-0667) —
+    /// the fact `settle_statement` records into the explicit
+    /// transaction's history after the statement succeeds.
+    pub(super) mix_class: MixClass,
 
     /// The statement's PROFILE sink (ADR-0344 phase 2) — the same fact
     /// `DispatchCtx` holds for the dispatch epilogue, already coerced to
@@ -299,6 +348,7 @@ impl Connection {
             failure: RefCell::new(None),
             pin_slot,
             ontology_document: self.inner.ontology.get(),
+            mix_class: Cell::new(MixClass::None),
             cap_tally: RefCell::new(PayloadTally::default()),
             clock: TransactionClock::begin(),
             in_flight: RefCell::new(InFlight::Idle),
@@ -559,8 +609,10 @@ impl Connection {
             // ADR-0229 §1. `Connection::statement_view` owns that choice
             // for this path and the notification derivation alike.
             // ADR-0121 §3: the begin-time ontology-document capture is
-            // pinned on the view — the transaction reads it consistently
-            // with its pinned snapshots.
+            // pinned on the view as the committed fallback — the
+            // ontology readers override it with the overlay's pending
+            // op (read-own-writes, ADR-0667), so a `set` or `drop` this
+            // transaction pushed is what they serve.
             let view = Self::statement_view(run.target, Some(&txn.scratch))
                 .with_schema(run.schema)
                 .with_cancel(Some(token))
@@ -592,7 +644,7 @@ impl Connection {
             txn.check_commit_cap(self.inner.resolved.wal_payload_limit)
                 .map(|()| r)
         });
-        txn.settle_statement(checked)
+        txn.settle_statement(checked, run.mix_class)
     }
 }
 

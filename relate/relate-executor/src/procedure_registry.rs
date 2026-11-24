@@ -139,6 +139,17 @@ impl ProcSignature {
         sig
     }
 
+    /// A listed procedure whose mode is `"SCHEMA"`. The [`Self::writes`]
+    /// flag is a separate fact, as on [`Self::write`]: a schema-mode
+    /// procedure that mutates the store still routes its statements to the
+    /// write path through `writes`, while the mode itself is only the
+    /// catalog rendering.
+    pub(crate) const fn schema(name: &'static str) -> Self {
+        let mut sig = Self::read(name);
+        sig.mode = "SCHEMA";
+        sig
+    }
+
     /// The row producer this signature's rows come from.
     pub(crate) const fn rows(mut self, rows: RowProducer) -> Self {
         self.rows = Some(rows);
@@ -332,8 +343,8 @@ pub(crate) fn matches_normalized_type(v: &Value, ty: &str) -> bool {
 
 /// Whether `name` names one of the `db.ontology.*` procedures (ADR-0121 as
 /// amended by ADR-0227). Derived from the one table so the facade's
-/// compile-time gates (implicit-only, no-mixed-writes, target namespace)
-/// and the executor's `CALL` dispatch cannot drift apart.
+/// compile-time gates (no-mixed-writes, transaction-mixing, target
+/// namespace) and the executor's `CALL` dispatch cannot drift apart.
 pub fn is_ontology_procedure(name: &str) -> bool {
     builtin_procedure_signature(name)
         .is_some_and(|signature| signature.name.starts_with("db.ontology."))
@@ -466,8 +477,8 @@ mod tests {
         assert_eq!(create_label.required_args(), 1);
     }
 
-    /// ADR-0121/ADR-0227 (CIP-287): the four ontology procedures — no
-    /// database argument, `get` with the `"yaml"` default on `format`.
+    /// ADR-0121/ADR-0227: the four ontology procedures — no database
+    /// argument, `get` with the `"yaml"` default on `format`.
     #[test]
     fn is_ontology_procedure_matches_exactly_the_four() {
         for name in [
@@ -506,10 +517,10 @@ mod tests {
     }
 
     #[test]
-    fn ontology_procedures_follow_cip287() {
+    fn ontology_procedures_follow_the_revised_contract() {
         let set = builtin_procedure_signature("db.ontology.set").unwrap();
-        assert!(set.executable && set.listed && set.writes);
-        assert_eq!(set.mode, "WRITE");
+        assert!(set.executable && set.listed && set.writes && set.store_level);
+        assert_eq!(set.mode, "SCHEMA");
         assert_eq!(
             set.args
                 .iter()
@@ -520,7 +531,7 @@ mod tests {
         assert!(set.returns.is_empty());
 
         let get = builtin_procedure_signature("db.ontology.get").unwrap();
-        assert!(get.executable && get.listed && !get.writes);
+        assert!(get.executable && get.listed && !get.writes && !get.store_level);
         assert_eq!(get.mode, "READ");
         assert_eq!(get.args.len(), 1);
         assert_eq!(get.args[0].name, "format");
@@ -534,15 +545,31 @@ mod tests {
             [("ontology", "STRING")]
         );
 
-        for (name, mode) in [
-            ("db.ontology.drop", "WRITE"),
-            ("db.ontology.apply", "WRITE"),
-        ] {
-            let sig = builtin_procedure_signature(name).unwrap();
-            assert!(sig.executable && sig.listed && sig.writes, "{name}");
-            assert_eq!(sig.mode, mode, "{name}");
-            assert!(sig.args.is_empty() && sig.returns.is_empty(), "{name}");
-        }
+        let drop = builtin_procedure_signature("db.ontology.drop").unwrap();
+        assert!(drop.executable && drop.listed && drop.writes && drop.store_level);
+        assert_eq!(drop.mode, "SCHEMA");
+        assert!(drop.args.is_empty() && drop.returns.is_empty());
+
+        // The one row-producing write of the family (ADR-0667): `apply`
+        // writes and answers its delta row, so it is neither void nor a
+        // store op.
+        let apply = builtin_procedure_signature("db.ontology.apply").unwrap();
+        assert!(apply.executable && apply.listed && apply.writes && !apply.store_level);
+        assert_eq!(apply.mode, "SCHEMA");
+        assert!(apply.args.is_empty());
+        assert_eq!(
+            apply
+                .returns
+                .iter()
+                .map(|r| (r.name, r.type_str))
+                .collect::<Vec<_>>(),
+            [
+                ("ontology", "STRING"),
+                ("constraintsCreated", "INTEGER"),
+                ("constraintsDropped", "INTEGER"),
+                ("skipped", "LIST<STRING>"),
+            ]
+        );
     }
 
     #[test]

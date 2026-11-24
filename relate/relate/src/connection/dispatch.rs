@@ -759,6 +759,7 @@ impl Connection {
                     txn,
                     target,
                     schema: &schema,
+                    mix_class: ctx.stamp.mix_class,
                     profile_metrics: ctx.profile_metrics,
                 },
                 logical,

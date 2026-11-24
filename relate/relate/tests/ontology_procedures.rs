@@ -1,9 +1,10 @@
-//! ADR-0121 as amended by ADR-0227 (CIP-287) and ADR-0364 (main's
-//! document shape): the `db.ontology.set` /
-//! `get` / `drop` / `apply` procedures, end to end through the facade —
-//! signatures and `SHOW PROCEDURES` listing, validation, format
-//! conversion, transaction and namespace rules, and `apply`'s
-//! validate-first data check (ADR-0226 §3).
+//! ADR-0121 as amended by ADR-0227 and revised by ADR-0667: the
+//! `db.ontology.set` / `get` / `drop` /
+//! `apply` procedures, end to end through the facade — signatures and
+//! `SHOW PROCEDURES` listing, the codec envelopes, canonical storage and
+//! format rendering, the namespace rules, and `apply`'s delta row with
+//! ADR-0226 §3's validate-first data check. The transaction rules live
+//! in `ontology_transaction_rules.rs`.
 
 mod common;
 
@@ -15,29 +16,16 @@ use relate_ontology::PINNED_SCHEMA_URI as SCHEMA_URI;
 use relate_storage::{MemoryVfs, Vfs};
 
 use common::err_text;
-use common::ontology::{get_doc, set_doc};
+use common::ontology::{canonical, get_doc, set_doc, DOC_JSON, MOVIES};
 
 /// The one read of the current graph type's specification.
 const SHOW_SPEC: &str = "SHOW CURRENT GRAPH TYPE YIELD specification RETURN specification";
 
-/// A small valid document as canonical compact JSON (same shape as the
-/// YAML twin below — the cross-format conversion test depends on the two
-/// denoting the same document in the same key order).
-const DOC_JSON: &str = concat!(
-    "{\"schema\":\"https://neo4j.com/docs/ontology-graph-spec/1.1.0/schema.json\",",
-    "\"id\":\"twin\",\"version\":\"1\",\"name\":\"Twin\",",
-    "\"nodes\":{\"Person\":{\"label\":\"Person\",\"properties\":{",
-    "\"id\":{\"type\":\"STRING\",\"key\":true},",
-    "\"tags\":{\"type\":\"LIST<STRING>\"}}}},",
-    "\"relationships\":{\"KNOWS\":{\"type\":\"KNOWS\",",
-    "\"from\":{\"node\":\"Person\"},",
-    "\"to\":{\"node\":\"Person\",\"max_count\":5}}}}"
-);
-
-/// The same document in YAML, with a comment and free formatting — the
-/// verbatim-storage proof (ADR-0227 §2).
+/// A small valid document as freely formatted YAML — the twin of
+/// `DOC_JSON` (the two denote one document, and the codec's
+/// canonical form of either is byte-identical).
 const DOC_YAML: &str = "\
-# leading comment, kept verbatim
+# leading comment, dropped with the free formatting
 schema: https://neo4j.com/docs/ontology-graph-spec/1.1.0/schema.json
 id: twin
 version: \"1\"
@@ -61,81 +49,118 @@ relationships:
       max_count: 5
 ";
 
+/// A fresh database over a shared in-memory VFS, with the handle kept so
+/// the reopen legs can replay the same store through a second open.
 fn memory_db() -> (Arc<dyn Vfs>, Database) {
     let vfs: Arc<dyn Vfs> = Arc::new(MemoryVfs::new());
     let db = Database::open_vfs(Arc::clone(&vfs), Default::default()).unwrap();
     (vfs, db)
 }
 
-/// (1) set → get round-trips: stored bytes unchanged when the requested
-/// format matches the stored one (either syntax), canonical conversion
-/// otherwise; the document survives a reopen.
+/// `CALL db.ontology.set($ontology)` with an explicit `null` argument.
+fn set_null(conn: &mut relate::Connection) -> relate::Result<relate::QueryResult> {
+    conn.query_with_params(
+        "CALL db.ontology.set($ontology)",
+        BTreeMap::from([("ontology".to_string(), Value::Null)]),
+    )
+}
+
+/// (1) The codec's storage contract (ADR-0667): a JSON or YAML submission
+/// of one document converges to one canonical JSON — the `label`
+/// shorthand expanded, the property flags turned into constraint entries —
+/// `get` re-renders in the requested format (the names case-insensitive,
+/// `null` and absent both `yaml`), an unknown format is the exact
+/// argument-error text, and the canonical bytes survive a reopen.
 #[test]
-fn set_get_round_trip_yaml_and_json() {
+fn set_canonicalizes_and_get_renders_both_formats() {
     common::ontology::preview_ontology();
     let (vfs, db) = memory_db();
     let mut conn = db.connect().unwrap();
 
-    // YAML in: default get returns the identical bytes, comments included.
+    // The two syntaxes of one document canonicalize byte-identically.
+    let canonical_json = canonical(DOC_JSON);
+    assert_eq!(canonical_json, canonical(DOC_YAML));
+
+    // YAML in: the stored form is the canonical JSON, not the submitted
+    // bytes — the shorthand is expanded and the flags became constraints.
     set_doc(&mut conn, DOC_YAML).unwrap();
-    assert_eq!(
-        get_doc(
-            &mut conn,
-            "CALL db.ontology.get() YIELD ontology RETURN ontology"
-        ),
-        Value::String(DOC_YAML.into())
-    );
-    // Converted to JSON it equals the canonical JSON twin byte-for-byte.
     assert_eq!(
         get_doc(
             &mut conn,
             "CALL db.ontology.get('json') YIELD ontology RETURN ontology"
         ),
-        Value::String(DOC_JSON.into())
+        Value::String(canonical_json.clone().into())
     );
-    // An explicit 'yaml' request still returns the stored bytes.
+    assert!(
+        canonical_json.contains("\"labels\":{\"identifier\":\"Person\"}"),
+        "{canonical_json}"
+    );
+    assert!(canonical_json.contains("id_Person_key"), "{canonical_json}");
+    assert!(!canonical_json.contains("\"key\":true"), "{canonical_json}");
+
+    // The default get renders the canonical form as YAML (the block-style
+    // rendering carries the YAML document separator); the explicit
+    // spellings are case-insensitive, and `null` is the default too.
+    let yaml = get_doc(
+        &mut conn,
+        "CALL db.ontology.get() YIELD ontology RETURN ontology",
+    );
+    let Value::String(yaml) = &yaml else {
+        panic!("expected a string, got {yaml:?}")
+    };
+    let body = yaml.strip_prefix("---\n").unwrap_or(yaml);
+    assert!(body.starts_with("schema: "), "{yaml}");
+    assert!(yaml.contains("id: twin"), "{yaml}");
+    assert!(yaml.contains("id_Person_key"), "{yaml}");
+    for spelling in ["JSON", "Json", "jSoN"] {
+        assert_eq!(
+            get_doc(
+                &mut conn,
+                &format!("CALL db.ontology.get('{spelling}') YIELD ontology RETURN ontology")
+            ),
+            Value::String(canonical_json.clone().into()),
+            "{spelling}"
+        );
+    }
+    for spelling in ["YAML", "YamL", "yAmL"] {
+        assert_eq!(
+            get_doc(
+                &mut conn,
+                &format!("CALL db.ontology.get('{spelling}') YIELD ontology RETURN ontology")
+            ),
+            Value::String(yaml.clone()),
+            "{spelling}"
+        );
+    }
     assert_eq!(
         get_doc(
             &mut conn,
-            "CALL db.ontology.get('yaml') YIELD ontology RETURN ontology"
+            "CALL db.ontology.get(null) YIELD ontology RETURN ontology"
         ),
-        Value::String(DOC_YAML.into())
+        Value::String(yaml.clone()),
+        "a null format argument is the yaml default"
     );
 
-    // JSON in: get('json') returns the identical bytes, get() converts.
+    // JSON in: the same canonical bytes — the storage is deterministic
+    // across syntaxes and submissions.
     set_doc(&mut conn, DOC_JSON).unwrap();
     assert_eq!(
         get_doc(
             &mut conn,
             "CALL db.ontology.get('json') YIELD ontology RETURN ontology"
         ),
-        Value::String(DOC_JSON.into())
+        Value::String(canonical_json.clone().into())
     );
-    let yaml = get_doc(
-        &mut conn,
-        "CALL db.ontology.get() YIELD ontology RETURN ontology",
-    );
-    let Value::String(yaml) = yaml else {
-        panic!("expected a string, got {yaml:?}")
-    };
-    // The canonical YAML conversion (the stored document is JSON, the
-    // default format is YAML): block style, document order kept.
-    assert!(
-        yaml.contains("neo4j.com/docs/ontology-graph-spec/1.1.0/schema.json"),
-        "{yaml}"
-    );
-    assert!(yaml.contains("id: twin"), "{yaml}");
-    assert!(yaml.contains("key: true"), "{yaml}");
 
-    // An unknown format is a typed argument error naming the two.
+    // An unknown format is the exact argument error naming the two.
     let err = err_text(conn.query("CALL db.ontology.get('xml') YIELD ontology RETURN ontology"));
     assert!(
-        err.contains("unknown db.ontology.get format 'xml'; expected 'yaml' or 'json'"),
+        err.ends_with("Unknown ontology format 'xml'. Valid formats are 'json' and 'yaml'."),
         "{err}"
     );
 
-    // The document survives a reopen (WAL replay on the shared VFS; a
-    // graceful drop discards a non-durable store, ADR-0105, so leak it).
+    // The canonical bytes survive a reopen (WAL replay on the shared VFS;
+    // a graceful drop discards a non-durable store, ADR-0105, so leak it).
     drop(conn);
     db.leak_without_checkpoint();
     let db = Database::open_vfs(vfs, Default::default()).unwrap();
@@ -145,47 +170,86 @@ fn set_get_round_trip_yaml_and_json() {
             &mut conn,
             "CALL db.ontology.get('json') YIELD ontology RETURN ontology"
         ),
-        Value::String(DOC_JSON.into())
-    );
-    // The stored document is JSON: the default (YAML) get converts, and
-    // the same bytes survive the reopen unchanged under a matching get.
-    let yaml = get_doc(
-        &mut conn,
-        "CALL db.ontology.get() YIELD ontology RETURN ontology",
-    );
-    assert!(
-        matches!(&yaml, Value::String(y) if y.contains("id: twin")),
-        "{yaml:?}"
+        Value::String(canonical_json.into())
     );
 }
 
-/// (2) `set` validates before any commit: a schema violation names the
-/// field, a newer spec version names 1.1.0 as the highest supported, and
-/// an oversized document is refused — none of them touch the store.
+/// (1b) Nothing stored answers exactly one row with `null`, in every
+/// format spelling.
+#[test]
+fn get_answers_one_null_row_when_nothing_is_stored() {
+    common::ontology::preview_ontology();
+    let db = Database::open(":memory:").unwrap();
+    let mut conn = db.connect().unwrap();
+    for cypher in [
+        "CALL db.ontology.get() YIELD ontology RETURN ontology",
+        "CALL db.ontology.get('json') YIELD ontology RETURN ontology",
+        "CALL db.ontology.get('yaml') YIELD ontology RETURN ontology",
+    ] {
+        assert_eq!(get_doc(&mut conn, cypher), Value::Null, "{cypher}");
+    }
+}
+
+/// (2) `set` runs the codec before any commit (ADR-0667): each failure
+/// form surfaces its envelope in the argument-error class and leaves the
+/// stored document untouched — an unparsable document, an unsupported
+/// spec version, a schema-invalid document (with the issue list capped),
+/// and a document over the 16 MiB envelope.
 #[test]
 fn set_validates_before_committing() {
     common::ontology::preview_ontology();
     let db = Database::open(":memory:").unwrap();
     let mut conn = db.connect().unwrap();
     set_doc(&mut conn, DOC_JSON).unwrap();
+    let stored = canonical(DOC_JSON);
 
-    // A missing required field: the typed error names it.
+    // Unparsable as either syntax: the parse envelope.
+    let err = err_text(set_doc(&mut conn, "{ \"schema\": "));
+    assert!(
+        err.contains(
+            "The ontology document could not be parsed as a graph-spec JSON or YAML document."
+        ),
+        "{err}"
+    );
+    assert!(err.contains("JSON:"), "{err}");
+    assert!(err.contains("YAML:"), "{err}");
+    // A JSON document whose root is not an object parses and fails the
+    // structural validation instead.
+    let err = err_text(set_doc(&mut conn, "[1, 2, 3]"));
+    assert!(
+        err.contains("The ontology document failed validation."),
+        "{err}"
+    );
+    assert!(err.contains("the document root must be an object"), "{err}");
+
+    // A newer spec version: the version envelope, naming 1.1.0 as the
+    // highest supported.
     let err = err_text(set_doc(
         &mut conn,
-        &format!("{{\"schema\":\"{SCHEMA_URI}\",\"id\":\"x\"}}"),
+        "{\"schema\":\"https://neo4j.com/docs/ontology-graph-spec/9.9.9/schema.json\",\"id\":\"x\",\"version\":\"1\"}",
     ));
-    assert!(err.contains("missing required field 'version'"), "{err}");
-
-    // A newer spec version fails, naming 1.1.0 as the highest supported.
-    let err = err_text(set_doc(
-        &mut conn,
-        "{\"schema\":\"https://neo4j.com/docs/ontology-graph-spec/2.0.0/schema.json\",\"id\":\"x\",\"version\":\"1\"}",
-    ));
-    assert!(err.contains("Unsupported ontology spec version: 'https://neo4j.com/docs/ontology-graph-spec/2.0.0/schema.json'"), "{err}");
+    assert!(
+        err.contains("The ontology document uses an unsupported graph-spec version."),
+        "{err}"
+    );
+    assert!(err.contains("9.9.9"), "{err}");
     assert!(
         err.contains("supports up to Ontology Graph Spec 1.1.0"),
         "{err}"
     );
+
+    // A schema-invalid document: the validation envelope, the issue list
+    // capped at five with the ellipsis-and-count suffix.
+    let err = err_text(set_doc(&mut conn, &six_invalid_type_nodes()));
+    assert!(
+        err.contains("The ontology document failed validation."),
+        "{err}"
+    );
+    assert!(err.contains("invalid_enum_token"), "{err}");
+    assert!(err.contains("node0"), "{err}");
+    assert!(err.contains("node4"), "{err}");
+    assert!(err.contains("… and 1 more"), "{err}");
+    assert!(!err.contains("node5"), "{err}");
 
     // Over the 16 MiB envelope (ADR-0120 §3): refused before any commit.
     let huge = format!(
@@ -201,69 +265,64 @@ fn set_validates_before_committing() {
             &mut conn,
             "CALL db.ontology.get('json') YIELD ontology RETURN ontology"
         ),
-        Value::String(DOC_JSON.into())
+        Value::String(stored.into())
     );
 }
 
-/// (2b) The hard cutover at the procedure boundary (ADR-0364 §1): the old
-/// pinned URI fails at the gate, and a main-URI document carrying the old
-/// shape fails structural validation on its first old member.
+/// One document with six schema-invalid members — one per node, so the
+/// validation envelope's five-issue cap leaves one behind the suffix.
+fn six_invalid_type_nodes() -> String {
+    let nodes: Vec<String> = (0..6)
+        .map(|n| {
+            format!(
+                "\"node{n}\": {{\"label\": \"N{n}\", \"properties\": \
+                 {{\"p\": {{\"type\": \"STRIN{n}\"}}}}}}"
+            )
+        })
+        .collect();
+    format!(
+        "{{\"schema\":\"{SCHEMA_URI}\",\"id\":\"six\",\"version\":\"1\",\
+         \"nodes\":{{{}}}}}",
+        nodes.join(",")
+    )
+}
+
+/// (2b) Unknown members are dropped, not rejected (ADR-0667): a typo'd
+/// root member never reaches the store, and the canonical form the
+/// document's own members survive in is what `get` serves.
 #[test]
-fn set_rejects_pre_bump_documents() {
+fn set_drops_unknown_members() {
     common::ontology::preview_ontology();
     let db = Database::open(":memory:").unwrap();
     let mut conn = db.connect().unwrap();
-
-    // The old URI is a different dialect: the gate refuses it before
-    // structure is looked at.
-    let err = err_text(set_doc(
-        &mut conn,
-        "{\"schema\":\"https://neo4j.com/ontology-graph-spec/1.0.0/schema.json\",\
-         \"id\":\"x\",\"version\":\"1\"}",
-    ));
-    assert!(err.contains("Unsupported ontology spec version"), "{err}");
-    assert!(err.contains(SCHEMA_URI), "{err}");
-
-    // The new URI with an integer version: structural validation names the
-    // field.
-    let err = err_text(set_doc(
-        &mut conn,
-        &format!("{{\"schema\":\"{SCHEMA_URI}\",\"id\":\"x\",\"version\":1}}"),
-    ));
-    assert!(err.contains("/version"), "{err}");
-    assert!(err.contains("must be a string"), "{err}");
-
-    // The renamed property flag is an unknown member now.
-    let err = err_text(set_doc(
-        &mut conn,
-        &format!(
-            "{{\"schema\":\"{SCHEMA_URI}\",\"id\":\"x\",\"version\":\"1\",\
-             \"nodes\":{{\"N\":{{\"label\":\"N\",\"properties\":{{\"p\":{{\"mustExist\":true}}}}}}}}}}"
-        ),
-    ));
-    assert!(err.contains("mustExist"), "{err}");
-    assert!(err.contains("unknown field"), "{err}");
-
-    // None of the rejected sets touched the store.
-    assert_eq!(
-        get_doc(
-            &mut conn,
-            "CALL db.ontology.get() YIELD ontology RETURN ontology"
-        ),
-        Value::Null
+    let typo = format!(
+        "{{\"schema\":\"{SCHEMA_URI}\",\"id\":\"typo\",\"version\":\"1\",\
+         \"noods\":{{\"book\":{{\"label\":\"Book\"}}}}}}"
     );
+    set_doc(&mut conn, &typo).unwrap();
+    let stored = get_doc(
+        &mut conn,
+        "CALL db.ontology.get('json') YIELD ontology RETURN ontology",
+    );
+    let Value::String(stored) = &stored else {
+        panic!("expected a string")
+    };
+    assert!(stored.contains("\"id\":\"typo\""), "{stored}");
+    assert!(!stored.contains("noods"), "{stored}");
 }
 
-/// (3) `drop` removes the document, succeeds when none is set, and the
-/// empty state survives a reopen.
+/// (3) `set(null)`, `set('')` and `drop` all push the clear;
+/// a later `set` replaces whatever is stored (last-set-wins); `drop` is
+/// idempotent; and the empty state survives a reopen.
 #[test]
-fn drop_removes_the_document_and_is_idempotent() {
+fn set_null_and_empty_clear_and_replace() {
     common::ontology::preview_ontology();
     let (vfs, db) = memory_db();
     let mut conn = db.connect().unwrap();
 
-    // Drop with none set succeeds.
-    conn.query("CALL db.ontology.drop()").unwrap();
+    // A null argument clears: nothing is stored after it.
+    set_doc(&mut conn, DOC_JSON).unwrap();
+    set_null(&mut conn).unwrap();
     assert_eq!(
         get_doc(
             &mut conn,
@@ -272,7 +331,31 @@ fn drop_removes_the_document_and_is_idempotent() {
         Value::Null
     );
 
+    // The empty string clears too — the same redo the null argument and
+    // `drop` push.
     set_doc(&mut conn, DOC_JSON).unwrap();
+    set_doc(&mut conn, "").unwrap();
+    assert_eq!(
+        get_doc(
+            &mut conn,
+            "CALL db.ontology.get() YIELD ontology RETURN ontology"
+        ),
+        Value::Null
+    );
+
+    // Last set wins.
+    set_doc(&mut conn, DOC_JSON).unwrap();
+    set_doc(&mut conn, MOVIES).unwrap();
+    assert_eq!(
+        get_doc(
+            &mut conn,
+            "CALL db.ontology.get('json') YIELD ontology RETURN ontology"
+        ),
+        Value::String(canonical(MOVIES).into())
+    );
+
+    // Drop with none set succeeds, and drop is idempotent.
+    conn.query("CALL db.ontology.drop()").unwrap();
     conn.query("CALL db.ontology.drop()").unwrap();
     assert_eq!(
         get_doc(
@@ -295,206 +378,9 @@ fn drop_removes_the_document_and_is_idempotent() {
     );
 }
 
-/// (4) Transaction rules (ADR-0121 §3): set/drop are implicit-only with
-/// Neo4j's exact text; a statement calling them may not write anything
-/// else (42N03); `get` reads the calling transaction's captured document.
-#[test]
-fn transaction_rules() {
-    common::ontology::preview_ontology();
-    let db = Database::open(":memory:").unwrap();
-    let mut conn = db.connect().unwrap();
-
-    // set/drop in an explicit transaction: the exact implicit-only text.
-    conn.begin().unwrap();
-    let err = err_text(set_doc(&mut conn, DOC_JSON));
-    assert!(
-        err.contains(
-            "'db.ontology.set' can only be executed in an implicit transaction, \
-             but tried to execute in an explicit transaction."
-        ),
-        "{err}"
-    );
-    conn.rollback().unwrap();
-    conn.begin().unwrap();
-    let err = err_text(conn.query("CALL db.ontology.drop()"));
-    assert!(
-        err.contains(
-            "'db.ontology.drop' can only be executed in an implicit transaction, \
-             but tried to execute in an explicit transaction."
-        ),
-        "{err}"
-    );
-    conn.rollback().unwrap();
-
-    // A statement calling set may not write anything else (42N03).
-    let err = err_text(conn.query_with_params(
-        "CREATE (n) CALL db.ontology.set($ontology)",
-        BTreeMap::from([("ontology".to_string(), Value::String(DOC_JSON.into()))]),
-    ));
-    assert!(
-        err.contains("Writing to more than one database per transaction is not allowed."),
-        "{err}"
-    );
-    let err = err_text(conn.query("CREATE (n) CALL db.ontology.drop()"));
-    assert!(
-        err.contains("Writing to more than one database per transaction is not allowed."),
-        "{err}"
-    );
-    // The failed statements wrote nothing.
-    let result = conn.query("MATCH (n) RETURN count(n) AS c").unwrap();
-    assert_eq!(result.rows[0][0], Value::Int(0));
-    assert_eq!(
-        get_doc(
-            &mut conn,
-            "CALL db.ontology.get() YIELD ontology RETURN ontology"
-        ),
-        Value::Null
-    );
-
-    // get reads the calling transaction's captured document: a transaction
-    // that began before the set sees the pre-set state (none), and after
-    // commit sees the committed document (ADR-0121 §3, begin-time capture).
-    conn.begin().unwrap();
-    let mut writer = db.connect().unwrap();
-    set_doc(&mut writer, DOC_JSON).unwrap();
-    assert_eq!(
-        get_doc(
-            &mut conn,
-            "CALL db.ontology.get() YIELD ontology RETURN ontology"
-        ),
-        Value::Null,
-        "the open transaction keeps its begin-time view of the document"
-    );
-    conn.commit().unwrap();
-    assert_eq!(
-        get_doc(
-            &mut conn,
-            "CALL db.ontology.get('json') YIELD ontology RETURN ontology"
-        ),
-        Value::String(DOC_JSON.into())
-    );
-}
-
-/// (5) `apply`: fails when no ontology is set; fails naming the constraint
-/// when existing data violates the resulting graph type (ADR-0226 §3);
-/// applies the type on conforming data; runs in explicit transactions.
-#[test]
-fn apply_semantics() {
-    common::ontology::preview_ontology();
-    let db = Database::open(":memory:").unwrap();
-    let mut conn = db.connect().unwrap();
-
-    // No ontology set.
-    let err = err_text(conn.query("CALL db.ontology.apply()"));
-    assert!(
-        err.contains("no ontology is set for database 'neo4j'"),
-        "{err}"
-    );
-
-    // Violating data: a Person without the key property `id`.
-    conn.query("CREATE (:Person {name: 'noid'})").unwrap();
-    set_doc(&mut conn, DOC_JSON).unwrap();
-    let err = err_text(conn.query("CALL db.ontology.apply()"));
-    assert!(err.contains("ConstraintValidationFailed"), "{err}");
-    assert!(err.contains("constraint_63dbe7c8"), "{err}");
-    assert!(err.contains("4:rl-id:n0"), "{err}");
-    // The failed apply changed nothing: the graph type is still empty.
-    assert_eq!(
-        common::scalar_one(&mut conn, SHOW_SPEC),
-        Value::String("{}".into())
-    );
-
-    // Fix the data; apply now succeeds and sets the current graph type.
-    conn.query("MATCH (n:Person) SET n.id = 'p0'").unwrap();
-    conn.query("CALL db.ontology.apply()").unwrap();
-    let graph_type = common::scalar_one(&mut conn, SHOW_SPEC)
-        .as_string()
-        .unwrap()
-        .to_string();
-    assert!(graph_type.contains("Person"), "{graph_type}");
-    assert!(graph_type.contains("KNOWS"), "{graph_type}");
-    // And the derived key constraint now gates writes.
-    let err = err_text(conn.query("CREATE (:Person)"));
-    assert!(err.contains("ConstraintValidationFailed"), "{err}");
-
-    // apply inside an explicit transaction (ADR-0121 §3), then rollback
-    // leaves the committed graph type alone.
-    conn.query("CREATE (:Movie {title: 'm'})").unwrap();
-    conn.begin().unwrap();
-    conn.query("CALL db.ontology.apply()").unwrap();
-    conn.rollback().unwrap();
-    assert_eq!(
-        common::scalar_one(&mut conn, SHOW_SPEC)
-            .as_string()
-            .unwrap(),
-        graph_type.as_str(),
-        "rollback discards the re-applied graph type"
-    );
-    conn.begin().unwrap();
-    conn.query("CALL db.ontology.apply()").unwrap();
-    conn.commit().unwrap();
-    let result = conn
-        .query("SHOW CURRENT GRAPH TYPE YIELD specification RETURN specification")
-        .unwrap();
-    assert_eq!(result.rows[0][0].as_string().unwrap(), graph_type.as_str());
-}
-
-/// (5b) Main-valid documents the graph-type body cannot express are stored
-/// and readable, but `apply` fails loudly naming the construct — never a
-/// silent drop (ADR-0364 §3/§5.4).
-#[test]
-fn apply_rejects_main_valid_but_unconvertible_documents() {
-    common::ontology::preview_ontology();
-    let header = |id: &str| {
-        serde_json::json!({
-            "schema": SCHEMA_URI,
-            "id": id,
-            "version": "1",
-        })
-    };
-    let mut property_type = header("pt");
-    property_type["nodes"] = serde_json::json!({
-        "N": {
-            "label": "N",
-            "properties": {"p": {"type": "STRING"}},
-            "constraints": {
-                "c": {"type": "PROPERTY_TYPE", "properties": ["p"]},
-            },
-        },
-    });
-    let mut label_only = header("lo");
-    label_only["nodes"] = serde_json::json!({"N": {"label": "N"}});
-    label_only["relationships"] = serde_json::json!({
-        "R": {"type": "R", "from": {"label": "N"}, "to": {"node": "N"}},
-    });
-    let mut unsupported_scalar = header("f32");
-    unsupported_scalar["nodes"] =
-        serde_json::json!({"N": {"label": "N", "properties": {"p": {"type": "FLOAT32"}}}});
-    let property_type = property_type.to_string();
-    let label_only = label_only.to_string();
-    let unsupported_scalar = unsupported_scalar.to_string();
-    for (doc, needle) in [
-        (property_type, "PROPERTY_TYPE"),
-        (label_only, "no node"),
-        (unsupported_scalar, "FLOAT32"),
-    ] {
-        let db = Database::open(":memory:").unwrap();
-        let mut conn = db.connect().unwrap();
-        // `set` accepts every one of these: they are main-valid.
-        set_doc(&mut conn, &doc).unwrap();
-        let err = err_text(conn.query("CALL db.ontology.apply()"));
-        assert!(err.contains(needle), "{doc}: {err}");
-        // The failed apply changed nothing.
-        assert_eq!(
-            common::scalar_one(&mut conn, SHOW_SPEC),
-            Value::String("{}".into()),
-            "{doc}"
-        );
-    }
-}
-
-/// (6) `SHOW PROCEDURES` lists all four with their CIP-287 signatures and
-/// modes (ADR-0121 §7).
+/// (6) `SHOW PROCEDURES` lists all four with the revised signatures and
+/// modes (ADR-0121 §7, ADR-0667): the three writers render SCHEMA, `get`
+/// READ, and `apply`'s four result columns are the rendered signature.
 #[test]
 fn show_procedures_lists_the_ontology_procedures() {
     common::ontology::preview_ontology();
@@ -521,8 +407,13 @@ fn show_procedures_lists_the_ontology_procedures() {
     assert_eq!(
         rows,
         [
-            ("db.ontology.apply", "db.ontology.apply()", "WRITE"),
-            ("db.ontology.drop", "db.ontology.drop()", "WRITE"),
+            (
+                "db.ontology.apply",
+                "db.ontology.apply() :: (ontology :: STRING, constraintsCreated :: INTEGER, \
+                 constraintsDropped :: INTEGER, skipped :: LIST<STRING>)",
+                "SCHEMA"
+            ),
+            ("db.ontology.drop", "db.ontology.drop()", "SCHEMA"),
             (
                 "db.ontology.get",
                 "db.ontology.get(format = \"yaml\" :: STRING) :: (ontology :: STRING)",
@@ -531,7 +422,7 @@ fn show_procedures_lists_the_ontology_procedures() {
             (
                 "db.ontology.set",
                 "db.ontology.set(ontology :: STRING)",
-                "WRITE"
+                "SCHEMA"
             ),
         ]
     );
@@ -624,9 +515,7 @@ fn system_ontologies_is_not_queryable_after_set() {
     ] {
         let err = err_text(conn.query(cypher));
         assert!(
-            err.ends_with(
-                "This database is not queryable. Use the db.ontology.* procedures on the user database 'neo4j' instead."
-            ),
+            err.ends_with(common::ce_errors::NOT_QUERYABLE_SUFFIX),
             "{cypher}: {err}"
         );
     }
@@ -638,7 +527,7 @@ fn system_ontologies_is_not_queryable_after_set() {
             &mut conn,
             "CALL db.ontology.get('json') YIELD ontology RETURN ontology"
         ),
-        Value::String(DOC_JSON.into())
+        Value::String(canonical(DOC_JSON).into())
     );
     conn.query("CALL db.ontology.apply()").unwrap();
     let spec = common::scalar_one(&mut conn, SHOW_SPEC);

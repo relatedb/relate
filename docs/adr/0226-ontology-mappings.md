@@ -17,6 +17,7 @@ REFERENCES:
   - "[[adr/0229-remove-system-ontologies-cypher-surface]]"
   - "[[adr/0364-ontology-spec-main-gate]]"
   - "[[adr/0487-ontology-graph-spec-1-1-0-bump]]"
+  - "[[adr/0667-ontology-procedure-parity]]"
 SUPERSEDES:
   - "[[adr/0121-ontology-procedures]]"
 ---
@@ -274,10 +275,13 @@ that can see the data.
   display `name`s no longer exist; property `aliases` returns as a
  descriptive member. Everything the [ADR-0364](./0364-ontology-spec-main-gate.md) note above records
   otherwise stands.
+- [ADR-0667](./0667-ontology-procedure-parity.md) supersedes §2: the
+  descriptive-field treatment is revised, and the revised contract's
+  specifics live in the reference documentation, not in the ADR.
 - [ADR-0668](./0668-ontology-multi-pair-relationship-types-define-no-graph-type.md)
   resolves this ADR's "enforcement keys on the type alone" caveat:
-  entries sharing a `type` across endpoint pairs define no graph type
-  at all — the converter emits no spec for the type, so nothing
-  enforces and every relationship of it stays writable, and
-  `db.ontology.apply` accepts the document instead of refusing it as
-  duplicate identifying labels.
+  entries sharing a `type` across distinct resolved endpoint pairs
+  define no graph type at all — the converter emits no spec for the
+  type, so nothing enforces and every relationship of it stays
+  writable, and `db.ontology.apply` accepts the document instead of
+  refusing it as duplicate identifying labels.

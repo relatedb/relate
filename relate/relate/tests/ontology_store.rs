@@ -248,33 +248,26 @@ const PRE_BUMP_DOC: &str = concat!(
     "\"id\":{\"type\":\"STRING\",\"mustExist\":true}}}}}"
 );
 
-/// ADR-0364 §4: the gate and structural validation are `set`-time policy,
-/// not a property of stored documents. A store written by a pre-bump binary
-/// (seeded through a raw `OntologySet` WAL record rather than the public
-/// `set`, which refuses it) opens with only the syntax screen, `get`
-/// returns the bytes verbatim and converts them across formats, `apply`
-/// fails at the gate as a semantic error naming the supported URI, and
-/// `set` still rejects the same document.
+/// ADR-0364 §4 and ADR-0667: the gate and validation are set-time
+/// policy, not a property of stored documents. A store written by a
+/// pre-bump binary (seeded through a raw `OntologySet` WAL record rather
+/// than the public `set`, which refuses it) opens with only the syntax
+/// screen — and its readers fail their own gates: `get` at the codec's
+/// version gate (the stored document no longer decodes), `apply` at the
+/// same gate wrapped as an undecodable stored document, and `set` still
+/// rejects the document.
 #[test]
-fn pre_bump_stored_document_opens_reads_and_fails_at_apply() {
+fn pre_bump_stored_document_opens_and_fails_its_readers() {
     common::ontology::preview_ontology();
     let dir = tempfile::tempdir().unwrap();
     let uri = dir.path().join("db");
     seed_store(&uri, SnapshotCodecKind::Json);
 
     // Plant the pre-bump document as the next WAL commit: the seeded
-    // commits are lsn 1 (checkpointed) and lsn 2 (tailed). An ontology op
-    // is only ever written to an `MDBWAL02` segment (ADR-0120 §4).
-    {
-        let vfs = store_vfs(&uri);
-        let segment = active_segment(&*vfs);
-        let mut bytes = read_to_vec(&*vfs, &segment).unwrap();
-        bytes[..8].copy_from_slice(b"MDBWAL02");
-        bytes.extend_from_slice(&ontology_set_frame(3, 3, PRE_BUMP_DOC));
-        let mut file = vfs.open(&segment, VfsOpen::create_truncate()).unwrap();
-        file.write_all(&bytes).unwrap();
-        file.sync_all().unwrap();
-    }
+    // commits are lsn 1 (checkpointed) and lsn 2 (tailed), so the plant
+    // writes lsn 3 — and an ontology op is only ever written to an
+    // `MDBWAL02` segment (ADR-0120 §4), which the plant stamps.
+    plant_stored_document(&uri, PRE_BUMP_DOC);
 
     // The open path screens syntax only: the pre-bump document is expected
     // at rest and must not be refused.
@@ -285,71 +278,108 @@ fn pre_bump_stored_document_opens_reads_and_fails_at_apply() {
     );
     let mut conn = db.connect().unwrap();
 
-    // Stored as JSON: `get('json')` returns the stored bytes verbatim.
-    assert_eq!(
-        get_doc(
-            &mut conn,
-            "CALL db.ontology.get('json') YIELD ontology RETURN ontology"
-        ),
-        Value::String(PRE_BUMP_DOC.into())
-    );
-    // Cross-format `get` is syntax-only: the old shapes convert to YAML
-    // even though `set` would reject them.
-    let yaml = get_doc(
-        &mut conn,
-        "CALL db.ontology.get() YIELD ontology RETURN ontology",
-    );
-    let Value::String(yaml) = yaml else {
-        panic!("expected a string, got {yaml:?}")
-    };
+    // `get` runs the codec's parse and version gate: the old URI fails
+    // there, with the version envelope.
+    let err = err_text(conn.query("CALL db.ontology.get() YIELD ontology RETURN ontology"));
     assert!(
-        yaml.contains("https://neo4j.com/ontology-graph-spec/1.0.0/schema.json"),
-        "{yaml}"
-    );
-    assert!(yaml.contains("version: 1"), "{yaml}");
-    assert!(yaml.contains("mustExist: true"), "{yaml}");
-
-    // `apply` must interpret the document, so the gate rejects it — as a
-    // semantic error naming the old URI and the supported one, not an
-    // `internal error`.
-    let err = err_text(conn.query("CALL db.ontology.apply()"));
-    assert!(
-        err.contains(
-            "semantic error: Unsupported ontology spec version: \
-             'https://neo4j.com/ontology-graph-spec/1.0.0/schema.json'"
-        ),
+        err.contains("The ontology document uses an unsupported graph-spec version."),
         "{err}"
     );
     assert!(
-        err.contains("https://neo4j.com/docs/ontology-graph-spec/1.1.0/schema.json"),
+        err.contains("https://neo4j.com/ontology-graph-spec/1.0.0/schema.json"),
+        "{err}"
+    );
+
+    // `apply` must interpret the document, so the same gate failure is
+    // wrapped as an undecodable stored document — a procedure-call
+    // failure, not an `internal error`.
+    let err = err_text(conn.query("CALL db.ontology.apply()"));
+    assert!(
+        err.contains("The stored ontology is not a valid ontology document:"),
+        "{err}"
+    );
+    assert!(
+        err.contains("The ontology document uses an unsupported graph-spec version."),
         "{err}"
     );
     assert!(!err.contains("internal error"), "{err}");
-    // The failed apply changed nothing, and `get` keeps the bytes.
+    // The failed apply changed nothing.
     let result = conn
         .query("SHOW CURRENT GRAPH TYPE YIELD specification RETURN specification")
         .unwrap();
     assert_eq!(result.rows[0][0], Value::String("{}".into()));
-    assert_eq!(
-        get_doc(
-            &mut conn,
-            "CALL db.ontology.get('json') YIELD ontology RETURN ontology"
-        ),
-        Value::String(PRE_BUMP_DOC.into())
-    );
 
     // `set` still gates the same document: the hard cutover has no
     // migration and no alias, and the stored bytes are untouched.
     let err = err_text(set_doc(&mut conn, PRE_BUMP_DOC));
     assert!(
-        err.contains(
-            "Unsupported ontology spec version: \
-             'https://neo4j.com/ontology-graph-spec/1.0.0/schema.json'"
-        ),
+        err.contains("The ontology document uses an unsupported graph-spec version."),
+        "{err}"
+    );
+    assert!(
+        err.contains("https://neo4j.com/ontology-graph-spec/1.0.0/schema.json"),
         "{err}"
     );
     assert_eq!(
         db.ontology_document().unwrap().as_deref(),
         Some(PRE_BUMP_DOC)
     );
+}
+
+/// Plant `document` as the next WAL commit of a freshly seeded store, the
+/// one way a stored document bypasses every public writer's validation
+/// (the facade and the `set` procedure both gate what they store).
+fn plant_stored_document(uri: &std::path::Path, document: &str) {
+    {
+        let vfs = store_vfs(uri);
+        let segment = active_segment(&*vfs);
+        let mut bytes = read_to_vec(&*vfs, &segment).unwrap();
+        bytes[..8].copy_from_slice(b"MDBWAL02");
+        bytes.extend_from_slice(&ontology_set_frame(3, 3, document));
+        let mut file = vfs.open(&segment, VfsOpen::create_truncate()).unwrap();
+        file.write_all(&bytes).unwrap();
+        file.sync_all().unwrap();
+    }
+}
+
+/// ADR-0667: a stored document that parses but fails the structural
+/// validation fails `apply` with the stored-document envelope naming the
+/// issue — while `get`, which runs no structural validation, still
+/// renders it.
+#[test]
+fn invalid_stored_document_fails_apply_but_renders_in_get() {
+    common::ontology::preview_ontology();
+    let invalid = concat!(
+        "{\"schema\":\"https://neo4j.com/docs/ontology-graph-spec/1.1.0/schema.json\",",
+        "\"id\":\"invalid\",\"version\":1,",
+        "\"nodes\":{\"Person\":{\"label\":\"Person\",\"properties\":",
+        "{\"id\":{\"type\":\"STRING\",\"key\":true}}}}}"
+    );
+    let dir = tempfile::tempdir().unwrap();
+    let uri = dir.path().join("db");
+    seed_store(&uri, SnapshotCodecKind::Json);
+    plant_stored_document(&uri, invalid);
+
+    let db = Database::open(uri.to_str().unwrap()).expect("the syntax-screened store opens");
+    let mut conn = db.connect().unwrap();
+
+    // `get` runs only the parse and version gate: the document renders.
+    let document = get_doc(
+        &mut conn,
+        "CALL db.ontology.get('json') YIELD ontology RETURN ontology",
+    );
+    assert_eq!(document, Value::String(invalid.into()));
+
+    // `apply` validates the stored bytes and reports the issue.
+    let err = err_text(conn.query("CALL db.ontology.apply()"));
+    assert!(err.contains("The stored ontology is invalid:"), "{err}");
+    assert!(
+        err.contains("invalid_type: 'version' must be a string, found an integer (/version)"),
+        "{err}"
+    );
+    // The failed apply changed nothing.
+    let result = conn
+        .query("SHOW CURRENT GRAPH TYPE YIELD specification RETURN specification")
+        .unwrap();
+    assert_eq!(result.rows[0][0], Value::String("{}".into()));
 }

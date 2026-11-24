@@ -23,8 +23,10 @@ impl DocumentFormat {
         }
     }
 
-    /// Every format, the one list [`DocumentFormat::from_name`] searches.
-    const ALL: [DocumentFormat; 2] = [DocumentFormat::Json, DocumentFormat::Yaml];
+    /// Every format, the one list [`DocumentFormat::from_name`] searches —
+    /// and the one vocabulary a rejection message names the formats from,
+    /// so the message cannot drift from the decode's acceptance set.
+    pub const ALL: [DocumentFormat; 2] = [DocumentFormat::Json, DocumentFormat::Yaml];
 
     /// The inverse of [`DocumentFormat::as_str`]: the format a
     /// `db.ontology.get` format argument names, `None` for any other

@@ -193,6 +193,19 @@ impl RedoLog {
         })
     }
 
+    /// The last ontology op in the log, in commit order (ADR-0667): the
+    /// pending document state the ontology readers overlay on the
+    /// committed capture — the statement's or transaction's own last
+    /// `set`/`drop` outranks the capture, exactly as the commit pipeline's
+    /// last-op-wins rule. `None` when the log holds no ontology op. Read
+    /// in place: only the last op is classified, never the log rebuilt.
+    pub(super) fn last_ontology_op(&self) -> Option<crate::redo::OntologyOp<'_>> {
+        self.ops.iter().rev().find_map(|live| match live {
+            LiveRedo::Other(op) => op.ontology_op(),
+            LiveRedo::CreateNode { .. } => None,
+        })
+    }
+
     /// The ops at or after `from`, materialized. `None` when `from` is past
     /// the end — a broken cursor, never an empty read: the one caller (the
     /// commit-cap tally) refuses it, because reading it as nothing would

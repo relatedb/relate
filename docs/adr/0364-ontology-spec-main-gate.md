@@ -15,6 +15,7 @@ REFERENCES:
   - "[[adr/0228-ontology-list-property-types-closed]]"
   - "[[adr/0229-remove-system-ontologies-cypher-surface]]"
   - "[[adr/0487-ontology-graph-spec-1-1-0-bump]]"
+  - "[[adr/0667-ontology-procedure-parity]]"
 SUPERSEDES:
   - "[[adr/0227-ontology-document-format]]"
   - "[[adr/0228-ontology-list-property-types-closed]]"
@@ -405,3 +406,6 @@ the authored example already provides.
   `data_source_tables`/`data_source_mappings`. §5.1/§5.4's
   constraint-`label` rules and §6's example are superseded; the hard
   cutover, the set-time-only policy (§4) and the §3 rulings stand.
+- [ADR-0667](./0667-ontology-procedure-parity.md) supersedes §5.4: the
+  converter's failure rules are revised, and the revised contract's
+  specifics live in the reference documentation, not in the ADR.

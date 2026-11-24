@@ -39,19 +39,20 @@ const MAX_DOCUMENT_DEPTH: usize = 128;
 pub fn parse_document_value(bytes: &[u8]) -> Result<(Value, DocumentFormat), OntologyError> {
     let text = std::str::from_utf8(bytes)?;
     match detect_format(bytes) {
-        DocumentFormat::Json => {
-            // serde_json enforces its own 128-level recursion limit but
-            // reports it only as a message; screening the text first makes
-            // the failure typed by construction.
-            screen_json_depth(text)?;
-            let value = serde_json::from_str::<Value>(text).map_err(|e| OntologyError::Syntax {
-                syntax: DocumentFormat::Json,
-                message: e.to_string(),
-            })?;
-            Ok((value, DocumentFormat::Json))
-        }
-        DocumentFormat::Yaml => parse_yaml(text).map(|v| (v, DocumentFormat::Yaml)),
+        DocumentFormat::Json => parse_json_value(text).map(|v| (v, DocumentFormat::Json)),
+        DocumentFormat::Yaml => parse_yaml_value(text).map(|v| (v, DocumentFormat::Yaml)),
     }
+}
+
+/// The JSON parse attempt shared by the sniffed path and the
+/// canonicalize path's JSON-first parse: the typed depth screen, then
+/// the strict parse into the ordered value model.
+pub(crate) fn parse_json_value(text: &str) -> Result<Value, OntologyError> {
+    screen_json_depth(text)?;
+    serde_json::from_str::<Value>(text).map_err(|e| OntologyError::Syntax {
+        syntax: DocumentFormat::Json,
+        message: e.to_string(),
+    })
 }
 
 /// Pre-parse screen for the JSON path: one iterative pass over the text
@@ -178,14 +179,16 @@ fn anchors_and_aliases_not_supported() -> OntologyError {
     OntologyError::UnsupportedConstruct(Construct::AnchorsAndAliases)
 }
 
-/// Parse YAML 1.2 text into the ordered value model.
+/// Parse YAML 1.2 text into the ordered value model — the YAML parse
+/// attempt shared by the sniffed path ([`parse_document_value`]) and the
+/// canonicalize path's JSON-then-YAML fallback.
 ///
 /// The pre-parse screen ([`screen_yaml_events`]) runs first: saphyr's
 /// loader resolves aliases eagerly (by cloning anchored subtrees) and
 /// recurses per nesting level, so the screen rejects anchors and aliases
 /// — and over-deep nesting — before `load_from_str` can expand or
 /// recurse on them.
-fn parse_yaml(text: &str) -> Result<Value, OntologyError> {
+pub(crate) fn parse_yaml_value(text: &str) -> Result<Value, OntologyError> {
     screen_yaml_events(text)?;
     let docs = Yaml::load_from_str(text).map_err(|e| OntologyError::Syntax {
         syntax: DocumentFormat::Yaml,

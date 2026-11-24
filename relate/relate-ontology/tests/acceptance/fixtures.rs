@@ -92,7 +92,7 @@ fn vendored_example_document_validates() {
         ["acted-in", "label-only", "empty-targets", "produced"]
     );
     let acted_in = &doc.relationships()[0];
-    assert_eq!(acted_in.rel_type, "ACTED_IN");
+    assert_eq!(acted_in.rel_type.as_deref(), Some("ACTED_IN"));
     assert_eq!(acted_in.from.node.as_deref(), Some("person"));
     assert_eq!(acted_in.from.min_count, Some(0));
     assert_eq!(acted_in.to.count, None);

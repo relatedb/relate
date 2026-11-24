@@ -324,22 +324,26 @@ value is fabricated: `activeLockCount`, `allocatedDirectBytes`, `cpuTime`,
 SHOW TRANSACTIONS YIELD currentQueryStatus, parameters, elapsedTime
 ```
 
-### Ontology procedures (ADR-0121, ADR-0226, ADR-0227, ADR-0364, ADR-0378)
+### Ontology procedures (ADR-0121, ADR-0226, ADR-0227, ADR-0364, ADR-0378, ADR-0667)
 
-`db.ontology.set(ontology :: STRING)`, `db.ontology.get(format = "yaml" ::
-STRING) :: (ontology :: STRING)`, `db.ontology.drop()` and
-`db.ontology.apply()` manage the store's single ontology document, following
-Neo4j's CIP-287 surface: no database argument — each acts on the session or
-`USE`-target namespace, which must be `neo4j`; executed against
-`system_ontologies` (visible only under `RELATE_PREVIEW=ontology`,
-ADR-0593 — without the opt-in every route to the namespace fails as an
-unknown database before the procedure surface is reached) every procedure
-fails that namespace's not-queryable
-gate first, with `Error::Semantic` ending `SemanticError: This database is
-not queryable. Use the db.ontology.* procedures on the user database 'neo4j'
-instead.` (ADR-0229 §1/§2), and executed against `system` they fail with
-`Error::Semantic` ending `SemanticError: Ontologies can only be stored for
-the user database 'neo4j'.` The four procedures require
+`db.ontology.set`, `db.ontology.get`, `db.ontology.drop` and
+`db.ontology.apply` manage the store's single ontology document. Their
+contracts — signatures, arguments, result columns, error behavior, the
+stored document's form and the transaction rules — are revised
+(ADR-0667): `SHOW PROCEDURES` renders the
+live signatures and modes, and the
+[ontology procedures reference](../../reference/ontology-procedures.md)
+documents the framing the signatures do not cover. No database argument
+— each acts on the session or `USE`-target namespace, which must be
+`neo4j`; executed against `system_ontologies` (visible only under
+`RELATE_PREVIEW=ontology`, ADR-0593 — without the opt-in every route to
+the namespace fails as an unknown database before the procedure surface
+is reached) every procedure fails that namespace's not-queryable gate
+first, with `Error::Semantic` ending `SemanticError: This database is
+not queryable. Use the db.ontology.* procedures on the user database
+'neo4j' instead.` (ADR-0229 §1/§2), and executed against `system` they
+fail with `Error::Semantic` ending `SemanticError: Ontologies can only
+be stored for the user database 'neo4j'.` The four procedures require
 `RELATE_PREVIEW=ontology` (ADR-0378): `Database::open` resolves the
 comma-separated `RELATE_PREVIEW` list once (ADR-0371). With the feature
 off, every call fails with `Error::Semantic`:
@@ -348,49 +352,23 @@ off, every call fails with `Error::Semantic`:
 semantic error: SemanticError: preview feature 'ontology' is not enabled: set RELATE_PREVIEW=ontology
 ```
 
-`SHOW PROCEDURES` omits the four rows while the feature is off; with it on,
-the catalog lists them and every call runs unchanged. The gate governs
-callability only: a stored document opens, replays and checkpoints with the
-gate off and is served again after reopening with the opt-in. `set` accepts a JSON or
-YAML document, validates it against the published Ontology Graph Spec
-1.1.0 schema (ADR-0487, succeeding ADR-0364) before anything is committed
-(any `schema` URI other than
-`https://neo4j.com/docs/ontology-graph-spec/1.1.0/schema.json` fails ending
-`Unsupported ontology spec version: '<uri>'. This version of Relate
-supports up to Ontology Graph Spec 1.1.0
-('https://neo4j.com/docs/ontology-graph-spec/1.1.0/schema.json').`; a
-document over 16 MiB is refused), and stores the submitted bytes verbatim.
-The accepted shape is the published closed one: `version` is a string,
-property existence is `must_exist`, constraints are id-keyed maps of one
-closed shape with an uppercase `type`, `one_of` items are strings, and
-extensions are closed objects (see
-the [ontology procedures reference](../../reference/ontology-procedures.md)).
-A pre-bump document fails at the gate or on its first old-shape member;
-`get` never re-validates a stored document and returns it unchanged when the
-requested format (`"yaml"` default, `"json"`) matches the stored one and
-canonically converted otherwise, `null` when none is set; any other format
-value fails ending `InvalidArgumentValue:
-unknown db.ontology.get format '<value>'; expected 'yaml' or 'json'`. `drop`
-succeeds when none is set. `apply` converts the document to a CIP-176 graph
-type and applies it to `neo4j` with `ALTER CURRENT GRAPH TYPE SET` semantics.
-It is the one operation that interprets the stored document, so a pre-bump
-stored document fails there with the gate's semantic error ending
-`Unsupported ontology spec version: '<uri>'. …` (never an internal error)
-until it is replaced; `get` keeps returning its bytes unchanged. `apply`
-fails when no ontology is set (ending `OntologyNotFound: no ontology is set
-for database 'neo4j'.`), when a main-valid document cannot be expressed as a
-graph type (a named `OntologyError::Mapping`, ADR-0364 §3/§5), or when
-existing data violates the resulting graph
-type (a validate-first scan; the error names the constraint and the offending
-element's element id). `set`/`drop` run only in implicit transactions — in an
-explicit transaction they fail ending `'db.ontology.set' can only be executed
-in an implicit transaction, but tried to execute in an explicit transaction.`
-(resp. `drop`) — and a statement calling them may not write anything else
-(`SemanticError: Writing to more than one database per transaction is not
-allowed.`). `get` reads the calling transaction's captured document (the
-begin-time capture in an explicit transaction); `apply` may run in explicit
-transactions. There is no privilege check (ADR-0121 §4). See the
-[runnable ontology example](examples/ontology.md).
+`SHOW PROCEDURES` omits the four rows while the feature is off; with it
+on, the catalog lists them and every call runs. The gate governs
+callability only: a stored document opens, replays and checkpoints with
+the gate off and is served again after reopening with the opt-in. `set`
+accepts a JSON or YAML document in the published Ontology Graph Spec
+1.1.0 shape (ADR-0487, succeeding ADR-0364) — a `null` or empty argument
+clears the stored ontology — and validates it before anything is
+committed (the accepted document shape is in the
+[ontology procedures reference](../../reference/ontology-procedures.md));
+`get` returns the stored document in the requested format or `null`
+when none is set; `drop` succeeds when none is set; `apply` converts the
+document to a CIP-176 graph type and applies it to `neo4j` with `ALTER
+CURRENT GRAPH TYPE SET` semantics, failing when existing data violates
+it (a validate-first scan; the error names the constraint and the
+offending element's element id). There is no privilege check
+(ADR-0121 §4). See the [runnable ontology example](examples/ontology.md).
+
 
 ## `Value`
 

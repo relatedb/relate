@@ -7,8 +7,9 @@
 //!
 //! `ontology_store.rs` pins the same storage guarantees through the facade
 //! (`commit_ontology_set`/`commit_ontology_drop`); `ontology_procedures.rs`
-//! pins the procedure semantics (validation, formats, transactions,
-//! namespaces) on a single in-memory store. This file deliberately pins
+//! pins the procedure semantics (validation, formats, namespaces — the
+//! transaction rules in `ontology_transaction_rules.rs`) on a single
+//! in-memory store. This file deliberately pins
 //! only what neither covers: procedure-driven durability across the full
 //! store-kind × codec matrix, and procedure-driven format transitions.
 
@@ -19,15 +20,18 @@ use std::sync::Arc;
 use relate::{Database, Value};
 use relate_storage::{MemoryVfs, SnapshotCodecKind, Vfs};
 
+use common::ce_errors::NOT_QUERYABLE_SUFFIX;
 use common::checkpoint::{assert_checkpoint_format, ExpectedOntology};
 use common::err_text;
-use common::ontology::{get_doc, set_doc};
+use common::ontology::{canonical, get_doc, set_doc};
 use common::store::{magics, opts, segment_magics};
 
 /// The YAML matrix document (the twin-ontology shape, freely formatted —
-/// the byte-identity legs pin verbatim storage across reopens).
+/// the canonical-form legs pin the storage codec's determinism across
+/// reopens: whatever `get` served after the `set` is byte-identical after
+/// every reopen, because the store keeps the codec's canonical form).
 const DOC_YAML: &str = "\
-# matrix document, kept verbatim
+# matrix document, freely formatted
 schema: https://neo4j.com/docs/ontology-graph-spec/1.1.0/schema.json
 id: twin
 version: \"1\"
@@ -48,9 +52,10 @@ relationships:
       node: Person
 ";
 
-/// The Relate-authored main-shape example (pretty-printed JSON) —
-/// the JSON-in leg pins that `get('json')` hands these exact bytes back
-/// after a reopen.
+/// The Relate-authored main-shape example (pretty-printed JSON) — the
+/// JSON-in leg pins that the store keeps the codec's canonical form of
+/// it (compact, the shorthand expanded), served byte-identically after a
+/// reopen.
 const EXAMPLE_JSON: &str = include_str!("../../relate-ontology/schema/example.json");
 
 const GET_YAML: &str = "CALL db.ontology.get() YIELD ontology RETURN ontology";
@@ -75,35 +80,39 @@ fn assert_namespace_stays_not_queryable(conn: &mut relate::Connection) {
         "USE system_ontologies MATCH ()-[r]->() RETURN count(r) AS c",
     ] {
         let err = err_text(conn.query(query));
-        assert!(
-            err.ends_with(
-                "This database is not queryable. Use the db.ontology.* procedures on the user database 'neo4j' instead."
-            ),
-            "{query}: {err}"
-        );
+        assert!(err.ends_with(NOT_QUERYABLE_SUFFIX), "{query}: {err}");
     }
-    assert_eq!(
-        get_doc(conn, GET_YAML),
-        Value::String(DOC_YAML.into()),
-        "the procedures still reach the stored document"
+    let Value::String(document) = get_doc(conn, GET_YAML) else {
+        panic!("the procedures still reach the stored document")
+    };
+    assert!(
+        document.contains("id: twin"),
+        "the procedures still reach the stored document: {document}"
     );
 }
 
 /// One full matrix cell, driven entirely through the procedures:
 ///
-/// 1. YAML `set` → close → reopen: `get()` returns the identical bytes.
+/// 1. YAML `set` → close → reopen: `get()` serves the same bytes it
+///    served right after the `set` — the canonical rendering, stable
+///    across reopens.
 /// 2. `apply` on the reopened store → close → reopen: `get()` still
-///    returns the identical bytes, the applied graph type survives, and
-///    the `system_ontologies` namespace stays not queryable (ADR-0229).
+///    serves the same bytes, the applied graph type survives, and the
+///    `system_ontologies` namespace stays not queryable (ADR-0229).
 /// 3. `drop` → close → reopen: `get()` returns null.
 /// 4. JSON `set` (the vendored example) → close → reopen: `get('json')`
-///    returns the identical bytes and the default `get()` returns the
-///    canonical YAML conversion.
+///    serves the codec's canonical form of the pretty-printed original,
+///    and the default `get()` renders it as YAML.
 fn matrix_cell(reopen: &dyn Fn() -> Database) {
     let db = reopen();
     let mut conn = db.connect().unwrap();
     assert_eq!(get_doc(&mut conn, GET_YAML), Value::Null);
     set_doc(&mut conn, DOC_YAML).unwrap();
+    let stored_yaml = get_doc(&mut conn, GET_YAML);
+    let Value::String(stored_yaml) = &stored_yaml else {
+        panic!("expected the canonical YAML rendering, got {stored_yaml:?}")
+    };
+    assert!(stored_yaml.contains("id_Person_key"), "{stored_yaml}");
     drop(conn);
     close(db);
 
@@ -111,8 +120,8 @@ fn matrix_cell(reopen: &dyn Fn() -> Database) {
     let mut conn = db.connect().unwrap();
     assert_eq!(
         get_doc(&mut conn, GET_YAML),
-        Value::String(DOC_YAML.into()),
-        "the stored YAML bytes survive a close/reopen unchanged"
+        Value::String(stored_yaml.clone()),
+        "the canonical rendering is byte-identical after a close/reopen"
     );
     conn.query("CALL db.ontology.apply()").unwrap();
     drop(conn);
@@ -122,8 +131,8 @@ fn matrix_cell(reopen: &dyn Fn() -> Database) {
     let mut conn = db.connect().unwrap();
     assert_eq!(
         get_doc(&mut conn, GET_YAML),
-        Value::String(DOC_YAML.into()),
-        "the stored YAML bytes survive apply + close/reopen unchanged"
+        Value::String(stored_yaml.clone()),
+        "the canonical rendering survives apply + close/reopen unchanged"
     );
     assert_namespace_stays_not_queryable(&mut conn);
     conn.query("CALL db.ontology.drop()").unwrap();
@@ -143,10 +152,11 @@ fn matrix_cell(reopen: &dyn Fn() -> Database) {
 
     let db = reopen();
     let mut conn = db.connect().unwrap();
+    let canonical_json = canonical(EXAMPLE_JSON);
     assert_eq!(
         get_doc(&mut conn, GET_JSON),
-        Value::String(EXAMPLE_JSON.into()),
-        "JSON in + get('json') returns the stored bytes unchanged"
+        Value::String(canonical_json.into()),
+        "JSON in + get('json') serves the codec's canonical form"
     );
     let yaml = get_doc(&mut conn, GET_YAML);
     let Value::String(yaml) = yaml else {

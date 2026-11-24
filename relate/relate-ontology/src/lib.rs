@@ -1,7 +1,8 @@
 //! The ontology document crate: parsing, validation and serialization for
 //! Neo4j's published Ontology Graph Spec 1.1.0 document format (ADR-0487,
 //! which supersedes ADR-0364's main pin, which superseded ADR-0227's
-//! pinned draft shape).
+//! pinned draft shape), with the document codec and the graph-type
+//! converter revised by ADR-0667.
 //!
 //! `db.ontology.set` accepts a document in JSON or YAML 1.2. Both syntaxes
 //! are parsed into one ordered, JSON-equivalent value model ([`Value`]) —
@@ -27,12 +28,30 @@
 //! typed view: they are validated in place and carried only by the
 //! document's retained root [`Value`] tree (ADR-0364 §5.1).
 //!
+//! [`canonicalize_ontology_document`] is the storage codec of the
+//! revised contract
+//! (ADR-0667): a JSON-then-YAML parse, the same validation with unknown
+//! members dropped, and a canonical JSON output whose form is the
+//! validated model — shorthand expanded, flags turned into constraint
+//! entries, byte-identical for equivalent JSON and YAML submissions and a
+//! fixed point of itself. Its failures render the three user-facing
+//! envelopes: the both-parses-failed parse envelope, the
+//! unsupported-version envelope, and the capped validation envelope.
+//!
+//! Two stored-document readers share the codec's parse and version gate
+//! (ADR-0667): [`parse_stored_ontology_document`] validates the stored
+//! bytes with unknown members dropped and answers the typed model (every
+//! issue collected, rendered whole in the stored-document envelope), and
+//! [`render_ontology_document`] re-serializes the parsed value tree in the
+//! requested format with no structural validation.
+//!
 //! Of ADR-0226's mappings, only the ontology → graph-type converter ships
 //! (ADR-0229 §4): [`to_graph_type_body`] compiles a document into the
-//! CIP-176 graph-type body `db.ontology.apply` sets (the
+//! CIP-176 graph-type body `db.ontology.apply` sets together with the
+//! conversion's skip reports (ADR-0667) — the
 //! enforceable/descriptive split of ADR-0226 §2, re-based on main's
 //! shapes by ADR-0364 §5 and on the published 1.1.0 shapes by ADR-0487
-//! §3). The document → `system_ontologies` graph mapping
+//! §3. The document → `system_ontologies` graph mapping
 //! (ADR-0226 §1) is deleted — the namespace is listed but not queryable
 //! (ADR-0229), so no graph is derived from a stored document; it is
 //! revived from git history when Neo4j publishes its mapping.
@@ -52,10 +71,11 @@
 //! assert_eq!(doc.version(), "1");
 //! assert_eq!(doc.nodes()[0].identifying_label(), Some("Person"));
 //!
-//! let body = relate_ontology::to_graph_type_body(&doc).unwrap();
-//! assert_eq!(body.edge_types.len(), 1);
+//! let mapping = relate_ontology::to_graph_type_body(&doc).unwrap();
+//! assert_eq!(mapping.body.edge_types.len(), 1);
 //! ```
 
+mod canonical;
 mod error;
 #[cfg(test)]
 mod fixtures;
@@ -69,9 +89,12 @@ mod tests;
 mod validate;
 mod value;
 
+pub use canonical::{
+    canonicalize_ontology_document, parse_stored_ontology_document, render_ontology_document,
+};
 pub use error::{Construct, OntologyError, MAX_SUPPORTED_SPEC_VERSION, PINNED_SCHEMA_URI};
 pub use format::DocumentFormat;
-pub use graph_type::to_graph_type_body;
+pub use graph_type::{to_graph_type_body, GraphTypeMapping};
 pub use model::{
     Constraint, ConstraintType, Labels, Neo4jType, NodeType, OntologyDocument, Property,
     RelationshipTarget, RelationshipType,
@@ -89,7 +112,10 @@ pub use indexmap::IndexMap;
 /// The syntax is detected by a strict JSON parse (ADR-0227 §3); the
 /// document is then parsed into the ordered value model, gated on the
 /// pinned 1.1.0 `schema` URI (ADR-0487 §1), and structurally validated
-/// against the vendored schema (ADR-0487 §2).
+/// against the vendored schema (ADR-0487 §2) with unknown members
+/// rejected. The first issue found is the failure — the full list and
+/// the dropped-unknown-members rule belong to the canonicalize path
+/// (ADR-0667).
 ///
 /// # Errors
 ///
@@ -106,5 +132,9 @@ pub use indexmap::IndexMap;
 ///   the error names the violated field/path.
 pub fn parse_ontology_document(bytes: &[u8]) -> Result<OntologyDocument, OntologyError> {
     let (value, _) = parse_document_value(bytes)?;
-    validate::validate_document(value)
+    if let Some(uri) = validate::schema_uri_mismatch(&value) {
+        return Err(OntologyError::UnsupportedSpecVersion { uri });
+    }
+    validate::validate_document(value, validate::UnknownMembers::Reject)
+        .map_err(validate::first_issue)
 }

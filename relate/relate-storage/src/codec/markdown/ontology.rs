@@ -19,13 +19,22 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use relate_core::{Result, Value as CypherValue};
+use relate_core::{Error, Result, Value as CypherValue};
 use relate_engine_api::redo::IndexKindSpec;
 use relate_markdown as md;
 
 use super::manifest::LearnedSchema;
 use crate::snapshot::{CommittedIndex, CommittedSchema};
 use crate::vfs::Vfs;
+
+/// The vault-committed ontology file's one naming policy: every refusal
+/// of the file wraps its reason with the file's name through this
+/// helper — never a re-spelled inline closure or bespoke `format!` at a
+/// refusal site, so the wrapping text has one home whatever the
+/// underlying failure class.
+fn file_error(file: &str, e: impl std::fmt::Display) -> Error {
+    md::vault_error(format!("ontology file {file}: {e}"))
+}
 
 /// The ontology file's YAML spelling, at the vault root.
 pub(super) const VAULT_ONTOLOGY_YAML: &str = "ontology.yaml";
@@ -90,29 +99,39 @@ pub(super) fn read_vault_ontology(vfs: &dyn Vfs) -> Result<Option<VaultOntology>
     // is fetched), the opened-handle proof, the exact read and the
     // after-read re-proof all come from the one home — the same chain
     // the store's ontology objects read through, never a per-caller
-    // re-derivation of the proof sequence. The map keeps the file's
-    // name on the IO class: every refusal names the file.
+    // re-derivation of the proof sequence. The wrap keeps the file's
+    // name on the refusal: every failure names the file through
+    // file_error.
     let bytes = crate::snapshot::read_bounded_vfs_path(vfs, name, &crate::snapshot::ONTOLOGY_DOC)
-        .map_err(|e| md::vault_error(format!("ontology file {name}: {e}")))?;
-    let document = relate_ontology::parse_ontology_document(&bytes)
-        .map_err(|e| md::vault_error(format!("ontology file {name}: {e}")))?;
+        .map_err(|e| file_error(name, e))?;
+    let document =
+        relate_ontology::parse_ontology_document(&bytes).map_err(|e| file_error(name, e))?;
 
     // The expressibility gate: the file claims to be the store's
     // schema, so the engine must be able to hold its graph type — the
     // same conversion `db.ontology.apply` runs (ADR-0226), proven at
-    // open rather than at first apply.
+    // open rather than at first apply. A type-less relationship entry
+    // fails here naming the file, so every surviving entry has a type.
     let body = relate_ontology::to_graph_type_body(&document)
-        .map_err(|e| md::vault_error(format!("ontology file {name}: {e}")))?;
+        .map_err(|e| file_error(name, e))?
+        .body;
     let graph_type = relate_engine_api::graph_type::GraphTypeSpec::from_body(&body)
-        .map_err(|e| md::vault_error(format!("ontology file {name}: {e}")))?;
+        .map_err(|e| file_error(name, e))?;
 
     // The vocabulary: every declared relationship type, by its Neo4j
-    // type token.
-    let rel_types = document
-        .relationships()
-        .iter()
-        .map(|relationship| relationship.rel_type.clone())
-        .collect();
+    // type token. The expressibility gate above refused every type-less
+    // entry naming the file, so a surviving entry's type is that gate's
+    // proven invariant — expected here, never re-refused with a second
+    // text.
+    let mut rel_types = BTreeSet::new();
+    for relationship in document.relationships() {
+        rel_types.insert(
+            relationship
+                .rel_type
+                .clone()
+                .expect("the expressibility gate (to_graph_type_body) refused every type-less relationship entry"),
+        );
+    }
 
     // The key declarations (ADR-0649 §2), keyed by the identity fold:
     // [`keys_of`] refuses both ambiguity shapes closed, naming the
@@ -121,9 +140,7 @@ pub(super) fn read_vault_ontology(vfs: &dyn Vfs) -> Result<Option<VaultOntology>
     let keys = keys_of(&document, name)?;
 
     let indexes = indexes_of(&document, name)?;
-    let canonical = document
-        .to_json()
-        .map_err(|e| md::vault_error(format!("ontology file {name}: {e}")))?;
+    let canonical = document.to_json().map_err(|e| file_error(name, e))?;
 
     Ok(Some(VaultOntology {
         rel_types,
@@ -169,19 +186,25 @@ fn keys_of(
             [only] => {
                 let fold = md::fold_case(label);
                 if let Some((first, _)) = declared.get(&fold) {
-                    return Err(md::vault_error(format!(
-                        "ontology file {file}: node types '{first}' and '{label}' declare \
-                         the same identifying label under the vault's identity fold; \
-                         one label, one key declaration"
-                    )));
+                    return Err(file_error(
+                        file,
+                        format!(
+                            "node types '{first}' and '{label}' declare the same identifying \
+                             label under the vault's identity fold; one label, one key \
+                             declaration"
+                        ),
+                    ));
                 }
                 declared.insert(fold, (label.to_string(), only.id.clone()));
             }
             _ => {
-                return Err(md::vault_error(format!(
-                    "ontology file {file}: node type '{label}' declares more than one \
-                     key property; a node type has one Concept ID"
-                )))
+                return Err(file_error(
+                    file,
+                    format!(
+                        "node type '{label}' declares more than one key property; a node \
+                         type has one Concept ID"
+                    ),
+                ))
             }
         }
     }
@@ -201,7 +224,8 @@ fn indexes_of(
     document: &relate_ontology::OntologyDocument,
     file: &str,
 ) -> Result<Vec<CommittedIndex>> {
-    let fail = |what: String| md::vault_error(format!("ontology file {file}: {what}"));
+    // The one file-naming wrap, partial-applied to this document.
+    let fail = |what: String| file_error(file, what);
     let mut out = Vec::new();
     let mut seen: BTreeSet<String> = BTreeSet::new();
     let root = document

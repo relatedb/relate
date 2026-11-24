@@ -3,7 +3,9 @@
 //! envelopes and the value model (ADR-0364 §2, on the 1.1.0 shapes of
 //! ADR-0487 §2).
 
-use relate_ontology::{parse_ontology_document, ConstraintType, OntologyError, PINNED_SCHEMA_URI};
+use relate_ontology::{
+    parse_ontology_document, to_graph_type_body, ConstraintType, OntologyError, PINNED_SCHEMA_URI,
+};
 
 use crate::support::{at, json_doc, neo4j_type_tokens};
 
@@ -254,8 +256,10 @@ fn property_type_tokens_outside_the_closed_enum_fail() {
 
 #[test]
 fn relationship_clause_fixtures() {
+    // `from` and `to` are required at validation; `type` is optional
+    // (ADR-0667): a type-less entry parses and fails at the converter,
+    // naming the entry.
     for (missing, body) in [
-        ("type", "\"from\":{\"node\":\"N\"},\"to\":{\"node\":\"N\"}"),
         ("from", "\"type\":\"R\",\"to\":{\"node\":\"N\"}"),
         ("to", "\"type\":\"R\",\"from\":{\"node\":\"N\"}"),
     ] {
@@ -269,6 +273,19 @@ fn relationship_clause_fixtures() {
         );
         assert!(err.to_string().contains("/relationships/R"), "{err}");
     }
+    let doc = json_doc(
+        ",\"nodes\":{\"N\":{\"label\":\"N\"}},\"relationships\":\
+         {\"R\":{\"from\":{\"node\":\"N\"},\"to\":{\"node\":\"N\"}}}",
+    );
+    let doc = parse_ontology_document(doc.as_bytes())
+        .expect("a type-less relationship entry is spec-valid");
+    assert_eq!(doc.relationships()[0].rel_type, None);
+    let err = to_graph_type_body(&doc).expect_err("the converter is the type gate");
+    assert!(
+        err.to_string()
+            .contains("Ontology relationship 'R' has no type."),
+        "{err}"
+    );
 
     // Aliases, reference and description are carried; 1.1.0 carries no
     // relationship `name` member (ADR-0487 §2).

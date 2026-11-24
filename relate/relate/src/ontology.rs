@@ -99,10 +99,12 @@ impl Database {
     /// [`RedoOp::OntologySet`] into the statement's write overlay and the
     /// group-commit pipeline converges both paths in
     /// [`prepare_committed`]/[`install_committed`] (the procedure's
-    /// implicit-only and no-mixed-writes rules are compile-time gates in
-    /// `Connection::ontology_gate_error`). After the commit is durable and
-    /// applied, the stored document and the WAL's `MDBWAL02` segment-magic
-    /// state are updated atomically with the commit (ADR-0120 §2/§4).
+    /// no-mixed-writes statement rule is a compile-time gate and its
+    /// transaction mixing rule an admission gate in
+    /// `Connection::gates_classify_under_guard`, ADR-0667). After the
+    /// commit is durable and applied, the stored document and the WAL's
+    /// `MDBWAL02` segment-magic state are updated atomically with the
+    /// commit (ADR-0120 §2/§4).
     ///
     /// The document is validated before any WAL write; an invalid
     /// document is a semantic error naming the violated rule.
