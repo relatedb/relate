@@ -53,9 +53,9 @@ pub use relate_storage::{
 };
 
 pub use binding::{
-    binding_error_metadata, execute_wire, params_from_json, params_from_map, params_from_value,
-    plan_wire_json, query_result_to_cypher_rows, query_result_to_wire, query_stats_to_wire,
-    run_script_wire, timing_stamp_ms,
+    binding_error_metadata, execute_wire, params_from_json, params_from_map, params_from_map_with,
+    params_from_value, plain_param_value, plan_wire_json, query_result_to_cypher_rows,
+    query_result_to_wire, query_stats_to_wire, run_script_wire, timing_stamp_ms,
 };
 pub use clone::CloneOptions;
 pub use connection::{Connection, Executed, ExecutionFailure};

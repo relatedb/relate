@@ -9,7 +9,7 @@ use relate::PlanNode;
 use relate_model::wire::{self, plan_keys};
 use relate_model::CypherValue;
 
-use crate::v2_json::v2_map_json;
+use crate::v2_json::{v2_map_json_at, Form, ResponseMediaType};
 
 /// The v2 plan node's args key. HTTP-specific: the engine's own wire form
 /// and the Bolt wire both use `args` (the Bolt one is the driver's shape),
@@ -51,16 +51,16 @@ const V2_PAGE_CACHE_HIT_RATIO: &str = "pageCacheHitRatio";
 /// ADR-0628's stack-safe budget — fails with the typed capacity refusal
 /// whose text states the scope: the statement itself executed; only its
 /// plan document is refused.
-pub fn plan_field(tree: &PlanNode, typed: bool) -> relate::Result<(&'static str, Json)> {
+pub fn plan_field(tree: &PlanNode, form: Form) -> relate::Result<(&'static str, Json)> {
     let forms = relate_formatter::plan_wire_forms(tree)?;
     let root_args = forms.root_args();
-    let mut node = v2_plan_node(forms.tree(), typed);
+    let mut node = v2_plan_node(forms.tree(), form)?;
     // One producer for `arguments`: the walker built the node's own args,
     // and the root's Neo4j-facing set replaces them here — never a second
     // pass narrowing the walker's output back to a map.
     node.insert(
         V2_ARGUMENTS.into(),
-        Json::Object(v2_map_json(root_args, typed)),
+        Json::Object(v2_map_json_at(root_args, form, 0)?),
     );
     let key = if tree.is_profiled() {
         "profiledQueryPlan"
@@ -81,7 +81,17 @@ pub fn plan_field(tree: &PlanNode, typed: bool) -> relate::Result<(&'static str,
 /// budget refusal for a plan past `relate::MAX_PLAN_WIRE_DEPTH` — the
 /// statement itself executed; only its plan document is refused.
 pub fn query_plan_field(tree: &PlanNode) -> relate::Result<(&'static str, Json)> {
-    plan_field(tree, false)
+    // Plan arguments carry scalars, lists and maps, never an entity — an
+    // entity here fails loudly (the encoder's contract) rather than taking a
+    // fabricated namespace; the server's own entry ([`plan_field`]) passes
+    // the statement's.
+    plan_field(
+        tree,
+        Form {
+            media_type: ResponseMediaType::Json,
+            namespace: None,
+        },
+    )
 }
 
 /// One plan node in the Neo4j Query API v2 shape — verified against Neo4j
@@ -95,7 +105,7 @@ pub fn query_plan_field(tree: &PlanNode) -> relate::Result<(&'static str, Json)>
 /// so a malformed node fails loudly there rather than being defaulted here.
 /// The walker is a plain per-node recursion: the root's Neo4j-facing args
 /// are overlaid once by [`plan_field`], never threaded as a mode.
-fn v2_plan_node(value: &CypherValue, typed: bool) -> Map<String, Json> {
+fn v2_plan_node(value: &CypherValue, form: Form) -> relate::Result<Map<String, Json>> {
     let node = wire::plan_node_wire(value);
     let mut out = Map::new();
     out.insert(
@@ -110,7 +120,7 @@ fn v2_plan_node(value: &CypherValue, typed: bool) -> Map<String, Json> {
     // `_value` entries and throw `Unknown type: undefined` (LABS-376).
     out.insert(
         V2_ARGUMENTS.into(),
-        Json::Object(v2_map_json(node.args, typed)),
+        Json::Object(v2_map_json_at(node.args, form, 0)?),
     );
     // `identifiers` is a plain array of plain strings, like Neo4j's.
     out.insert(
@@ -138,15 +148,11 @@ fn v2_plan_node(value: &CypherValue, typed: bool) -> Map<String, Json> {
     out.insert(V2_PAGE_CACHE_HITS.into(), json!(0));
     out.insert(V2_PAGE_CACHE_MISSES.into(), json!(0));
     out.insert(V2_PAGE_CACHE_HIT_RATIO.into(), json!(0.0));
-    out.insert(
-        plan_keys::CHILDREN.into(),
-        Json::Array(
-            node.children
-                .iter()
-                .map(|c| Json::Object(v2_plan_node(c, typed)))
-                .collect(),
-        ),
-    );
+    let mut children = Vec::with_capacity(node.children.len());
+    for child in node.children {
+        children.push(Json::Object(v2_plan_node(child, form)?));
+    }
+    out.insert(plan_keys::CHILDREN.into(), Json::Array(children));
     // The typed warnings ride the node like every other field — built from
     // the typed view ([`wire::PlanNodeWire::warnings`]), the accessor that
     // already validated them, never a second match of the raw wire map (a
@@ -157,5 +163,5 @@ fn v2_plan_node(value: &CypherValue, typed: bool) -> Map<String, Json> {
             Json::Array(node.warnings.iter().map(wire::warning_wire_json).collect()),
         );
     }
-    out
+    Ok(out)
 }

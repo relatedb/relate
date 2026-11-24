@@ -3,6 +3,8 @@
 //! predicate. One home for the alias fact, consulted by the `point()` input
 //! readers, the component accessors and the wire encoder.
 
+use std::fmt;
+
 /// One point axis with both of its spellings: the cartesian name and the
 /// geographic name denote the same coordinate (`x` is `longitude`). The one
 /// alias vocabulary the `point()` input readers, the component accessors and
@@ -66,9 +68,43 @@ pub fn point_axis_keys(geographic: bool) -> [&'static str; 3] {
     ]
 }
 
+/// The four `point()` SRIDs' fixed facts — their dimension (2 or 3) and
+/// whether they are geographic — one row each. `None` for any other SRID (a
+/// wire decoder can carry one; `point()` cannot).
+///
+/// This is the one dimension/axis-family table: [`is_geographic`],
+/// [`srid_dimension`], `PointValue::crs_name`'s dimensionality check and the
+/// executor's `Srid` family/dimension all derive from it, so a fifth code or
+/// a corrected dimension lands in exactly one place.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct SridFacts {
+    dimension: usize,
+    geographic: bool,
+}
+
+fn srid_facts(srid: i32) -> Option<SridFacts> {
+    let (dimension, geographic) = match srid {
+        7203 => (2, false),
+        4326 => (2, true),
+        9157 => (3, false),
+        4979 => (3, true),
+        _ => return None,
+    };
+    Some(SridFacts {
+        dimension,
+        geographic,
+    })
+}
+
 /// Whether an SRID is geographic (longitude/latitude keys, `wgs-84*` CRS).
 pub fn is_geographic(srid: i32) -> bool {
-    matches!(srid, 4326 | 4979)
+    srid_facts(srid).is_some_and(|facts| facts.geographic)
+}
+
+/// The dimension one of the four `point()` SRIDs fixes (`2` or `3`), or
+/// `None` for any other SRID.
+pub fn srid_dimension(srid: i32) -> Option<usize> {
+    srid_facts(srid).map(|facts| facts.dimension)
 }
 
 /// Neo4j's longitude wrap into `[-180, 180]`, keeping both endpoints
@@ -95,6 +131,176 @@ pub fn wrap_longitude(longitude: f64) -> f64 {
     } else {
         x
     }
+}
+
+/// Why a coordinate triple is not a storable point.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PointDomainError {
+    /// A geographic point's latitude is outside `[-90, 90]`.
+    InvalidLatitude,
+    /// A coordinate is not finite.
+    NonFiniteCoordinate,
+    /// The coordinate count disagrees with the SRID's fixed dimension.
+    InvalidDimension { srid: i32 },
+}
+
+/// Why an EWKT string was refused: the text does not match the grammar, or
+/// it does and the coordinates are outside the stored domain. One typed
+/// error so a caller can tell the two halves apart; `Display` is the text
+/// every surface already shows.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum EwktError {
+    /// The text does not match the EWKT grammar.
+    Grammar(String),
+    /// The coordinates are outside the stored domain.
+    Domain(PointDomainError),
+}
+
+impl fmt::Display for PointDomainError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            PointDomainError::InvalidLatitude => {
+                f.write_str("latitude must be in the range [-90, 90]")
+            }
+            PointDomainError::NonFiniteCoordinate => f.write_str("a coordinate is not finite"),
+            PointDomainError::InvalidDimension { srid } => {
+                write!(f, "SRID={srid} does not match the coordinate dimension")
+            }
+        }
+    }
+}
+
+impl std::error::Error for PointDomainError {}
+
+impl fmt::Display for EwktError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            EwktError::Grammar(detail) => f.write_str(detail),
+            EwktError::Domain(err) => err.fmt(f),
+        }
+    }
+}
+
+impl std::error::Error for EwktError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            EwktError::Grammar(_) => None,
+            EwktError::Domain(err) => Some(err),
+        }
+    }
+}
+
+/// The one stored-domain rule every point producer shares (the `point()`
+/// constructor and every wire decoder): a geographic point's longitude wraps
+/// into `[-180, 180]` by [`wrap_longitude`] and its latitude must already be
+/// in `[-90, 90]`; a cartesian point is stored as given. Keeping it here is
+/// what stops a decoder admitting a point the constructor refuses.
+///
+/// The **SRID** is the one discriminator, never the coordinate-key family:
+/// a `point({x, y, srid: 4326})` map and a decoded `SRID=4326` WKT are the
+/// same value, so they must pass the same rule (Neo4j validates by SRID too).
+/// The key family only decides which keys the map reader accepts. The whole
+/// domain lives here — finiteness, the SRID's dimension, and the geographic
+/// longitude/latitude rule — so every producer inherits it.
+pub fn stored_point(
+    srid: i32,
+    x: f64,
+    y: f64,
+    z: Option<f64>,
+) -> Result<crate::value::PointValue, PointDomainError> {
+    if !x.is_finite() || !y.is_finite() || z.is_some_and(|z| !z.is_finite()) {
+        return Err(PointDomainError::NonFiniteCoordinate);
+    }
+    if let Some(dimension) = srid_dimension(srid) {
+        let actual = if z.is_some() { 3 } else { 2 };
+        if actual != dimension {
+            return Err(PointDomainError::InvalidDimension { srid });
+        }
+    }
+    if is_geographic(srid) {
+        if !(-90.0..=90.0).contains(&y) {
+            return Err(PointDomainError::InvalidLatitude);
+        }
+        Ok(crate::value::PointValue {
+            srid,
+            x: wrap_longitude(x),
+            y,
+            z,
+        })
+    } else {
+        Ok(crate::value::PointValue { srid, x, y, z })
+    }
+}
+
+/// The Query API's EWKT spelling of a point (ADR-0181 item 5) —
+/// `SRID=7203;POINT (1.0 2.0)` or `SRID=4979;POINT Z (12.5 55.7 10.0)`.
+/// Beside [`parse_ewkt`], the one grammar's two halves.
+pub fn ewkt(p: &crate::value::PointValue) -> String {
+    let text = crate::value::float_text;
+    match p.z {
+        Some(z) => format!(
+            "SRID={};POINT Z ({} {} {})",
+            p.srid,
+            text(p.x),
+            text(p.y),
+            text(z)
+        ),
+        None => format!("SRID={};POINT ({} {})", p.srid, text(p.x), text(p.y)),
+    }
+}
+
+/// Parse the Query API's EWKT point text into a stored point (ADR-0181
+/// item 5): `SRID=<i32>;POINT (<x> <y>)` or `SRID=<i32>;POINT Z (<x> <y>
+/// <z>)`, anything else refused. One grammar for every Query API surface
+/// that reads a point back (the typed wire decoder and the HTTP request
+/// fold), so the accepted shapes cannot drift; the stored domain is
+/// [`stored_point`]'s rule and coordinates must be finite.
+pub fn parse_ewkt(text: &str) -> Result<crate::value::PointValue, EwktError> {
+    let (srid, rest) = text
+        .strip_prefix("SRID=")
+        .and_then(|rest| rest.split_once(';'))
+        .ok_or_else(|| EwktError::Grammar(format!("{text:?} is not \"SRID=<i32>;POINT (…)\"")))?;
+    let srid: i32 = srid
+        .parse()
+        .map_err(|_| EwktError::Grammar(format!("{srid:?} is not an i32 SRID")))?;
+    let (three_d, inner) = if let Some(inner) = rest.strip_prefix("POINT Z (") {
+        (true, inner)
+    } else if let Some(inner) = rest.strip_prefix("POINT (") {
+        (false, inner)
+    } else {
+        return Err(EwktError::Grammar(format!(
+            "{rest:?} is not \"POINT (…)\" or \"POINT Z (…)\""
+        )));
+    };
+    let inner = inner
+        .strip_suffix(')')
+        .ok_or_else(|| EwktError::Grammar("missing the closing \")\"".to_string()))?;
+    let coords: Vec<&str> = inner.split_whitespace().collect();
+    let expected = if three_d { 3 } else { 2 };
+    if coords.len() != expected {
+        return Err(EwktError::Grammar(format!(
+            "expected {expected} coordinates, found {}",
+            coords.len()
+        )));
+    }
+    let x = coordinate(coords[0])?;
+    let y = coordinate(coords[1])?;
+    let z = coords.get(2).map(|z| coordinate(z)).transpose()?;
+    stored_point(srid, x, y, z).map_err(EwktError::Domain)
+}
+
+/// One point coordinate: a finite decimal (`NaN`/`Infinity` parse as
+/// floats but no point envelope contains them).
+fn coordinate(token: &str) -> Result<f64, EwktError> {
+    let value: f64 = token
+        .parse()
+        .map_err(|_| EwktError::Grammar(format!("{token:?} is not a decimal coordinate")))?;
+    if !value.is_finite() {
+        return Err(EwktError::Grammar(format!(
+            "{token:?} is not a finite coordinate"
+        )));
+    }
+    Ok(value)
 }
 
 #[cfg(test)]

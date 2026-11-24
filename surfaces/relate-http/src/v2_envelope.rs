@@ -19,7 +19,7 @@ use serde::ser::{SerializeMap, SerializeSeq};
 use serde::{Serialize, Serializer};
 use serde_json::Value as Json;
 
-use crate::v2_json::v2_value_json;
+use crate::v2_json::{v2_value_json, Form};
 
 /// One top-level member's value: an already-built JSON tree, or the success
 /// envelope's `data` block, whose rows stay the engine's own values and are
@@ -56,16 +56,16 @@ impl Serialize for Member {
 pub(crate) struct DataBlock {
     fields: Vec<String>,
     rows: Vec<Vec<relate::Value>>,
-    typed: bool,
+    /// The negotiated form and the statement's routed namespace, the same
+    /// [`Form`] the encoder entry takes: every encoded entity's element id
+    /// comes from the namespace (ADR-0554), and a namespace without an
+    /// element-id segment has already been refused before the writer starts.
+    form: Form,
 }
 
 impl DataBlock {
-    pub(crate) fn new(fields: Vec<String>, rows: Vec<Vec<relate::Value>>, typed: bool) -> Self {
-        Self {
-            fields,
-            rows,
-            typed,
-        }
+    pub(crate) fn new(fields: Vec<String>, rows: Vec<Vec<relate::Value>>, form: Form) -> Self {
+        Self { fields, rows, form }
     }
 }
 
@@ -77,7 +77,7 @@ impl Serialize for DataBlock {
             "values",
             &RowsView {
                 rows: &self.rows,
-                typed: self.typed,
+                form: self.form,
             },
         )?;
         data.end()
@@ -87,7 +87,7 @@ impl Serialize for DataBlock {
 /// The `values` array: each row an array of its v2-encoded values.
 struct RowsView<'a> {
     rows: &'a [Vec<relate::Value>],
-    typed: bool,
+    form: Form,
 }
 
 impl Serialize for RowsView<'_> {
@@ -96,7 +96,7 @@ impl Serialize for RowsView<'_> {
         for row in self.rows {
             rows.serialize_element(&RowView {
                 row,
-                typed: self.typed,
+                form: self.form,
             })?;
         }
         rows.end()
@@ -105,15 +105,19 @@ impl Serialize for RowsView<'_> {
 
 struct RowView<'a> {
     row: &'a [relate::Value],
-    typed: bool,
+    form: Form,
 }
 
 impl Serialize for RowView<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let mut values = serializer.serialize_seq(Some(self.row.len()))?;
         for value in self.row {
-            values
-                .serialize_element(&v2_value_json(&relate::value_to_cypher(value), self.typed))?;
+            // A value the wire cannot carry was refused before the writer
+            // started (`success_envelope`); reaching it here is a
+            // serialization failure, never a silent fallback.
+            let encoded = v2_value_json(&relate::value_to_cypher(value), self.form)
+                .map_err(serde::ser::Error::custom)?;
+            values.serialize_element(&encoded)?;
         }
         values.end()
     }
@@ -180,6 +184,7 @@ pub(crate) mod tests {
     use serde_json::json;
 
     use super::*;
+    use crate::v2_json::ResponseMediaType;
 
     /// The lazy `data` block writes the exact bytes the JSON tree it replaced
     /// did, in both encodings: `fields` first, rows as arrays of v2 values.
@@ -190,12 +195,23 @@ pub(crate) mod tests {
             vec![relate::Value::String("a".into()), relate::Value::Bool(true)],
         ];
         for typed in [false, true] {
+            let form = Form {
+                media_type: if typed {
+                    ResponseMediaType::Neo4jQuery
+                } else {
+                    ResponseMediaType::Json
+                },
+                namespace: Some(relate::Namespace::Neo4j),
+            };
             let tree: Vec<Json> = rows
                 .iter()
                 .map(|row| {
                     Json::Array(
                         row.iter()
-                            .map(|v| v2_value_json(&relate::value_to_cypher(v), typed))
+                            .map(|v| {
+                                v2_value_json(&relate::value_to_cypher(v), form)
+                                    .expect("a graph namespace encodes")
+                            })
                             .collect(),
                     )
                 })
@@ -209,7 +225,7 @@ pub(crate) mod tests {
                 Member::Data(DataBlock::new(
                     vec!["a".into(), "b".into()],
                     rows.clone(),
-                    typed,
+                    form,
                 )),
             )]);
             assert_eq!(

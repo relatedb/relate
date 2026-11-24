@@ -398,7 +398,7 @@ a server error. No server-side flag silences it.
 | Field | Type | Default | Meaning |
 | --- | --- | --- | --- |
 | `statement` | string | required | One Cypher statement |
-| `parameters` | object | none | `$name` bindings. The request's **Content-Type selects the parameter dialect** (ADR-0425): under `application/vnd.neo4j.query` (the legacy v1.0 alias) or its versioned family, including `.v1.0` and `.v1.2`, values may be plain JSON **or** the typed form `{"$type": …, "_value": …}` the official clients send (decoded per ADR-0236's encoding, recursively; an object is typed only when its keys are exactly `$type` and `_value` — a user map with a `$type` key among others stays a map); under plain `application/json` values are plain JSON — an envelope-shaped object stays a user **map**, byte-for-byte what a real server delivers. Temporal payloads decode to their ISO strings (build typed values in Cypher, e.g. `date($p)`), a Point to its `{coordinates, crs}` map, a Vector to its number list; graph entities and unknown `$type`s are a 400. Other non-simple request Content-Types receive a **400** naming the accepted spellings; browser-simple or missing types are rejected by the guard described above |
+| `parameters` | object | none | `$name` bindings. The request's **Content-Type selects the parameter dialect** (ADR-0425): under `application/vnd.neo4j.query` (the legacy v1.0 alias) or its versioned family, including `.v1.0` and `.v1.2`, values may be plain JSON **or** the typed form `{"$type": …, "_value": …}` the official clients send (decoded per ADR-0236's encoding, recursively; an object is typed only when its keys are exactly `$type` and `_value` — a user map with a `$type` key among others stays a map); under plain `application/json` values are plain JSON — an envelope-shaped object stays a user **map**, byte-for-byte what a real server delivers. Temporal payloads decode to their ISO strings (build typed values in Cypher, e.g. `date($p)`), a Point's EWKT string to an engine point (the legacy `{coordinates, crs}` object still decodes to a user map), a Vector to its number list, a non-finite Float (`Infinity`/`-Infinity`/`NaN`) to that float value; graph entities, `Base64`, `Unsupported` and unknown `$type`s are a 400. Other non-simple request Content-Types receive a **400** naming the accepted spellings; browser-simple or missing types are rejected by the guard described above |
 | `includeCounters` | boolean | `false` | Force the `counters` object onto the response |
 
 A malformed body (not JSON, or missing `statement`) is **400** with code
@@ -581,7 +581,7 @@ de-chunk the frames first, and inflate when gzip was negotiated.
 {
   "data": {
     "fields": ["c"],
-    "values": [[{"elementId": "0", "labels": ["City"], "properties": {"name": "Oslo"}}]]
+    "values": [[{"elementId": "4:rl-id:n0", "labels": ["City"], "properties": {"name": "Oslo"}}]]
   },
   "counters": {"nodes_created": 0, "nodes_deleted": 0, "relationships_created": 0,
                "relationships_deleted": 0, "properties_set": 0, "labels_added": 0,
@@ -605,8 +605,11 @@ de-chunk the frames first, and inflate when gzip was negotiated.
   (`Node`: `{"elementId", "labels", "properties"}`; `Relationship`:
   `{"elementId", "startNodeElementId", "endNodeElementId", "type",
   "properties"}`; `Path`: a JSON array alternating node/relationship;
-  temporals are ISO-8601 strings; points are `{"type": "Point",
-  "coordinates", "crs"}`). Under the negotiated typed form
+  temporals are ISO-8601 strings; points are their EWKT string
+  (`"SRID=7203;POINT (1.0 2.0)"`); non-finite floats are the strings
+  `"Infinity"`, `"-Infinity"` and `"NaN"`). An entity's element id is the
+  ADR-0554 form `elementId()` returns (`4:rl-id:n5`, `5:rl-id:r9`), so a
+  client can send it back as `$id`. Under the negotiated typed form
   (`application/vnd.neo4j.query`) every value is
   `{"$type": <Cypher type>, "_value": …}` with the Neo4j field names
   (`_element_id`, `_labels`, `_properties`, …), integers/floats as strings

@@ -25,7 +25,6 @@
 use std::collections::BTreeMap;
 
 use relate_core::{ArgumentFault, Error, ErrorKind, Result, Value};
-use relate_model::point::wrap_longitude;
 
 /// `point()` argument handling (ADR-0167, LABS-169). Nodes and relationships
 /// are resolved to their property maps by the caller (`bi_point`), so what
@@ -65,6 +64,20 @@ impl Family {
     /// below name their keys from the same source.
     fn keys(self) -> [&'static str; 3] {
         relate_model::point::point_axis_keys(self == Family::Geographic)
+    }
+
+    /// The axis-2 keys this family reads, primary then optional fallback:
+    /// cartesian takes `z` only (`height` is ignored), geographic takes `z`
+    /// and, when it is absent, `height` — both spellings from the axis
+    /// table. A present-but-wrong `height` is still type-checked eagerly
+    /// when a valid `z` wins (Neo4j-verified, 22N27), so the reader checks
+    /// the fallback whenever it exists.
+    fn axis2_keys(self) -> (&'static str, Option<&'static str>) {
+        let cartesian = Family::Cartesian.keys();
+        match self {
+            Family::Cartesian => (cartesian[2], None),
+            Family::Geographic => (cartesian[2], Some(self.keys()[2])),
+        }
     }
 }
 
@@ -156,23 +169,22 @@ impl Srid {
     /// name form of `srid`); the two matches are the one vocabulary the
     /// `ALL`-derived messages advertise.
     fn name(self) -> &'static str {
-        match self {
-            Srid::Wgs84_2D => "wgs-84",
-            Srid::Wgs84_3D => "wgs-84-3d",
-            Srid::Cartesian2D => "cartesian",
-            Srid::Cartesian3D => "cartesian-3d",
-        }
+        // The one code-to-CRS-name mapping every surface shares.
+        relate_model::wire::crs_name(self.code())
     }
 
+    /// The axis family, from the model's one SRID table.
     fn family(self) -> Family {
-        match self {
-            Srid::Wgs84_2D | Srid::Wgs84_3D => Family::Geographic,
-            Srid::Cartesian2D | Srid::Cartesian3D => Family::Cartesian,
+        if relate_model::point::is_geographic(self.code()) {
+            Family::Geographic
+        } else {
+            Family::Cartesian
         }
     }
 
+    /// The dimensionality, from the model's one SRID table.
     fn is_3d(self) -> bool {
-        matches!(self, Srid::Wgs84_3D | Srid::Cartesian3D)
+        relate_model::point::srid_dimension(self.code()) == Some(3)
     }
 
     /// The four CRS names Neo4j's `point()` accepts, case-insensitively:
@@ -243,42 +255,42 @@ fn point_from_map(map: &BTreeMap<String, Value>) -> Result<Value> {
         return Ok(Value::Null);
     }
     let family = family_from_map(map)?;
-    let (cartesian, geographic) = (Family::Cartesian.keys(), Family::Geographic.keys());
-    let (mut x, y, z) = match family {
-        // `height` is ignored for cartesian points.
-        Family::Cartesian => (
-            required_coordinate(map, cartesian[0])?,
-            required_coordinate(map, cartesian[1])?,
-            coordinate(map, cartesian[2])?,
-        ),
-        // Geographic: longitude is x, latitude is y; `z` wins over `height`.
-        // `height` is still type-checked eagerly when a valid `z` wins —
-        // deliberate, Neo4j-verified (a non-numeric height errors, 22N27).
-        Family::Geographic => (
-            required_coordinate(map, geographic[0])?,
-            required_coordinate(map, geographic[1])?,
-            // The axis-2 cartesian spelling (`z`) is accepted for
-            // geographic maps too and wins over the geographic one
-            // (`height`) — both from the axis table, no third spelling.
-            coordinate(map, cartesian[2])?.or(coordinate(map, geographic[2])?),
-        ),
+    let keys = family.keys();
+    // The family's leading two keys are its coordinate pair; only the
+    // axis-2 read differs between families (`Family::axis2_keys`).
+    let x = required_coordinate(map, keys[0])?;
+    let y = required_coordinate(map, keys[1])?;
+    let (axis2, fallback) = family.axis2_keys();
+    let z = match fallback {
+        None => coordinate(map, axis2)?,
+        // The fallback is type-checked even when the primary wins.
+        Some(fallback) => coordinate(map, axis2)?.or(coordinate(map, fallback)?),
     };
     let srid = resolve_srid(map, family, z)?;
-    if family == Family::Geographic {
-        if !(-90.0..=90.0).contains(&y) {
-            return Err(Error::argument_value_fault(
+    // The stored-domain rule (longitude wrap, geographic latitude range) is
+    // `relate_model::point`'s, shared with every wire decoder that reads a
+    // point back, and keyed on the resolved SRID so a map and the WKT of the
+    // same point pass the same rule.
+    let point =
+        relate_model::point::stored_point(srid.code(), x, y, z).map_err(|err| match err {
+            relate_model::point::PointDomainError::InvalidLatitude => Error::argument_value_fault(
                 ArgumentFault::InvalidLatitude,
                 "point() latitude must be in the range [-90, 90]",
-            ));
-        }
-        x = wrap_longitude(x);
-    }
-    Ok(Value::Point(relate_core::PointValue {
-        srid: srid.code(),
-        x,
-        y,
-        z,
-    }))
+            ),
+            relate_model::point::PointDomainError::NonFiniteCoordinate => {
+                Error::argument_value_fault(
+                    ArgumentFault::NonFiniteCoordinate,
+                    "point() coordinate must be finite",
+                )
+            }
+            relate_model::point::PointDomainError::InvalidDimension { srid } => {
+                Error::argument_value_fault(
+                    ArgumentFault::InvalidDimension,
+                    format!("point() srid {srid} does not match the coordinate dimension"),
+                )
+            }
+        })?;
+    Ok(Value::Point(point))
 }
 
 /// Resolve the map's CRS specification: `srid` is the code spelling and

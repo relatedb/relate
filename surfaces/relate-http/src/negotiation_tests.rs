@@ -333,3 +333,136 @@ fn the_typed_plan_keeps_every_structural_field_plain() {
     let warnings = &plan["children"][0]["warnings"];
     assert!(warnings.is_array(), "the scan warns: {plan:?}");
 }
+
+/// ADR-0554's element-id shape, on this surface too: an entity's
+/// `elementId` is the `elementId()` string (`4:rl-id:n0`), never the bare
+/// numeric id, so a client can send it back as a parameter and find the
+/// entity (REL8-2033, corpus issue 22).
+#[test]
+fn entity_element_ids_are_the_element_id_form_and_round_trip() {
+    let db = db();
+    let mut conn = db.connect().unwrap();
+    conn.query("CREATE (:City {name: 'Oslo'})").unwrap();
+    let read = |accept: &str, statement: serde_json::Value| {
+        let mut req = post("neo4j", &statement.to_string());
+        req.headers.push(("accept".into(), accept.into()));
+        body_json(&dispatch(&db, &req, OPEN, &txs()))
+    };
+    // The entity's id and elementId() agree, and carry the dash clients
+    // sniff for.
+    let body = read(
+        "application/json",
+        json!({"statement": "MATCH (n:City) RETURN n, elementId(n) AS e"}),
+    );
+    let node = &body["data"]["values"][0][0];
+    let e = body["data"]["values"][0][1].as_str().unwrap();
+    assert_eq!(node["elementId"], json!(e), "{body}");
+    assert!(e.contains('-'), "no dash for the client heuristic: {e}");
+    // The id from the response finds the node again.
+    let body = read(
+        "application/json",
+        json!({
+            "statement": "MATCH (n) WHERE elementId(n) = $e RETURN n.name AS name",
+            "parameters": {"e": e},
+        }),
+    );
+    assert_eq!(body["data"]["values"], json!([["Oslo"]]), "{body}");
+    // Relationships take the `5:…:r…` form, distinct from the node's.
+    read(
+        "application/json",
+        json!({"statement": "CREATE (:City {name: 'Rome'})-[:TWIN]->(:City {name: 'Oslo'})"}),
+    );
+    let body = read(
+        "application/json",
+        json!({"statement": "MATCH ()-[r:TWIN]->() RETURN r"}),
+    );
+    let rel = &body["data"]["values"][0][0];
+    assert_eq!(
+        rel["elementId"].as_str().unwrap().split(':').next(),
+        Some("5"),
+        "{body}"
+    );
+    assert!(
+        rel["startNodeElementId"].as_str().unwrap().contains('-'),
+        "{body}"
+    );
+
+    // The typed encoding carries the same ids.
+    let body = read(
+        "application/vnd.neo4j.query",
+        json!({"statement": "MATCH (n:City) RETURN n"}),
+    );
+    let typed = &body["data"]["values"][0][0];
+    assert!(
+        typed["_value"]["_element_id"]
+            .as_str()
+            .unwrap()
+            .contains('-'),
+        "{body}"
+    );
+}
+
+/// Points and non-finite floats take Neo4j's Query API encoding in both
+/// forms, and the typed request decodes them back (REL8-2033, corpus
+/// issue 25).
+#[test]
+fn points_and_non_finite_floats_follow_the_neo4j_encoding() {
+    let db = db();
+    let statement = json!({
+        "statement": "RETURN point({x: 1, y: 2}) AS p, \
+                      point({longitude: 12.5, latitude: 55.7, height: 10}) AS p3, \
+                      1.0/0.0 AS inf, -1.0/0.0 AS ninf",
+    });
+    let read = |accept: &str| {
+        let mut req = post("neo4j", &statement.to_string());
+        req.headers.push(("accept".into(), accept.into()));
+        body_json(&dispatch(&db, &req, OPEN, &txs()))
+    };
+    assert_eq!(
+        read("application/json")["data"]["values"],
+        json!([[
+            "SRID=7203;POINT (1.0 2.0)",
+            "SRID=4979;POINT Z (12.5 55.7 10.0)",
+            "Infinity",
+            "-Infinity",
+        ]])
+    );
+    assert_eq!(
+        read("application/vnd.neo4j.query")["data"]["values"],
+        json!([[
+            {"$type": "Point", "_value": "SRID=7203;POINT (1.0 2.0)"},
+            {"$type": "Point", "_value": "SRID=4979;POINT Z (12.5 55.7 10.0)"},
+            {"$type": "Float", "_value": "Infinity"},
+            {"$type": "Float", "_value": "-Infinity"},
+        ]])
+    );
+
+    // Request side: a typed non-finite Float binds a FLOAT, not a STRING —
+    // the comparison that silently selected nothing.
+    let run_typed = |statement: serde_json::Value| {
+        let req = post_typed("neo4j", &statement.to_string());
+        let body = body_json(&dispatch(&db, &req, OPEN, &txs()));
+        assert!(body.get("errors").is_none(), "{body}");
+        body
+    };
+    let body = run_typed(json!({
+        "statement": "UNWIND [1.0, 2.0, 3.0] AS x WITH x WHERE x < $limit RETURN count(*) AS n",
+        "parameters": {"limit": {"$type": "Float", "_value": "Infinity"}},
+    }));
+    assert_eq!(body["data"]["values"], json!([[3]]), "{body}");
+    let body = run_typed(json!({
+        "statement": "RETURN valueType($limit) AS t",
+        "parameters": {"limit": {"$type": "Float", "_value": "-Infinity"}},
+    }));
+    assert_eq!(
+        body["data"]["values"],
+        json!([["FLOAT NOT NULL"]]),
+        "{body}"
+    );
+    // A typed Point is the EWKT string Neo4j sends, decoded to a point.
+    let body = run_typed(json!({
+        "statement": "RETURN $p.x AS x, $p.y AS y, $p.srid AS srid",
+        "parameters": {"p": {"$type": "Point", "_value": "SRID=7203;POINT (1.0 2.0)"}},
+    }));
+    assert_eq!(body["data"]["values"], json!([[1.0, 2.0, 7203]]), "{body}");
+}

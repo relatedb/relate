@@ -148,13 +148,34 @@ impl PointValue {
     /// from [`crate::wire::crs_name`], the canonical mapping every surface
     /// shares.
     pub fn crs_name(&self) -> Option<&'static str> {
-        let canonical_3d = match self.srid {
-            4326 | 7203 => false,
-            4979 | 9157 => true,
-            _ => return None,
-        };
+        let canonical_3d = crate::point::srid_dimension(self.srid)? == 3;
         (canonical_3d == self.is_3d()).then(|| crate::wire::crs_name(self.srid))
     }
+}
+
+/// The engine's one float rendering policy: `NaN`, `Infinity`, `-Infinity`,
+/// otherwise Rust's shortest round-tripping decimal with a `.0` appended when
+/// `Display` emits no fractional part (so `1.0` never reads as the integer
+/// `1`), never scientific notation. The engine's own text forms — the
+/// `relate_core::Value` display/literal, the Query API v2 `Float` encoding and
+/// EWKT point text — read this one function. The ADR-0280 JSON wire
+/// (`wire::json_f64`, through `CypherValue`'s Display) keeps that ADR's own
+/// `Inf`/`-Inf` spelling by decision, so this is not a claim about it.
+pub fn float_text(f: f64) -> String {
+    if f.is_nan() {
+        return "NaN".into();
+    }
+    if f == f64::INFINITY {
+        return "Infinity".into();
+    }
+    if f == f64::NEG_INFINITY {
+        return "-Infinity".into();
+    }
+    let mut rendered = format!("{f}");
+    if !rendered.contains('.') {
+        rendered.push_str(".0");
+    }
+    rendered
 }
 
 impl fmt::Display for PointValue {

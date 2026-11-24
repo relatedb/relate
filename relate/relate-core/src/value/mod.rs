@@ -167,33 +167,6 @@ pub fn bytes_logical_bytes(payload: &[u8]) -> u64 {
     16 + payload.len() as u64
 }
 
-/// The one float rendering policy: `NaN`, `±Infinity`, otherwise Rust's
-/// shortest round-tripping decimal form with a `.0` appended when `Display`
-/// emits no fractional part (so `1.0` never reads as the integer `1`).
-///
-/// Never scientific: the decimal form parses back to the same `f64`, and a
-/// second exponent policy for vector coordinates (the historical `1e16`
-/// threshold) made a value's literal and display forms disagree. Both
-/// [`Value::to_cypher_literal_at`] (its scalar and vector-coordinate arms)
-/// and [`Value::to_display_string_at`] call this, so scalar and vector
-/// coordinates share one spelling.
-fn float_literal(f: f64) -> String {
-    if f.is_nan() {
-        return "NaN".into();
-    }
-    if f == f64::INFINITY {
-        return "Infinity".into();
-    }
-    if f == f64::NEG_INFINITY {
-        return "-Infinity".into();
-    }
-    let mut rendered = format!("{f}");
-    if !rendered.contains('.') {
-        rendered.push_str(".0");
-    }
-    rendered
-}
-
 impl Value {
     /// Share one node across every row that clones this value.
     pub fn from_node(node: Node) -> Self {
@@ -355,7 +328,7 @@ impl Value {
             Value::Bool(true) => "true".into(),
             Value::Bool(false) => "false".into(),
             Value::Int(i) => i.to_string(),
-            Value::Float(f) => float_literal(*f),
+            Value::Float(f) => relate_model::value::float_text(*f),
             Value::String(s) => format!("'{}'", escape_cypher_string(s)),
             Value::Bytes(b) => bytes_as_int_list(b),
             Value::List(xs) => {
@@ -408,7 +381,7 @@ impl Value {
             Value::Null => "null".into(),
             Value::Bool(b) => b.to_string(),
             Value::Int(i) => i.to_string(),
-            Value::Float(f) => float_literal(*f),
+            Value::Float(f) => relate_model::value::float_text(*f),
             // Unquoted: Neo4j 2026.09.0 renders toString({a:'x y'}) as
             // "{a: x y}".
             Value::String(s) => String::from(&**s),

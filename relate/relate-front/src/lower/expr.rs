@@ -57,7 +57,7 @@ fn lower_function_name(f: &cl::FunctionCallExpr, lowered_name: &str) -> SmallNam
 /// the expression names anything else (a variable, a parameter, a call),
 /// which is a fold decline, never an error: the unfolded expression keeps
 /// its per-evaluation semantics.
-fn literal_value(e: &mdb::Expr) -> Option<Value> {
+pub(super) fn literal_value(e: &mdb::Expr) -> Option<Value> {
     match e {
         mdb::Expr::Null => Some(Value::Null),
         mdb::Expr::Bool(b) => Some(Value::Bool(*b)),
@@ -165,42 +165,16 @@ pub fn lower_expr(e: &cl::Expr) -> Result<mdb::Expr> {
                 args,
             })
         }
-        cl::Expr::Binary(b) => {
-            let op = bin_op(b.op)?;
-            // The reference engine's rewriter folds the absorbing boolean
-            // cases before variable resolution: `x OR true` and `x AND
-            // false` become the constant, so the unreachable operand is
-            // never planned or evaluated (`MiscAcceptance` "IN predicate
-            // with undefined variable is accepted when it can be rewritten
-            // away"). Exact under Cypher's three-valued logic (`null OR
-            // true` is `true`, `null AND false` is `false`).
-            match op {
-                mdb::BinaryOp::Or
-                    if is_bool_literal(&b.left, true) || is_bool_literal(&b.right, true) =>
-                {
-                    mdb::Expr::Bool(true)
-                }
-                mdb::BinaryOp::And
-                    if is_bool_literal(&b.left, false) || is_bool_literal(&b.right, false) =>
-                {
-                    mdb::Expr::Bool(false)
-                }
-                _ => mdb::Expr::Binary {
-                    op,
-                    left: Box::new(lower_expr(&b.left)?),
-                    right: Box::new(lower_expr(&b.right)?),
-                },
-            }
-        }
+        cl::Expr::Binary(b) => binary_expr(b)?,
         cl::Expr::Unary(u) => mdb::Expr::Unary {
             op: unary_op(u.op)?,
             expr: Box::new(lower_expr(&u.expr)?),
         },
-        cl::Expr::Comparison(c) => mdb::Expr::Binary {
-            op: cmp_op(c.op)?,
-            left: Box::new(lower_expr(&c.left)?),
-            right: Box::new(lower_expr(&c.right)?),
-        },
+        cl::Expr::Comparison(c) => super::existence::comparison_expr(
+            cmp_op(c.op)?,
+            lower_expr(&c.left)?,
+            lower_expr(&c.right)?,
+        ),
         cl::Expr::In(i) => mdb::Expr::Binary {
             op: mdb::BinaryOp::In,
             left: Box::new(lower_expr(&i.expr)?),
@@ -509,4 +483,29 @@ pub(super) fn unary_op(op: &str) -> Result<mdb::UnaryOp> {
         "-" => mdb::UnaryOp::Minus,
         _ => return Err(nyi(&format!("unary op {op}"))),
     })
+}
+
+/// A boolean connective's absorbing-constant fold (the reference engine's
+/// rewriter folds it before variable resolution, so the unreachable operand
+/// is never planned or evaluated: `MiscAcceptance` "IN predicate with
+/// undefined variable is accepted when it can be rewritten away"). Exact
+/// under Cypher's three-valued logic (`null OR true` is `true`, `null AND
+/// false` is `false`).
+fn binary_expr(b: &cl::BinaryExpr) -> Result<mdb::Expr> {
+    let op = bin_op(b.op)?;
+    match op {
+        mdb::BinaryOp::Or if is_bool_literal(&b.left, true) || is_bool_literal(&b.right, true) => {
+            Ok(mdb::Expr::Bool(true))
+        }
+        mdb::BinaryOp::And
+            if is_bool_literal(&b.left, false) || is_bool_literal(&b.right, false) =>
+        {
+            Ok(mdb::Expr::Bool(false))
+        }
+        _ => Ok(mdb::Expr::Binary {
+            op,
+            left: Box::new(lower_expr(&b.left)?),
+            right: Box::new(lower_expr(&b.right)?),
+        }),
+    }
 }

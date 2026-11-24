@@ -12,8 +12,7 @@ use std::collections::BTreeMap;
 
 use relate::Value;
 use relate_core::temporal::parse_iso;
-use relate_core::{uuid_parse, PointValue, VectorCoordKind};
-use relate_model::point::{is_geographic, wrap_longitude};
+use relate_core::{uuid_parse, VectorCoordKind};
 use serde_json::Value as Json;
 
 /// Why one `$type`-tagged value could not be decoded.
@@ -140,81 +139,14 @@ fn temporal(kind: &str, payload: &Json, tag: &str) -> Result<Value, DecodeError>
         .map_err(|e| malformed(tag, format!("{s:?}: {e}")))
 }
 
-/// The EWKT point grammar of ADR-0181 item 5, parsed strictly:
-/// `SRID=<i32>;POINT (<x> <y>)` or `SRID=<i32>;POINT Z (<x> <y> <z>)`.
-/// Anything else — a missing `SRID=`, a non-integer SRID, `POINTZ`
-/// without the space, the wrong coordinate count — is malformed.
+/// The EWKT point grammar of ADR-0181 item 5 — the one parser
+/// [`relate_model::point::parse_ewkt`] owns; this arm only wraps its detail
+/// in the decoder's `malformed` shape.
 fn point(payload: &Json, tag: &str) -> Result<Value, DecodeError> {
     let s = expect_str(payload, tag)?;
-    let (srid, rest) = s
-        .strip_prefix("SRID=")
-        .and_then(|rest| rest.split_once(';'))
-        .ok_or_else(|| malformed(tag, format!("{s:?} is not \"SRID=<i32>;POINT (…)\"")))?;
-    let srid: i32 = srid
-        .parse()
-        .map_err(|_| malformed(tag, format!("{srid:?} is not an i32 SRID")))?;
-    let (three_d, inner) = if let Some(inner) = rest.strip_prefix("POINT Z (") {
-        (true, inner)
-    } else if let Some(inner) = rest.strip_prefix("POINT (") {
-        (false, inner)
-    } else {
-        return Err(malformed(
-            tag,
-            format!("{rest:?} is not \"POINT (…)\" or \"POINT Z (…)\""),
-        ));
-    };
-    let inner = inner
-        .strip_suffix(')')
-        .ok_or_else(|| malformed(tag, "missing the closing \")\""))?;
-    let coords: Vec<&str> = inner.split_whitespace().collect();
-    let (x, y, z) = match (three_d, coords.as_slice()) {
-        (false, [x, y]) => (*x, *y, None),
-        (true, [x, y, z]) => (*x, *y, Some(*z)),
-        _ => {
-            return Err(malformed(
-                tag,
-                format!(
-                    "expected {} coordinates, found {}",
-                    if three_d { 3 } else { 2 },
-                    coords.len()
-                ),
-            ))
-        }
-    };
-    let x = coordinate(x, tag)?;
-    Ok(Value::Point(PointValue {
-        srid,
-        // A geographic longitude is wrapped into the stored domain by the
-        // one shared rule (`relate_model::point::wrap_longitude`, the rule
-        // `point()` applies), so a decoded point is always in the
-        // [-180, 180] band the POINT index's envelope clip assumes
-        // (non-finite coordinates are refused in `coordinate`).
-        x: if is_geographic(srid) {
-            wrap_longitude(x)
-        } else {
-            x
-        },
-        y: coordinate(y, tag)?,
-        z: z.map(|z| coordinate(z, tag)).transpose()?,
-    }))
-}
-
-/// One point coordinate. The `Float` tag's non-finite spellings (`NaN`,
-/// `Infinity`) parse as `f64`, but a point coordinate must be finite — the
-/// rule `point()` enforces, and the one that keeps a decoded point inside
-/// the domain the POINT index's envelope clip assumes (`wrap_longitude` of
-/// an infinity is a `NaN`, which no envelope contains).
-fn coordinate(token: &str, tag: &str) -> Result<f64, DecodeError> {
-    let value: f64 = token
-        .parse()
-        .map_err(|_| malformed(tag, format!("{token:?} is not a decimal coordinate")))?;
-    if !value.is_finite() {
-        return Err(malformed(
-            tag,
-            format!("{token:?} is not a finite coordinate"),
-        ));
-    }
-    Ok(value)
+    relate_model::point::parse_ewkt(s)
+        .map(Value::Point)
+        .map_err(|detail| malformed(tag, detail.to_string()))
 }
 
 /// `UUID._value` is the canonical hyphenated string; `None` from
@@ -298,6 +230,7 @@ mod tests {
     use std::collections::BTreeMap;
 
     use relate::{Database, Temporal, Value};
+    use relate_core::PointValue;
     use serde_json::json;
 
     use super::*;
@@ -706,6 +639,37 @@ mod tests {
                 "{payload}: {err}"
             );
         }
+    }
+
+    /// The decoder upholds the stored-point domain the `point()` constructor
+    /// enforces: a geographic latitude outside `[-90, 90]` is refused, so a
+    /// wire value cannot enter the store as a point the constructor would
+    /// reject.
+    #[test]
+    fn an_out_of_range_latitude_errors() {
+        let err = decode("Point", json!("SRID=4326;POINT (10 91)")).unwrap_err();
+        assert!(err.to_string().contains("latitude"), "{err}");
+        // A cartesian point has no latitude rule.
+        assert!(decode("Point", json!("SRID=7203;POINT (10 91)")).is_ok());
+    }
+
+    /// The decoder upholds the SRID's fixed dimension, the same rule
+    /// `point()`'s SRID table enforces; an unknown SRID stays open (the load
+    /// surface's raw `SRID=`).
+    #[test]
+    fn a_coordinate_count_that_disagrees_with_the_srid_errors() {
+        for payload in [
+            "SRID=7203;POINT Z (1 2 3)",
+            "SRID=9157;POINT (1 2)",
+            "SRID=4979;POINT (1 2)",
+        ] {
+            let err = decode("Point", json!(payload)).unwrap_err();
+            assert!(
+                err.to_string().contains("coordinate dimension"),
+                "{payload}: {err}"
+            );
+        }
+        assert!(decode("Point", json!("SRID=12345;POINT Z (1 2 3)")).is_ok());
     }
 
     /// A value without a `$type` tag (a server that ignored the typed

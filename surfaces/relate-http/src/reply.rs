@@ -17,6 +17,7 @@ use relate_model::wire::{self, WireStatsSnapshot};
 use crate::http::{is_query_family, APPLICATION_JSON, VND_NEO4J_QUERY};
 use crate::typed_params::{request_params, RequestDialect};
 use crate::v2_envelope::{DataBlock, Member, ReplyBody};
+use crate::v2_json::Form;
 use crate::v2_plan;
 
 /// The outcome of dispatching one request: an HTTP status and the JSON body.
@@ -325,33 +326,9 @@ pub(crate) fn not_acceptable() -> Reply {
     )
 }
 
-/// The response media type negotiated from the request's `Accept` header:
-/// the plain `application/json` rendering, or the Neo4j Query API v2 media
-/// type's typed (`{"$type","_value"}`) encoding. The one place the wire
-/// content type and the value encoding are decided together, so a reply can
-/// never advertise one encoding and serialize the other.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ResponseMediaType {
-    /// `application/json`: plain JSON values.
-    Json,
-    /// `application/vnd.neo4j.query`: the typed value encoding (LABS-376).
-    Neo4jQuery,
-}
-
-impl ResponseMediaType {
-    /// The `content-type` header value this media type advertises.
-    fn content_type(self) -> &'static str {
-        match self {
-            Self::Json => APPLICATION_JSON,
-            Self::Neo4jQuery => VND_NEO4J_QUERY,
-        }
-    }
-
-    /// Whether values take the typed (`{"$type","_value"}`) encoding.
-    fn typed(self) -> bool {
-        matches!(self, Self::Neo4jQuery)
-    }
-}
+// The media type lives beside the value encoding it selects (v2_json),
+// re-exported here so the reply's own public path is unchanged.
+pub use crate::v2_json::ResponseMediaType;
 
 /// The success envelope: the one constructor of a success reply
 /// (ADR-0386 §3). `data` comes first — `data.fields` and the materialized
@@ -364,30 +341,43 @@ impl ResponseMediaType {
 /// The rows are moved in as the engine's own values and encoded one at a
 /// time by the writer (ADR-0675), so no body-sized JSON tree is ever built.
 /// The negotiated media type decides the value encoding here, beside the
-/// content type the reply advertises. Fails only on the plan-wire budget
-/// refusal (ADR-0628) — an error Reply through the one engine-error policy,
-/// the statement itself having executed.
+/// content type the reply advertises. Fails on the plan-wire budget refusal
+/// (ADR-0628) or on a row value the wire cannot carry (an entity whose
+/// namespace has no element-id segment, refused before the writer starts) —
+/// an error Reply through the one engine-error policy either way, the
+/// statement itself having executed.
 fn success_envelope(
     result: QueryResult,
     include_counters: bool,
     media_type: ResponseMediaType,
     success_status: u16,
 ) -> Result<Reply, Reply> {
-    let typed = media_type.typed();
     let mut members: Vec<(String, Member)> = Vec::with_capacity(8);
+    let form = Form {
+        media_type,
+        namespace: Some(result.header.namespace),
+    };
+    refuse_entities_without_element_ids(&result)?;
     // The structured plan of an EXPLAIN/PROFILE statement (ADR-0344/0345,
     // ADR-0357) rides the envelope in the Neo4j Query API v2 field shape —
     // `queryPlan` for EXPLAIN, `profiledQueryPlan` for PROFILE — through
     // the engine's one decoration (`PlanNode::to_neo4j_value`, root-shaped
-    // and adding the Neo4j-facing root args) and the same `v2_value_json`
-    // encoding the row values use. Absent on plain runs. The whole v2
+    // and adding the Neo4j-facing root args) and the same value encoding
+    // the row values use. Absent on plain runs. The whole v2
     // translation lives in [`crate::v2_plan`], beside the value encoding.
     if let Some(tree) = result.plan_root() {
         // ADR-0628's plan-wire budget: a plan past it files through the one
         // engine-error policy (the typed Capacity refusal, a 507) — the
         // statement already executed; the error text states only its plan
         // document is refused.
-        let (key, node) = v2_plan::plan_field(tree, typed).map_err(|e| run_error(&e))?;
+        // Plan arguments carry no entities: the walk gets an entity-free
+        // form, so an entity there is refused rather than borrowing the
+        // statement's namespace.
+        let plan_form = Form {
+            media_type,
+            namespace: None,
+        };
+        let (key, node) = v2_plan::plan_field(tree, plan_form).map_err(|e| run_error(&e))?;
         members.push((key.to_string(), node.into()));
     }
     let stats: WireStatsSnapshot = query_stats_to_wire(&result.stats);
@@ -440,7 +430,7 @@ fn success_envelope(
         0,
         (
             "data".to_string(),
-            Member::Data(DataBlock::new(header.columns, rows, typed)),
+            Member::Data(DataBlock::new(header.columns, rows, form)),
         ),
     );
     Ok(Reply::json_as(
@@ -448,6 +438,26 @@ fn success_envelope(
         ReplyBody::new(members),
         media_type,
     ))
+}
+
+/// Refuse a reply whose rows carry an entity under a namespace with no
+/// element-id segment: the wire form has no id to carry, and the ADR-0675
+/// writer encodes lazily, so the refusal has to happen before it starts
+/// rather than failing a chunk mid-stream. The scan is skipped entirely
+/// unless the namespace lacks a segment (`system` is the only one), and
+/// `carries_entity` descends into containers, so `collect(n)` / `{a: n}`
+/// are caught too.
+fn refuse_entities_without_element_ids(result: &QueryResult) -> Result<(), Reply> {
+    if result.header.namespace.element_id_segment().is_none()
+        && result
+            .rows
+            .iter()
+            .flatten()
+            .any(crate::v2_json::carries_entity)
+    {
+        return Err(run_error(&crate::v2_json::missing_element_id_error()));
+    }
+    Ok(())
 }
 
 /// Whether any mutation counter is nonzero (the statement updated the graph).

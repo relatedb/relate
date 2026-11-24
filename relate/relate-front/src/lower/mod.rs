@@ -280,6 +280,7 @@ fn lower_group_by(
 }
 
 mod clause;
+mod existence;
 mod expr;
 mod pattern;
 mod search_filter;

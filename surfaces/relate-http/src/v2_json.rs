@@ -7,7 +7,76 @@
 
 use serde_json::{json, Map, Value as Json};
 
+use relate::{Error, Namespace};
+use relate_model::value::float_text;
+
+use crate::http::{APPLICATION_JSON, VND_NEO4J_QUERY};
 use relate_model::wire;
+use relate_model::CypherValue;
+
+/// The response media type negotiated from the request's `Accept` header:
+/// the plain `application/json` rendering, or the Neo4j Query API v2 media
+/// type's typed (`{"$type","_value"}`) encoding. The one place the wire
+/// content type and the value encoding are decided together, so a reply can
+/// never advertise one encoding and serialize the other.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResponseMediaType {
+    /// `application/json`: plain JSON values.
+    Json,
+    /// `application/vnd.neo4j.query`: the typed value encoding (LABS-376).
+    Neo4jQuery,
+}
+
+impl ResponseMediaType {
+    /// The `content-type` header value this media type advertises.
+    pub(crate) fn content_type(self) -> &'static str {
+        match self {
+            Self::Json => APPLICATION_JSON,
+            Self::Neo4jQuery => VND_NEO4J_QUERY,
+        }
+    }
+
+    /// Whether values take the typed (`{"$type","_value"}`) encoding.
+    pub(crate) fn typed(self) -> bool {
+        matches!(self, Self::Neo4jQuery)
+    }
+}
+
+/// The negotiated response form: the media type (which decides the value
+/// encoding) and the statement's routed namespace, threaded as one `Copy`
+/// value. The namespace is `None` only for plan-node arguments, which carry
+/// scalars, lists and maps and never an entity — an entity there is a loud
+/// error.
+#[derive(Clone, Copy)]
+pub struct Form {
+    /// The negotiated media type: the one carrier of the typed/plain split.
+    pub media_type: ResponseMediaType,
+    /// The statement's routed namespace.
+    pub namespace: Option<Namespace>,
+}
+
+impl Form {
+    /// Whether values take the typed (`{"$type","_value"}`) encoding.
+    pub(crate) fn typed(self) -> bool {
+        self.media_type.typed()
+    }
+
+    /// A payload that is the same in both forms, tagged when the typed form
+    /// was negotiated — the two-form rule, one place. An arm whose two
+    /// payloads differ spells its own branches.
+    fn encode(self, tag: &str, plain: Json) -> Json {
+        if self.typed() {
+            tagged(tag, plain)
+        } else {
+            plain
+        }
+    }
+
+    /// A temporal value: the canonical ISO-8601 string, tagged when typed.
+    fn temporal(self, value: &CypherValue, tag: &str) -> Json {
+        self.encode(tag, Json::String(value.to_string()))
+    }
+}
 
 fn tagged(tag: &str, value: Json) -> Json {
     json!({"$type": tag, "_value": value})
@@ -22,81 +91,66 @@ fn tagged(tag: &str, value: Json) -> Json {
 /// (`application/json`) renders plain JSON with entities as plain objects.
 /// A client decoder dispatches on `$type` — an ADR-0223 `kind` tag reads
 /// as `undefined` to it ("Unknown type: undefined" was exactly that).
-pub fn v2_value_json(value: &relate_model::CypherValue, typed: bool) -> Json {
-    v2_value_json_at(value, typed, 0)
+///
+/// The row writer (ADR-0675) enters at depth 0 with the [`Form`] the reply
+/// built; the plan encoder enters through [`v2_map_json_at`] the same way.
+///
+/// # Errors
+///
+/// An entity whose namespace has no element-id segment (`system`) has no id
+/// the wire form can carry, so the value fails with a typed error rather
+/// than fabricating a bare numeric id that `elementId()` disagrees with.
+/// The reply refuses such a row before its writer starts
+/// ([`carries_entity`]); this error is the encoder's own defence.
+pub(crate) fn v2_value_json(value: &CypherValue, form: Form) -> relate::Result<Json> {
+    v2_value_json_at(value, form, 0)
 }
 
-/// [`v2_value_json`] with the ADR-0462 `depth` guard (the number of
+/// [`v2_value_json`]'s walk with the ADR-0462 `depth` guard (the number of
 /// containers enclosing `value`): a container past
 /// [`relate::MAX_VALUE_DEPTH`] encodes as JSON `null` instead of
 /// recursing. Unreachable behind the checked constructors.
-fn v2_value_json_at(value: &relate_model::CypherValue, typed: bool, depth: u32) -> Json {
-    use relate_model::CypherValue as V;
+pub(crate) fn v2_value_json_at(
+    value: &CypherValue,
+    form: Form,
+    depth: u32,
+) -> relate::Result<Json> {
+    use CypherValue as V;
 
-    match value {
-        V::Null => {
-            if typed {
-                tagged("Null", Json::Null)
-            } else {
-                Json::Null
-            }
-        }
-        V::Bool(b) => {
-            if typed {
-                tagged("Boolean", json!(b))
-            } else {
-                json!(b)
-            }
-        }
+    Ok(match value {
+        V::Null => form.encode("Null", Json::Null),
+        V::Bool(b) => form.encode("Boolean", json!(b)),
         // Typed JSON carries integers and floats as strings.
         V::Int(i) => {
-            if typed {
+            if form.typed() {
                 tagged("Integer", json!(i.to_string()))
             } else {
                 json!(i)
             }
         }
         V::Float(f) => {
-            if typed {
-                tagged("Float", json!(V::Float(*f).to_string()))
-            } else {
+            if form.typed() {
+                tagged("Float", json!(float_text(*f)))
+            } else if f.is_finite() {
                 wire::json_f64(*f)
-            }
-        }
-        V::Str(s) => {
-            if typed {
-                tagged("String", json!(s))
             } else {
-                json!(s)
+                // JSON has no non-finite number: the Neo4j spelling is a
+                // string that JavaScript and Java both parse.
+                Json::String(float_text(*f))
             }
         }
+        V::Str(s) => form.encode("String", json!(s)),
         V::List(items) => {
             let Some(next) = relate::next_depth(depth) else {
-                return Json::Null;
+                return Ok(Json::Null);
             };
-            // One mapping expression; `typed` is threaded into the closure
-            // and the tag wraps the result (the Path arm's shape).
-            let inner = Json::Array(
-                items
-                    .iter()
-                    .map(|v| v2_value_json_at(v, typed, next))
-                    .collect(),
-            );
-            if typed {
-                tagged("List", inner)
-            } else {
-                inner
-            }
+            form.encode("List", list_json(items, form, next)?)
         }
         V::Map(map) => {
             let Some(next) = relate::next_depth(depth) else {
-                return Json::Null;
+                return Ok(Json::Null);
             };
-            if typed {
-                tagged("Map", Json::Object(v2_map_json_at(map, true, next)))
-            } else {
-                Json::Object(v2_map_json_at(map, false, next))
-            }
+            form.encode("Map", Json::Object(v2_map_json_at(map, form, next)?))
         }
         V::Node {
             id,
@@ -104,24 +158,9 @@ fn v2_value_json_at(value: &relate_model::CypherValue, typed: bool, depth: u32) 
             properties,
         } => {
             let Some(next) = relate::next_depth(depth) else {
-                return Json::Null;
+                return Ok(Json::Null);
             };
-            if typed {
-                tagged(
-                    "Node",
-                    json!({
-                        "_element_id": id.to_string(),
-                        "_labels": labels,
-                        "_properties": v2_map_json_at(properties, true, next),
-                    }),
-                )
-            } else {
-                json!({
-                    "elementId": id.to_string(),
-                    "labels": labels,
-                    "properties": v2_map_json_at(properties, false, next),
-                })
-            }
+            node_json(*id, labels, properties, form, next)?
         }
         V::Relationship {
             id,
@@ -131,28 +170,9 @@ fn v2_value_json_at(value: &relate_model::CypherValue, typed: bool, depth: u32) 
             properties,
         } => {
             let Some(next) = relate::next_depth(depth) else {
-                return Json::Null;
+                return Ok(Json::Null);
             };
-            if typed {
-                tagged(
-                    "Relationship",
-                    json!({
-                        "_element_id": id.to_string(),
-                        "_start_node_element_id": start_id.to_string(),
-                        "_end_node_element_id": end_id.to_string(),
-                        "_type": rel_type,
-                        "_properties": v2_map_json_at(properties, true, next),
-                    }),
-                )
-            } else {
-                json!({
-                    "elementId": id.to_string(),
-                    "startNodeElementId": start_id.to_string(),
-                    "endNodeElementId": end_id.to_string(),
-                    "type": rel_type,
-                    "properties": v2_map_json_at(properties, false, next),
-                })
-            }
+            relationship_json(*id, *start_id, *end_id, rel_type, properties, form, next)?
         }
         V::Path {
             nodes,
@@ -161,74 +181,53 @@ fn v2_value_json_at(value: &relate_model::CypherValue, typed: bool, depth: u32) 
             // Alternating [node, rel, node, …, node], typed or plain per
             // the negotiated form.
             if relate::next_depth(depth).is_none() {
-                return Json::Null;
+                return Ok(Json::Null);
             }
             let mut items = Vec::with_capacity(nodes.len() + relationships.len());
             for (i, n) in nodes.iter().enumerate() {
                 // A path's embedded entities are not an extra container
                 // level (ADR-0462 depth accounting).
-                items.push(v2_value_json_at(n, typed, depth));
+                items.push(v2_value_json_at(n, form, depth)?);
                 if let Some(r) = relationships.get(i) {
-                    items.push(v2_value_json_at(r, typed, depth));
+                    items.push(v2_value_json_at(r, form, depth)?);
                 }
             }
-            if typed {
-                tagged("Path", Json::Array(items))
-            } else {
-                Json::Array(items)
-            }
+            form.encode("Path", Json::Array(items))
         }
         // Temporal values: canonical ISO-8601 strings (the wire codec's
         // documented Display), tagged with the Neo4j type name when typed.
-        V::Date(_) => temporal(value, "Date", typed),
-        V::LocalDateTime(_) => temporal(value, "LocalDateTime", typed),
+        V::Date(_) => form.temporal(value, "Date"),
+        V::LocalDateTime(_) => form.temporal(value, "LocalDateTime"),
         V::DateTime(_, zone) => {
             // A fixed offset is OffsetDateTime; an IANA zone name is
             // ZonedDateTime (the server's split).
-            temporal(
+            form.temporal(
                 value,
                 if zone.is_some() {
                     "ZonedDateTime"
                 } else {
                     "OffsetDateTime"
                 },
-                typed,
             )
         }
-        V::Time(_, offset) => temporal(
+        V::Time(_, offset) => form.temporal(
             value,
             if offset.is_some() {
                 "Time"
             } else {
                 "LocalTime"
             },
-            typed,
         ),
-        V::Duration(_) => temporal(value, "Duration", typed),
-        V::Point(p) => {
-            let mut coordinates = vec![json!(p.x), json!(p.y)];
-            if let Some(z) = p.z {
-                coordinates.push(json!(z));
-            }
-            let mut crs = json!({
-                "srid": p.srid,
-                "name": srid_name(p.srid),
-                "type": "link",
-            });
-            if let Some(href) = srid_href(p.srid) {
-                crs["properties"] = json!({"href": href, "type": "ogcwkt"});
-            }
-            if typed {
-                tagged("Point", json!({"coordinates": coordinates, "crs": crs}))
-            } else {
-                json!({"type": "Point", "coordinates": coordinates, "crs": crs})
-            }
-        }
+        V::Duration(_) => form.temporal(value, "Duration"),
+        // The Neo4j Query API carries a point as its EWKT string in both
+        // encodings (ADR-0236); the `{coordinates, crs}` object was the
+        // Relate-only shape, which a client's Point decoder does not know.
+        V::Point(p) => form.encode("Point", Json::String(relate_model::point::ewkt(p))),
         V::Vector { coord, values, .. } => {
             let Some(next) = relate::next_depth(depth) else {
-                return Json::Null;
+                return Ok(Json::Null);
             };
-            if typed {
+            if form.typed() {
                 tagged(
                     "Vector",
                     json!({
@@ -237,82 +236,186 @@ fn v2_value_json_at(value: &relate_model::CypherValue, typed: bool, depth: u32) 
                         "coordinatesType": vector_coord_name(coord),
                         "coordinates": values
                             .iter()
-                            .map(|v| Json::String(v.to_string()))
+                            .map(|v| Json::String(vector_coord_text(v)))
                             .collect::<Vec<_>>(),
                     }),
                 )
             } else {
-                Json::Array(
-                    values
-                        .iter()
-                        .map(|v| v2_value_json_at(v, false, next))
-                        .collect(),
-                )
+                // A plain vector is exactly a list of its coordinates.
+                list_json(values, form, next)?
             }
         }
         // Geometry is a Relate extension the Neo4j client codecs do not
-        // know: typed reports it honestly as Unsupported, plain keeps the
-        // documented ADR-0223 wire shape.
+        // know: typed reports it honestly as the string the spec documents,
+        // plain keeps ADR-0223's wire object — the two forms carry
+        // different payloads, so this arm keeps its own branches.
         V::Geometry(_) => {
-            if typed {
+            if form.typed() {
                 tagged("Unsupported", json!(format!("{value}")))
             } else {
                 wire::value_to_wire_json(value)
             }
         }
+    })
+}
+
+/// A list of values encoded one level down — the guarded container walk the
+/// `List` arm and the plain `Vector` arm share.
+fn list_json(items: &[CypherValue], form: Form, next: u32) -> relate::Result<Json> {
+    let mut encoded = Vec::with_capacity(items.len());
+    for item in items {
+        encoded.push(v2_value_json_at(item, form, next)?);
     }
+    Ok(Json::Array(encoded))
 }
 
-/// A property/map value under the v2 encoding.
-pub fn v2_map_json(
-    map: &indexmap::IndexMap<String, relate_model::CypherValue>,
-    typed: bool,
-) -> Map<String, Json> {
-    v2_map_json_at(map, typed, 0)
+/// One node as the v2 entity object: the plain Neo4j field names, or the
+/// typed `_`-prefixed twin — one construction, the keys selected by form.
+fn node_json(
+    id: i64,
+    labels: &[String],
+    properties: &indexmap::IndexMap<String, CypherValue>,
+    form: Form,
+    next: u32,
+) -> relate::Result<Json> {
+    let element_id = element_id(id, form.namespace, ElementKind::Node)?;
+    let properties = Json::Object(v2_map_json_at(properties, form, next)?);
+    let (id_key, labels_key, properties_key) = if form.typed() {
+        ("_element_id", "_labels", "_properties")
+    } else {
+        ("elementId", "labels", "properties")
+    };
+    let mut node = Map::new();
+    node.insert(id_key.into(), Json::String(element_id));
+    node.insert(labels_key.into(), json!(labels));
+    node.insert(properties_key.into(), properties);
+    Ok(form.encode("Node", Json::Object(node)))
 }
 
-/// [`v2_map_json`] with the ADR-0462 `depth` guard.
-fn v2_map_json_at(
-    map: &indexmap::IndexMap<String, relate_model::CypherValue>,
-    typed: bool,
+/// One relationship as the v2 entity object — [`node_json`]'s twin.
+fn relationship_json(
+    id: i64,
+    start_id: i64,
+    end_id: i64,
+    rel_type: &str,
+    properties: &indexmap::IndexMap<String, CypherValue>,
+    form: Form,
+    next: u32,
+) -> relate::Result<Json> {
+    let rel_id = element_id(id, form.namespace, ElementKind::Rel)?;
+    let start = element_id(start_id, form.namespace, ElementKind::Node)?;
+    let end = element_id(end_id, form.namespace, ElementKind::Node)?;
+    let properties = Json::Object(v2_map_json_at(properties, form, next)?);
+    let (id_key, start_key, end_key, type_key, properties_key) = if form.typed() {
+        (
+            "_element_id",
+            "_start_node_element_id",
+            "_end_node_element_id",
+            "_type",
+            "_properties",
+        )
+    } else {
+        (
+            "elementId",
+            "startNodeElementId",
+            "endNodeElementId",
+            "type",
+            "properties",
+        )
+    };
+    let mut relationship = Map::new();
+    relationship.insert(id_key.into(), Json::String(rel_id));
+    relationship.insert(start_key.into(), Json::String(start));
+    relationship.insert(end_key.into(), Json::String(end));
+    relationship.insert(type_key.into(), Json::String(rel_type.to_string()));
+    relationship.insert(properties_key.into(), properties);
+    Ok(form.encode("Relationship", Json::Object(relationship)))
+}
+
+/// A property/map value under the v2 encoding, with the ADR-0462 `depth`
+/// guard. Each caller supplies the namespace it may encode under: the row
+/// writer the statement's, the plan encoder `None` — so an entity in a plan
+/// argument is a loud error rather than borrowing the statement's namespace.
+pub(crate) fn v2_map_json_at(
+    map: &indexmap::IndexMap<String, CypherValue>,
+    form: Form,
     depth: u32,
-) -> Map<String, Json> {
+) -> relate::Result<Map<String, Json>> {
     map.iter()
-        .map(|(k, v)| (k.clone(), v2_value_json_at(v, typed, depth)))
+        .map(|(k, v)| Ok((k.clone(), v2_value_json_at(v, form, depth)?)))
         .collect()
 }
 
-/// A temporal value: the canonical ISO-8601 string, tagged when typed.
-fn temporal(value: &relate_model::CypherValue, tag: &str, typed: bool) -> Json {
-    if typed {
-        tagged(tag, Json::String(value.to_string()))
-    } else {
-        Json::String(value.to_string())
+/// A vector coordinate's text (the typed Vector spells coordinates as
+/// strings): a float takes the surface's one rendering policy, so a
+/// non-finite coordinate reads `Infinity` like every other float, never the
+/// `CypherValue` Display's `Inf`.
+fn vector_coord_text(value: &CypherValue) -> String {
+    match value {
+        CypherValue::Float(f) => float_text(*f),
+        other => other.to_string(),
     }
 }
 
-/// The CRS name for a point SRID (the server's mapping).
-fn srid_name(srid: i32) -> &'static str {
-    match srid {
-        7203 => "cartesian",
-        9157 => "cartesian-3d",
-        4326 => "wgs-84",
-        4979 => "wgs-84-3d",
-        _ => "n/a",
+/// Which entity kind an element id encodes (the `4`/`5` digit and the
+/// `n`/`r` prefix travel together in [`element_id`]).
+#[derive(Clone, Copy)]
+enum ElementKind {
+    Node,
+    Rel,
+}
+
+/// The ADR-0554 element id (`4:<segment>:n<id>` / `5:<segment>:r<id>`) the
+/// engine constructors produce — never the bare numeric id. Two states have
+/// no id the wire can carry, and each says so instead of fabricating one:
+/// no namespace at all (plan-node arguments, which carry scalars, lists and
+/// maps and never an entity — a contract violation if one appears), and
+/// `system`, which has no element-id segment yet a statement routed there
+/// can yield an entity through a procedure or a catalog clause.
+fn element_id(id: i64, namespace: Option<Namespace>, kind: ElementKind) -> relate::Result<String> {
+    let Some(namespace) = namespace else {
+        return Err(Error::internal("plan arguments carry no entities"));
+    };
+    let encoded = match kind {
+        ElementKind::Node => relate::node_element_id(id, namespace),
+        ElementKind::Rel => relate::rel_element_id(id, namespace),
+    };
+    encoded.ok_or_else(missing_element_id_error)
+}
+
+/// Whether a value carries an entity, directly or inside a container — the
+/// fact that decides whether a namespace needs an element-id segment for
+/// this value. One predicate for the reply's pre-flight refusal and the
+/// encoder's own error.
+pub(crate) fn carries_entity(value: &relate::Value) -> bool {
+    // Exhaustive on purpose: a new value variant must decide whether it can
+    // carry an entity, and the pre-writer refusal must cover exactly the
+    // shapes the writer descends into.
+    use relate::Value as V;
+    match value {
+        V::Node(_) | V::Relationship(_) | V::Path(_) => true,
+        V::List(items) => items.iter().any(carries_entity),
+        V::Map(map) => map.values().any(carries_entity),
+        // The plain form descends into a vector's values; the typed form
+        // spells them as numbers. A vector holds numbers by construction, so
+        // this is honest against the writer either way.
+        V::Vector { values, .. } => values.iter().any(carries_entity),
+        V::Null
+        | V::Bool(_)
+        | V::Int(_)
+        | V::Float(_)
+        | V::String(_)
+        | V::Temporal(_)
+        | V::Point(_)
+        | V::Uuid(_)
+        | V::Bytes(_) => false,
     }
 }
 
-/// The OGC WKT href for a known SRID (the server's mapping).
-fn srid_href(srid: i32) -> Option<String> {
-    match srid {
-        7203 | 9157 => Some(format!(
-            "http://spatialreference.org/ref/sr-org/{srid}/ogcwkt/"
-        )),
-        4326 | 4979 => Some(format!(
-            "http://spatialreference.org/ref/epsg/{srid}/ogcwkt/"
-        )),
-        _ => None,
-    }
+/// The one refusal for an entity whose namespace has no element-id segment
+/// (`elementId()` raises the same text).
+pub(crate) fn missing_element_id_error() -> Error {
+    Error::execution("elements of this namespace have no element ids")
 }
 
 /// The Neo4j `coordinatesType` vocabulary for a vector's coordinate kind.

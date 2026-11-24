@@ -137,14 +137,57 @@ pub fn params_from_value(value: &serde_json::Value) -> Result<BTreeMap<String, V
 pub fn params_from_map(
     map: &serde_json::Map<String, serde_json::Value>,
 ) -> Result<BTreeMap<String, Value>, String> {
+    params_from_map_with(map, plain_param_value)
+}
+
+/// The plain fold's one value decoder: a JSON value to the engine value the
+/// plain (and typed) parameter dialects bind — every nested object, even one
+/// with a `__type` key, is an ordinary map, and typed values are built in
+/// Cypher. [`params_from_map`] and a dialect that decodes its own non-JSON
+/// shapes (the HTTP typed fold uses it for every leaf it does not special-
+/// case) share it, so the two cannot bind different values.
+///
+/// ```
+/// use relate::{plain_param_value, Value};
+///
+/// let map = serde_json::json!({"__type": "point", "x": 1});
+/// assert!(matches!(plain_param_value(&map).unwrap(), Value::Map(_)));
+/// ```
+pub fn plain_param_value(value: &serde_json::Value) -> Result<Value, String> {
+    try_json_to_param_value(value)
+        .map(|cypher| cypher_to_value(&cypher))
+        .map_err(|e| e.to_string())
+}
+
+/// The per-entry walk both parameter folds share: `decode` turns one JSON
+/// value into an engine value, then the entry gets the `parameter <name>:
+/// <error>` prefix and ADR-0462's depth check (every JSON parameter entry —
+/// HTTP plain/typed, MCP, FFI, Rust API — passes one of the two folds, so
+/// this covers them all; Bolt and Python reject deeper nesting at their own
+/// 128 limits first). [`params_from_map`] passes the plain fold's decoder; a
+/// dialect whose values cannot ride JSON — the HTTP typed fold, whose
+/// non-finite `Float` has no JSON number — passes its own.
+///
+/// ```
+/// use relate::{params_from_map_with, params_from_map, Value};
+///
+/// let map = serde_json::json!({"n": 1.0});
+/// let params = params_from_map(map.as_object().unwrap()).unwrap();
+/// assert_eq!(params["n"], Value::Float(1.0));
+/// // A custom decoder is an ordinary closure over one JSON value.
+/// let doubled = params_from_map_with(map.as_object().unwrap(), |v| {
+///     v.as_f64().map(|f| Value::Float(f * 2.0)).ok_or_else(|| "not a float".to_string())
+/// })
+/// .unwrap();
+/// assert_eq!(doubled["n"], Value::Float(2.0));
+/// ```
+pub fn params_from_map_with(
+    map: &serde_json::Map<String, serde_json::Value>,
+    decode: impl Fn(&serde_json::Value) -> Result<Value, String>,
+) -> Result<BTreeMap<String, Value>, String> {
     map.iter()
         .map(|(k, v)| {
-            let value = try_json_to_param_value(v).map_err(|e| format!("parameter {k}: {e}"))?;
-            let value = cypher_to_value(&value);
-            // ADR-0462: every JSON parameter entry (HTTP plain/typed, MCP,
-            // FFI, Rust API) passes this one fold, so the value-depth check
-            // here covers them all. Bolt and Python reject deeper nesting at
-            // their own 128 limits before reaching it.
+            let value = decode(v).map_err(|e| format!("parameter {k}: {e}"))?;
             value
                 .check_depth()
                 .map_err(|e| format!("parameter {k}: {e}"))?;

@@ -113,22 +113,34 @@ fn vector_literal_is_a_value_constructor() {
     );
 }
 
-/// The one float policy at the old vector-only `1e16` boundary: the
-/// scalar, literal and display forms agree, and the decimal spelling parses
-/// back to the same value (the scientific form is not needed to
-/// round-trip).
+/// The one float policy at the old vector-only `1e16` boundary: pinned
+/// through the value's own forms, so the test proves the scalar literal, the
+/// scalar display and the vector coordinate spelling all read one policy —
+/// not merely that one helper returns the expected text.
 #[test]
 fn float_literal_policy_is_shared_by_scalars_and_vector_coordinates() {
-    assert_eq!(float_literal(1.0), "1.0");
-    assert_eq!(float_literal(1.5), "1.5");
-    assert_eq!(float_literal(1.0e16), "10000000000000000.0");
-    assert_eq!(float_literal(9.007199254740992e15), "9007199254740992.0");
-    assert_eq!(float_literal(f64::NAN), "NaN");
-    assert_eq!(float_literal(f64::INFINITY), "Infinity");
-    assert_eq!(float_literal(f64::NEG_INFINITY), "-Infinity");
+    // One spelling table, both accessors: a scalar's literal and display
+    // forms must agree with each other and with the vector coordinate text.
+    let cases: [(f64, &str); 7] = [
+        (1.0, "1.0"),
+        (1.5, "1.5"),
+        (1.0e16, "10000000000000000.0"),
+        (9.007199254740992e15, "9007199254740992.0"),
+        (f64::NAN, "NaN"),
+        (f64::INFINITY, "Infinity"),
+        (f64::NEG_INFINITY, "-Infinity"),
+    ];
+    for (value, expected) in cases {
+        let scalar = Value::Float(value);
+        assert_eq!(scalar.to_cypher_literal(), expected, "{value:?}");
+        assert_eq!(scalar.to_display_string(), expected, "{value:?}");
+    }
     for value in [1.0e16, 9.007199254740992e15, 1.7976931348623157e308] {
         assert_eq!(
-            float_literal(value).parse::<f64>().expect("round-trips"),
+            Value::Float(value)
+                .to_cypher_literal()
+                .parse::<f64>()
+                .expect("round-trips"),
             value
         );
     }
@@ -136,6 +148,8 @@ fn float_literal_policy_is_shared_by_scalars_and_vector_coordinates() {
         coord: VectorCoordKind::Float64,
         values: vec![Value::Float(1.0e16)].into(),
     };
+    // The vector's literal embeds the very coordinate spelling the table
+    // pins above.
     assert_eq!(
         vector.to_cypher_literal(),
         "vector([10000000000000000.0], 1, FLOAT)"

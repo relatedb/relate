@@ -193,13 +193,10 @@ fn temporal_tag(t: &Temporal) -> WireTag {
     }
 }
 
-/// The EWKT point spelling the pull decodes (ADR-0181 item 5):
-/// `SRID=<i32>;POINT (<x> <y>)` or `SRID=<i32>;POINT Z (<x> <y> <z>)`.
+/// The EWKT point spelling the pull decodes (ADR-0181 item 5) — the one
+/// emitter beside the parser in [`relate_model::point`].
 fn point_ewkt(p: &PointValue) -> String {
-    match p.z {
-        Some(z) => format!("SRID={};POINT Z ({:?} {:?} {:?})", p.srid, p.x, p.y, z),
-        None => format!("SRID={};POINT ({:?} {:?})", p.srid, p.x, p.y),
-    }
+    relate_model::point::ewkt(p)
 }
 
 /// A float's wire spelling: the decimal string the pull's decoder parses
