@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 use relate::{Database, Temporal, Value};
 use relate_core::bare_type_name;
 use relate_core::PointValue;
+use relate_model::point::{EwktError, PointDomainError};
 use serde_json::json;
 
 use super::*;
@@ -477,9 +478,18 @@ fn non_finite_point_coordinates_error() {
 #[test]
 fn an_out_of_range_latitude_errors() {
     let err = decode("Point", json!("SRID=4326;POINT (10 91)")).unwrap_err();
-    assert!(err.to_string().contains("latitude"), "{err}");
+    assert_eq!(
+        err,
+        malformed(
+            "Point",
+            EwktError::Domain(PointDomainError::InvalidLatitude).to_string()
+        )
+    );
     // A cartesian point has no latitude rule.
-    assert!(decode("Point", json!("SRID=7203;POINT (10 91)")).is_ok());
+    assert_eq!(
+        decode("Point", json!("SRID=7203;POINT (10 91)")).unwrap(),
+        Value::Point(PointValue::cartesian_2d(10.0, 91.0))
+    );
 }
 
 /// The decoder upholds the SRID's fixed dimension, the same rule
@@ -493,12 +503,25 @@ fn a_coordinate_count_that_disagrees_with_the_srid_errors() {
         "SRID=4979;POINT (1 2)",
     ] {
         let err = decode("Point", json!(payload)).unwrap_err();
-        assert!(
-            err.to_string().contains("coordinate dimension"),
-            "{payload}: {err}"
+        let srid = payload[5..9].parse().unwrap();
+        assert_eq!(
+            err,
+            malformed(
+                "Point",
+                EwktError::Domain(PointDomainError::InvalidDimension { srid }).to_string()
+            ),
+            "{payload}"
         );
     }
-    assert!(decode("Point", json!("SRID=12345;POINT Z (1 2 3)")).is_ok());
+    assert_eq!(
+        decode("Point", json!("SRID=12345;POINT Z (1 2 3)")).unwrap(),
+        Value::Point(PointValue {
+            srid: 12345,
+            x: 1.0,
+            y: 2.0,
+            z: Some(3.0)
+        })
+    );
 }
 
 /// A value without a `$type` tag (a server that ignored the typed
