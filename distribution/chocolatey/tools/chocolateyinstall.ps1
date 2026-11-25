@@ -1,11 +1,5 @@
 $ErrorActionPreference = 'Stop'
 
-# Chocolatey's PowerShell host does not auto-load the Utility module on
-# every host version — the v1.3.0 install died with "Get-FileHash is not
-# recognized" — so the import is explicit: the SHA256SUMS check below
-# needs the cmdlet whatever the host loads by default.
-Import-Module Microsoft.PowerShell.Utility
-
 # The package's tools directory: where the real binary and its provenance
 # marker live. $MyInvocation resolves to this script only at file scope, so
 # the constant is defined here, not inside a function.
@@ -200,6 +194,27 @@ function Get-RelateSumsEntry {
     Stop-RelateChocolateyInstall "SHA256SUMS from $Tag has no entry for $Asset"
 }
 
+# A file's SHA-256, uppercase hex — through .NET, not Get-FileHash:
+# Chocolatey's PowerShell host does not reliably load the Utility
+# module on every host version ("Get-FileHash is not recognized", seen
+# on the v1.3.0 runner and surviving an explicit Import-Module), while
+# the .NET crypto classes the rest of this script already leans on are
+# always present.
+function Get-RelateFileSha256 {
+    param([string] $Path)
+    $sha256 = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $stream = [System.IO.File]::OpenRead($Path)
+        try {
+            return ([System.BitConverter]::ToString($sha256.ComputeHash($stream))).Replace('-', '')
+        } finally {
+            $stream.Close()
+        }
+    } finally {
+        $sha256.Dispose()
+    }
+}
+
 # The pinned Authenticode signer thumbprint, normalized to the form Windows
 # reports (uppercase hex without spaces), or a refusal when the package
 # carries no pin - a package that pins nothing installs nothing.
@@ -266,7 +281,7 @@ function Install-RelateChocolatey {
         # authenticated set and its signature.
         $downloadPath = Join-Path $staging $RelateAsset
         Get-ChocolateyWebFile -PackageName 'relate' -FileFullPath $downloadPath -Url "$releaseUrl/$RelateAsset"
-        $actual = (Get-FileHash -LiteralPath $downloadPath -Algorithm SHA256).Hash
+        $actual = Get-RelateFileSha256 -Path $downloadPath
         if ($actual -ine $expected) {
             Stop-RelateChocolateyInstall ("checksum verification failed for $RelateAsset " +
                 "(signed SHA256SUMS $expected, downloaded $actual); installing nothing")
