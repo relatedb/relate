@@ -105,9 +105,9 @@ def _resolve_version() -> str:
         try:
             return version("relate")
         except PackageNotFoundError:
-            return "1.3.0"
+            return "1.3.1"
     except Exception:
-        return "1.3.0"
+        return "1.3.1"
 
 
 __version__ = _resolve_version()
