@@ -6,6 +6,7 @@
 //! the parent (the LABS-311 size gate).
 
 use std::collections::HashSet;
+use std::ops::ControlFlow;
 
 use relate_names::SmallName;
 
@@ -20,7 +21,9 @@ use crate::{CallScope, Clause, Expr, LabelExpr, MapProjectionItem, PathPattern, 
 /// `n`; `k: v` reads only what `v` reads). One policy both free-variable
 /// walkers consult — the shorthand item is a name, not an expression, so it is
 /// invisible to [`Expr::children`].
-fn map_projection_shorthand_names(items: &[MapProjectionItem]) -> impl Iterator<Item = &SmallName> {
+pub fn map_projection_shorthand_names(
+    items: &[MapProjectionItem],
+) -> impl Iterator<Item = &SmallName> {
     items.iter().filter_map(|item| match item {
         MapProjectionItem::Variable { name } => Some(name),
         MapProjectionItem::KeyValue { .. }
@@ -29,56 +32,95 @@ fn map_projection_shorthand_names(items: &[MapProjectionItem]) -> impl Iterator<
     })
 }
 
-/// Whether `expr` references any of `names` from *its own* scope.
-///
-/// One fold over the scope model ([`walk_scope_children`]): a scope-bearing
-/// variant ([`Expr::is_scope_bearing`]) is opaque (its body opens its own
-/// scope), and an identifier a comprehension/quantifier/`reduce` binds
-/// ([`Expr::binds_identifiers`]) is not a reference to an outer name — only
-/// the variant's *source* expression is evaluated outside that binding.
-/// The one predicate the CALL-subquery importing-WITH rule uses to decide
-/// whether a projection reads the enclosing scope.
-pub fn references_any(expr: &Expr, names: &HashSet<String>) -> bool {
-    fn go(expr: &Expr, names: &HashSet<String>, bound: &mut Vec<SmallName>) -> bool {
-        match expr {
-            // The String-keyed read set is probed through the allocation-
-            // free text bridge (with_str), never a per-lookup to_string.
-            Expr::Variable(name) => {
-                name.with_str(|text| names.contains(text)) && reads(name, bound)
+/// Whether a fold over an expression's own-scope reads enters the
+/// per-element bodies of the identifier-binding variants (comprehension,
+/// quantifier, `reduce`).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ElementBodies {
+    /// Descend them with the element's identifiers bound: a read of such an
+    /// identifier is not a read of an outer name, any other name is.
+    Enter,
+    /// Leave them out: they read names of their own scope, never the row.
+    Skip,
+}
+
+/// The one fold over the scope model ([`walk_scope_children`]) both
+/// own-scope read walkers ([`references_any`], [`expr_row_vars`]) are:
+/// every unbound name `expr` reads from *its own* scope — a bare variable
+/// and a map projection's shorthand items — is handed to `read`, which
+/// answers whether to stop. A scope-bearing variant
+/// ([`Expr::is_scope_bearing`]) is opaque (its body opens its own scope);
+/// `elements` decides the per-element bodies. The two walkers differ only
+/// in that policy and in the leaf they feed.
+fn own_scope_reads(
+    expr: &Expr,
+    bound: &mut Vec<SmallName>,
+    elements: ElementBodies,
+    read: &mut impl FnMut(&SmallName) -> ControlFlow<()>,
+) -> ControlFlow<()> {
+    match expr {
+        Expr::Variable(name) => {
+            if reads(name, bound) {
+                read(name)?;
             }
-            other if other.is_scope_bearing() => false,
+            ControlFlow::Continue(())
+        }
+        other if other.is_scope_bearing() => ControlFlow::Continue(()),
+        other => {
             // A map projection's shorthand items are reads the children walk
             // cannot see (`MapProjectionItem::Variable` is a name, not an
-            // expression): test them through the one shared policy, then
-            // descend the value expressions as usual.
-            Expr::MapProjection { items, .. }
-                if map_projection_shorthand_names(items).any(|name| {
-                    name.with_str(|text| names.contains(text)) && reads(name, bound)
-                }) =>
-            {
-                true
-            }
-            other => {
-                let mut hit = false;
-                walk_scope_children(other, &mut |child, scope| {
-                    if hit {
-                        return;
+            // expression): fed through the one shared policy, then the value
+            // expressions descend as usual.
+            if let Expr::MapProjection { items, .. } = other {
+                for name in map_projection_shorthand_names(items) {
+                    if reads(name, bound) {
+                        read(name)?;
                     }
-                    match scope {
-                        ChildScope::Enclosing => hit = go(child, names, bound),
-                        ChildScope::Element(bound_names) => {
-                            let mark = bound.len();
-                            bound.extend(bound_names);
-                            hit = go(child, names, bound);
-                            bound.truncate(mark);
-                        }
-                    }
-                });
-                hit
+                }
             }
+            let mut flow = ControlFlow::Continue(());
+            walk_scope_children(other, &mut |child, scope| {
+                if flow.is_break() {
+                    return;
+                }
+                flow = match scope {
+                    ChildScope::Enclosing => own_scope_reads(child, bound, elements, read),
+                    ChildScope::Element(_) if elements == ElementBodies::Skip => {
+                        ControlFlow::Continue(())
+                    }
+                    ChildScope::Element(bound_names) => {
+                        let mark = bound.len();
+                        bound.extend(bound_names);
+                        let flow = own_scope_reads(child, bound, elements, read);
+                        bound.truncate(mark);
+                        flow
+                    }
+                };
+            });
+            flow
         }
     }
-    go(expr, names, &mut Vec::new())
+}
+
+/// Whether `expr` references any of `names` from *its own* scope.
+///
+/// [`own_scope_reads`] with the per-element bodies entered: an identifier a
+/// comprehension/quantifier/`reduce` binds ([`Expr::binds_identifiers`]) is
+/// not a reference to an outer name — only the variant's *source*
+/// expression is evaluated outside that binding. The one predicate the
+/// CALL-subquery importing-WITH rule uses to decide whether a projection
+/// reads the enclosing scope.
+pub fn references_any(expr: &Expr, names: &HashSet<String>) -> bool {
+    // The String-keyed read set is probed through the allocation-free text
+    // bridge (with_str), never a per-lookup to_string.
+    own_scope_reads(expr, &mut Vec::new(), ElementBodies::Enter, &mut |name| {
+        if name.with_str(|text| names.contains(text)) {
+            ControlFlow::Break(())
+        } else {
+            ControlFlow::Continue(())
+        }
+    })
+    .is_break()
 }
 
 /// Collect the variable names an expression references, comprehension- and
@@ -167,31 +209,12 @@ pub fn expr_vars(expr: &Expr, out: &mut HashSet<String>) {
 /// value. A name the projection does expose is in the emitted row anyway,
 /// so a body's correlation on it needs no seed either.
 pub fn expr_row_vars(expr: &Expr, out: &mut HashSet<String>) {
-    // A scope-bearing variant (`is_scope_bearing`) opens a nested scope;
-    // an identifier-binding one's per-element bodies do — the one
-    // classification [`walk_scope_children`] applies below.
-    if expr.is_scope_bearing() {
-        return;
-    }
-    match expr {
-        Expr::Variable(v) => {
-            out.insert(v.to_string());
-        }
-        // The shorthand items are reads no child holds (the same accessor
-        // [`expr_vars`] reads); the base expression and every `KeyValue`
-        // value are its children, so they ride the one child walk.
-        mp @ Expr::MapProjection { items, .. } => {
-            for name in map_projection_shorthand_names(items) {
-                out.insert(name.to_string());
-            }
-            mp.each_child(&mut |child| expr_row_vars(child, out));
-        }
-        other => walk_scope_children(other, &mut |child, scope| {
-            if matches!(scope, ChildScope::Enclosing) {
-                expr_row_vars(child, out);
-            }
-        }),
-    }
+    // Collecting, never stopping: [`own_scope_reads`] with the per-element
+    // bodies left out.
+    let _ = own_scope_reads(expr, &mut Vec::new(), ElementBodies::Skip, &mut |name| {
+        out.insert(name.to_string());
+        ControlFlow::Continue(())
+    });
 }
 
 /// Variables referenced by the dynamic (`$(…)`) parts of a label

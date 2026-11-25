@@ -29,7 +29,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use relate_core::{Error, Node, Result, Value};
-use relate_ir::{classify_aggregate, Expr, MapProjectionItem, Projection};
+use relate_ir::{classify_aggregate, map_projection_shorthand_names, Expr, Projection};
 
 use crate::eval::is_agg_expr;
 use crate::row::{Row, RowNames};
@@ -141,22 +141,17 @@ impl Reads {
             // The one `*` decline: the item carries every in-scope variable
             // through to the output row.
             Expr::Star => self.whole = true,
-            Expr::CountStar => {}
-            Expr::Function { name, args, .. } => {
-                if name.with_str(classify_aggregate).is_none() {
-                    args.iter().for_each(|arg| self.leaves(arg));
-                }
-            }
+            // An aggregate call's operands were folded while the rows
+            // streamed; every other call rides the one child walk below.
+            Expr::Function { name, .. } if name.with_str(classify_aggregate).is_some() => {}
             Expr::Variable(name) => {
                 self.names.insert(name.to_string());
             }
             // The shorthand items are reads no child holds; the base
             // expression and every `KeyValue` value ride the one child walk.
             mp @ Expr::MapProjection { items, .. } => {
-                for item in items {
-                    if let MapProjectionItem::Variable { name } = item {
-                        self.names.insert(name.to_string());
-                    }
+                for name in map_projection_shorthand_names(items) {
+                    self.names.insert(name.to_string());
                 }
                 mp.each_child(&mut |child| self.leaves(child));
             }
@@ -281,6 +276,18 @@ fn key_position(key_exprs: &[Cow<'_, Expr>], expr: &Expr) -> Option<usize> {
     key_exprs.iter().position(|key| **key == *expr)
 }
 
+/// The columns of a group's first row the seed keeps — those of `wanted`
+/// the row has, in its column order. The one selection both the landing
+/// bill and the landing itself read, so what is billed and what is kept
+/// cannot disagree.
+fn kept_columns(wanted: &HashSet<String>, first_row: &Row) -> Vec<String> {
+    first_row
+        .keys()
+        .filter(|name| wanted.contains(*name))
+        .cloned()
+        .collect()
+}
+
 impl SeedStore {
     /// Plan the seed of one aggregation and classify its items — each role
     /// built once with its final meaning. A grouping key an item restates
@@ -371,24 +378,26 @@ impl SeedStore {
                 key_slots,
                 ..
             } => {
-                let cols: Vec<&Value> = match resolved {
-                    Some(resolved) => resolved
-                        .columns
-                        .iter()
-                        .map(|name| {
-                            row.get(name).ok_or_else(|| {
-                                Error::internal(
-                                    "an aggregation input row lost a column its first row had",
-                                )
-                            })
-                        })
-                        .collect::<Result<_>>()?,
-                    None => row
-                        .iter()
-                        .filter(|(name, _)| wanted.contains(*name))
-                        .map(|(_, value)| value)
-                        .collect(),
+                // The first row's columns are derived by the one selection
+                // `land` resolves from; every later row reads the fixed set.
+                let first;
+                let names: &[String] = match resolved {
+                    Some(resolved) => &resolved.columns,
+                    None => {
+                        first = kept_columns(wanted, row);
+                        &first
+                    }
                 };
+                let cols: Vec<&Value> = names
+                    .iter()
+                    .map(|name| {
+                        row.get(name).ok_or_else(|| {
+                            Error::internal(
+                                "an aggregation input row lost a column its first row had",
+                            )
+                        })
+                    })
+                    .collect::<Result<_>>()?;
                 let stride = slot_stride(key_slots, cols.len());
                 Ok(buffer_growth(
                     groups * stride,
@@ -415,11 +424,7 @@ impl SeedStore {
                 values,
             } => {
                 let resolved = resolved.get_or_insert_with(|| {
-                    let columns: Vec<String> = row
-                        .keys()
-                        .filter(|name| wanted.contains(*name))
-                        .cloned()
-                        .collect();
+                    let columns = kept_columns(wanted, &row);
                     Resolved {
                         names: RowNames::new(&columns),
                         columns,
