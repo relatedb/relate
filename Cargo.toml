@@ -54,7 +54,7 @@ default-members = [
 ]
 
 [workspace.package]
-version = "1.2.1"
+version = "1.3.0"
 edition = "2021"
 repository = "https://github.com/relatedb/relate"
 rust-version = "1.99"
@@ -62,51 +62,51 @@ license = "Apache-2.0"
 
 [workspace.dependencies]
 # Relate crates
-relate-model = { path = "relate/relate-model", version = "1.2.1" }
-relate-names = { path = "relate/relate-names", version = "1.2.1" }
-relate-markdown = { path = "relate/relate-markdown", version = "1.2.1" }
-relate-parser = { path = "relate/relate-parser", version = "1.2.1" }
-relate-error = { path = "relate/relate-error", version = "1.2.1" }
-relate-formatter = { path = "surfaces/relate-formatter", version = "1.2.1" }
-relate-splitter = { path = "relate/relate-splitter", version = "1.2.1" }
-relate-arrow = { path = "surfaces/relate-arrow", version = "1.2.1" }
-relate-eggs = { path = "surfaces/relate-eggs", version = "1.2.1" }
-relate-feedback = { path = "surfaces/relate-feedback", version = "1.2.1" }
+relate-model = { path = "relate/relate-model", version = "1.3.0" }
+relate-names = { path = "relate/relate-names", version = "1.3.0" }
+relate-markdown = { path = "relate/relate-markdown", version = "1.3.0" }
+relate-parser = { path = "relate/relate-parser", version = "1.3.0" }
+relate-error = { path = "relate/relate-error", version = "1.3.0" }
+relate-formatter = { path = "surfaces/relate-formatter", version = "1.3.0" }
+relate-splitter = { path = "relate/relate-splitter", version = "1.3.0" }
+relate-arrow = { path = "surfaces/relate-arrow", version = "1.3.0" }
+relate-eggs = { path = "surfaces/relate-eggs", version = "1.3.0" }
+relate-feedback = { path = "surfaces/relate-feedback", version = "1.3.0" }
 
 # Runtime crates
-relate-core = { path = "relate/relate-core", version = "1.2.1" }
-relate-catalog = { path = "relate/relate-catalog", version = "1.2.1" }
-relate-ir = { path = "relate/relate-ir", version = "1.2.1" }
-relate-front = { path = "relate/relate-front", version = "1.2.1" }
-relate-planner = { path = "relate/relate-planner", version = "1.2.1" }
-relate-engine-api = { path = "relate/relate-engine-api", version = "1.2.1" }
-relate-executor = { path = "relate/relate-executor", version = "1.2.1" }
-relate-ontology = { path = "relate/relate-ontology", version = "1.2.1" }
-relate-storage = { path = "relate/relate-storage", default-features = false, version = "1.2.1" }
-relate-write-local = { path = "relate/relate-write-local", version = "1.2.1" }
-relate = { path = "relate/relate", default-features = false, version = "1.2.1" }
-relate-load = { path = "surfaces/relate-load", version = "1.2.1" }
-relate-auth = { path = "surfaces/relate-auth", version = "1.2.1" }
-relate-bolt = { path = "surfaces/relate-bolt", version = "1.2.1" }
-relate-http = { path = "surfaces/relate-http", version = "1.2.1" }
-relate-mcp = { path = "surfaces/relate-mcp", version = "1.2.1" }
-relate-serve = { path = "surfaces/relate-serve", version = "1.2.1" }
-relate-datasets = { path = "testing/relate-datasets", version = "1.2.1" }
+relate-core = { path = "relate/relate-core", version = "1.3.0" }
+relate-catalog = { path = "relate/relate-catalog", version = "1.3.0" }
+relate-ir = { path = "relate/relate-ir", version = "1.3.0" }
+relate-front = { path = "relate/relate-front", version = "1.3.0" }
+relate-planner = { path = "relate/relate-planner", version = "1.3.0" }
+relate-engine-api = { path = "relate/relate-engine-api", version = "1.3.0" }
+relate-executor = { path = "relate/relate-executor", version = "1.3.0" }
+relate-ontology = { path = "relate/relate-ontology", version = "1.3.0" }
+relate-storage = { path = "relate/relate-storage", default-features = false, version = "1.3.0" }
+relate-write-local = { path = "relate/relate-write-local", version = "1.3.0" }
+relate = { path = "relate/relate", default-features = false, version = "1.3.0" }
+relate-load = { path = "surfaces/relate-load", version = "1.3.0" }
+relate-auth = { path = "surfaces/relate-auth", version = "1.3.0" }
+relate-bolt = { path = "surfaces/relate-bolt", version = "1.3.0" }
+relate-http = { path = "surfaces/relate-http", version = "1.3.0" }
+relate-mcp = { path = "surfaces/relate-mcp", version = "1.3.0" }
+relate-serve = { path = "surfaces/relate-serve", version = "1.3.0" }
+relate-datasets = { path = "testing/relate-datasets", version = "1.3.0" }
 # Path-only on purpose: it is a dev-dependency of publishable crates, and a
 # version pin would survive packaging and make crates.io reject the publish
 # (the crate itself is never published).
 relate-test-support = { path = "testing/relate-test-support" }
-relate-query-latency = { path = "testing/relate-query-latency", version = "1.2.1" }
+relate-query-latency = { path = "testing/relate-query-latency", version = "1.3.0" }
 # First-party extension children (ADR-0431 §11, ADR-0430 §6): the wire
 # kit both sides of a mount share (the CLI host consumes it; the
 # children link it), the importer children, and the game child — none
 # of them links a `Database`; their only power is the MCP calls they
 # make.
-relate-wire = { path = "extensions/relate-wire", version = "1.2.1" }
-relate-fs-to-graph = { path = "extensions/relate-fs-to-graph", version = "1.2.1" }
-relate-dungeon = { path = "extensions/relate-dungeon", version = "1.2.1" }
-relate-ideas = { path = "extensions/relate-ideas", version = "1.2.1" }
-relate-git-to-graph = { path = "extensions/relate-git-to-graph", version = "1.2.1" }
+relate-wire = { path = "extensions/relate-wire", version = "1.3.0" }
+relate-fs-to-graph = { path = "extensions/relate-fs-to-graph", version = "1.3.0" }
+relate-dungeon = { path = "extensions/relate-dungeon", version = "1.3.0" }
+relate-ideas = { path = "extensions/relate-ideas", version = "1.3.0" }
+relate-git-to-graph = { path = "extensions/relate-git-to-graph", version = "1.3.0" }
 
 # Property-testing harness (ADR-0268): dev-only, never compiled into the
 # library or the released artifact; one version workspace-wide.

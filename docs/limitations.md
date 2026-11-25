@@ -1,6 +1,6 @@
 # Limitations
 
-Relate is `1.2.1`. It is a lightweight, embeddable, **single-process**
+Relate is `1.3.0`. It is a lightweight, embeddable, **single-process**
 graph database — closer to SQLite than to a clustered graph server or a
 columnar warehouse. Several of these are scope choices, not bugs.
 
