@@ -7,7 +7,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use relate_core::{is_virtual_id, ElementIdRef, Error, PropertyMap, Result, Value};
+use relate_core::{is_virtual_id, temporal, ElementIdRef, Error, PropertyMap, Result, Value};
 
 use crate::overlay::ExecGraph;
 
@@ -315,16 +315,14 @@ fn next_entropy() -> u64 {
 /// overlapping one u64. The version is an implementation detail, not a
 /// guarantee (CIP-246).
 fn generate_uuid_v7() -> u128 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    // `next_entropy` samples from the rand crate (ThreadRng/ChaCha12) —
-    // already uniform, so mask directly; mixing through xorshift would be
-    // a no-op on uniform input (round-6 review).
+    // `next_entropy` is already uniform, so mask directly.
     let rand_a = (next_entropy() & 0x0fff) as u128;
     let rand_b = (next_entropy() & 0x3fff_ffff_ffff_ffff) as u128;
-    let ms = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis())
-        .unwrap_or(0)
+    // The statement-pinned instant `timestamp()` reads: engine-owned clock
+    // (JS `Date.now()` on wasm32, where `std::time::SystemTime::now`
+    // panics), so one statement's UUIDs share one timestamp prefix.
+    let ms = u128::try_from(temporal::now_epoch_millis())
+        .expect("the statement clock reads after the unix epoch")
         & 0xffff_ffff_ffff;
     (ms << 80) | (0x7 << 76) | (rand_a << 64) | (0b10 << 62) | rand_b
 }
@@ -338,6 +336,14 @@ mod tests {
     use relate_core::Namespace;
     use relate_ir::Expr;
     use std::collections::BTreeMap;
+
+    #[test]
+    fn uuid_v7_carries_the_statement_clock_reading() {
+        let _clock = relate_core::QueryClockGuard::new();
+        let u = generate_uuid_v7();
+        let ms = u128::try_from(temporal::now_epoch_millis()).unwrap();
+        assert_eq!(u >> 80, ms);
+    }
 
     #[test]
     fn uuid_v7_sequential_calls_differ() {
