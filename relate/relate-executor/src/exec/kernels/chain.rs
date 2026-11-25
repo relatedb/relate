@@ -288,7 +288,6 @@ fn expand_hop<P: NodePred>(
             break;
         }
         let from = prev.current(r);
-        let tallies = &tallies;
         graph.try_for_each_hop_resolved(from, hop.traverse, &types, |rid, arrival| {
             // One predecessor row can land thousands of successors; sample
             // the token per candidate so a cancelled statement stops in one
@@ -364,9 +363,6 @@ fn binding_values(ctx: ExecCtx<'_>, chain: &Chain<'_>, stage: &Stage<'_>, r: usi
 /// through the chunk layer would carry zero columns and answer zero
 /// rows, the hole this arm closes.
 fn emit_rows(ctx: ExecCtx<'_>, chain: &Chain<'_>, stage: &Stage<'_>) -> Result<Vec<Row>> {
-    if stage.rows() == 0 {
-        return Ok(Vec::new());
-    }
     let names = binding_names(chain);
     if names.is_empty() {
         // One empty row per complete binding, sampled like the named path:

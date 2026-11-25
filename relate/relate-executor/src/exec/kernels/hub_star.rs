@@ -107,16 +107,16 @@ pub(super) fn run(
     // The exists mode's counted read, resolved once per run: the parse
     // and the slot lookup are run-invariant, so only the per-pair node
     // read is left inside the stream.
-    let counted_read = match &mode {
-        KernelMode::Rows { .. } => None,
-        KernelMode::Exists { counted } => (*counted).map(|expr| {
+    let landing = match &mode {
+        KernelMode::Rows { .. } => Landing::Rows,
+        KernelMode::Exists { counted } => Landing::Exists(counted.map(|expr| {
             let (var, key) = var_prop_named(expr)
                 .expect("the engagement proof admits only var.prop counted expressions");
             let slot = projection
                 .node_slot(var)
                 .expect("the engagement proof checked the counted variable is bound");
             (slot, key)
-        }),
+        })),
     };
     // The breaker's accumulating bindings: one column per projected slot
     // — the hub is one of them by construction (the family is defined by
@@ -167,8 +167,8 @@ pub(super) fn run(
                         hub,
                         sides: [*a, b],
                     };
-                    match &mode {
-                        KernelMode::Rows { .. } => {
+                    match &landing {
+                        Landing::Rows => {
                             // The halt, ahead of the push: `want == 0`
                             // answers zero rows and the checked-ahead form
                             // keeps the count exact for every `want`; a
@@ -178,7 +178,7 @@ pub(super) fn run(
                             }
                             bindings.push(graph, &binding);
                         }
-                        KernelMode::Exists { .. } => {
+                        Landing::Exists(counted_read) => {
                             // Existence needs SOME complete binding to
                             // pass, and every pairing of this B row is a
                             // distinct complete binding — a mid node of a
@@ -188,7 +188,7 @@ pub(super) fn run(
                             // passes (the terminal is the only value the
                             // pairings share, and only in the
                             // shared-terminal mode).
-                            if counted_nonnull(ctx, &binding, &counted_read) {
+                            if counted_nonnull(ctx, &binding, counted_read) {
                                 found = true;
                                 return Ok(false);
                             }
@@ -203,15 +203,25 @@ pub(super) fn run(
             break 'hubs;
         }
     }
-    match mode {
-        KernelMode::Rows { .. } => {
+    match landing {
+        Landing::Rows => {
             let (names, columns) = bindings.into_columns();
             Ok(KernelOutput::Rows(
                 Chunk::from_columns(&names, columns).to_rows(),
             ))
         }
-        KernelMode::Exists { .. } => Ok(KernelOutput::Exists(hit)),
+        Landing::Exists(_) => Ok(KernelOutput::Exists(hit)),
     }
+}
+
+/// What one complete pairing does, resolved once per run from the
+/// [`KernelMode`] — the pairing loop matches this, never the mode per pair.
+enum Landing {
+    /// Accumulate the binding into the answer set.
+    Rows,
+    /// Test the counted read (resolved slot and key) until one pairing
+    /// passes; nothing means every complete binding counts.
+    Exists(Option<(At, NamedToken)>),
 }
 
 /// One side's walk-invariant state (LABS-805 round 2): the exec context,
@@ -345,7 +355,7 @@ fn step_hop<P: NodePred>(
         tallies.expansion_hop(index);
         rels[index] = rid;
         nodes[index] = arrival;
-        // The stream stopped: unwind through the neighbor loop.
+        // A stopped deeper walk becomes `Walk::Stop`, unwinding the stream.
         match expand_hop_at(walk, index + 1, arrival, rels, nodes, on_row) {
             Ok(true) => Ok(()),
             Ok(false) => Err(Walk::Stop),
