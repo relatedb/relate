@@ -33,6 +33,13 @@ pub(crate) const GZIP_THRESHOLD_BYTES: usize = 1024;
 /// the request's `Accept-Encoding` (ADR-0385 §2).
 pub(crate) const VARY_ACCEPT_ENCODING: &str = "Accept-Encoding";
 
+/// Advertise [`VARY_ACCEPT_ENCODING`] on a negotiated reply's headers —
+/// the one emitter of the `Vary` policy, shared by the buffered and the
+/// streamed reply.
+pub(crate) fn push_vary(headers: &mut Vec<(String, String)>) {
+    headers.push(("vary".to_string(), VARY_ACCEPT_ENCODING.to_string()));
+}
+
 /// The response-body representations this surface can produce. Exactly two
 /// exist; every other coding in `Accept-Encoding` is parsed and ignored.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -69,6 +76,15 @@ impl BodyEncoding {
             Self::Gzip
         } else {
             Self::Identity
+        }
+    }
+
+    /// The `content-encoding` header for this decided representation — the
+    /// one place the header is emitted: identity omits it entirely (never
+    /// `content-encoding: identity`), gzip names the coding.
+    pub(crate) fn push_header(self, extra_headers: &mut Vec<(String, String)>) {
+        if let Some(value) = self.header_value() {
+            extra_headers.push(("content-encoding".to_string(), value.to_string()));
         }
     }
 }

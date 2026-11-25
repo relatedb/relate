@@ -5,13 +5,16 @@
 //! this module emits bounded representation bytes instead. Both paths share
 //! the threshold, gzip negotiation, and serializer.
 
-use std::io::{self, BufWriter, Write};
+use std::io::{self, Write};
 
 use serde::Serialize;
 
+use crate::content_encoding::encode_body;
 pub use crate::content_encoding::BodyEncoding;
-use crate::content_encoding::{encode_body, gzip_encoder};
-use crate::stream::{count_json, CountedJson, FRAME_BUFFER_BYTES, STREAM_THRESHOLD_BYTES};
+use crate::stream::{
+    count_json, for_each_frame, CountedJson, EncodedFrames, FRAME_BUFFER_BYTES,
+    STREAM_THRESHOLD_BYTES,
+};
 
 /// The uncompressed serialized response size at which a response streams.
 pub const STREAM_THRESHOLD: usize = STREAM_THRESHOLD_BYTES;
@@ -64,20 +67,14 @@ pub fn write_stream<T: Serialize>(
     body: &T,
     content_encoding: BodyEncoding,
 ) -> io::Result<()> {
-    let mut buffered = BufWriter::with_capacity(FRAME_BUFFER_BYTES, FrameWriter::new(sink));
-    if content_encoding == BodyEncoding::Gzip {
-        let mut encoder = gzip_encoder(buffered);
-        serde_json::to_writer(&mut encoder, body).map_err(io::Error::other)?;
-        buffered = encoder.finish()?;
-    } else {
-        serde_json::to_writer(&mut buffered, body).map_err(io::Error::other)?;
-    }
-    buffered.flush()
+    let mut frames = EncodedFrames::new(FrameWriter::new(sink), content_encoding);
+    serde_json::to_writer(&mut frames, body).map_err(io::Error::other)?;
+    frames.finish()?.flush()
 }
 
 /// Slices every write to the public frame bound. Unlike `stream::ChunkWriter`,
 /// this does not add HTTP/1.1 chunk envelopes: the embedder's HTTP stack does.
-/// Both slice at [`FRAME_BUFFER_BYTES`].
+/// Both slice through the one slicer at [`FRAME_BUFFER_BYTES`].
 struct FrameWriter<'a, W: Write> {
     inner: &'a mut W,
 }
@@ -90,10 +87,8 @@ impl<'a, W: Write> FrameWriter<'a, W> {
 
 impl<W: Write> Write for FrameWriter<'_, W> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        for frame in buf.chunks(FRAME_BUFFER_BYTES) {
-            self.inner.write_all(frame)?;
-        }
-        Ok(buf.len())
+        let inner = &mut *self.inner;
+        for_each_frame(buf, |frame| inner.write_all(frame))
     }
 
     fn flush(&mut self) -> io::Result<()> {

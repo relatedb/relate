@@ -12,6 +12,10 @@ use crate::query_api::tests::{parse_expires, tx_id_from, SLOW_STATEMENT};
 #[path = "streaming_tests.rs"]
 mod streaming;
 
+// The statement streamer's tests (ADR-0682).
+#[path = "streamed_tests.rs"]
+mod streamed;
+
 /// Start the server on an ephemeral port in the background; return the
 /// port. The server runs until the test process ends.
 fn start(db: Database, config: HttpConfig) -> u16 {

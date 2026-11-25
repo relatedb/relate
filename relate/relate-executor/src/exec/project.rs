@@ -20,6 +20,7 @@ use super::pattern_policies::MatchFold;
 use super::post_merge::{adopt_rows, finish_projection, land_feed, Landed, LandedTail};
 use super::scope::{return_columns, star_scope_names, visible_keys, ProjectionFields};
 use super::{materialize_rows_strict, QueryResult, RowFeed};
+use crate::consumer::{BatchFlow, StreamSink};
 
 /// The statement's result columns for a `RETURN`/`WITH`: the shared
 /// [`return_columns`] item set, with a `RETURN *`/`WITH *` item expanded
@@ -64,6 +65,78 @@ pub(crate) fn return_result(
     // resets them on the way out regardless — one policy, not a per-arm mode
     // branch.
     Ok(QueryResult::intermediate(columns, data, graph.stats()))
+}
+
+/// The terminal `RETURN`'s streaming form (ADR-0682): pull the input one
+/// bounded batch at a time, project it, and hand the result cells to the
+/// consumer instead of landing them in the part's `Vec<Row>`. The pull is
+/// the back-pressure — the next batch is pulled only after the consumer
+/// returns — and a consumer answering [`BatchFlow::Stop`] stops the stream
+/// and cancels the statement (`Error::Cancelled`, `"query cancelled"`).
+///
+/// Only the map-each-row shape reaches here (the dispatcher's gate): no
+/// aggregation, `DISTINCT`, `ORDER BY`, `SKIP` or `LIMIT`, so each batch
+/// projects independently of every other. The columns are announced once,
+/// with the first batch — a `RETURN *` learns them from its first row, so
+/// they cannot go out earlier — or alone when the answer is empty. The
+/// returned result carries the columns and the view's own stats but no
+/// rows: the consumer has them.
+pub(crate) fn stream_terminal_return(
+    ctx: ExecCtx<'_>,
+    mut stream: RowStream<'_>,
+    sink: &mut StreamSink<'_>,
+    fields: &ProjectionFields<'_>,
+    items: &[Projection],
+    clauses: &[Clause],
+    rows_from: RowSource,
+) -> Result<QueryResult> {
+    let graph = ctx.graph;
+    // The one announce step: the statement's result columns, read off the
+    // first batch's rows (or none, for an empty answer), handed over once.
+    let announce = |sink: &mut StreamSink<'_>, rows: &[Row]| -> Result<Vec<String>> {
+        let announced = projection_result_columns(graph, items, rows, clauses);
+        sink.columns(&announced)?;
+        Ok(announced)
+    };
+    let mut columns: Option<Vec<String>> = None;
+    while let Some(batch) = stream.next_batch()? {
+        let batch = batch.into_vec();
+        let input = match rows_from {
+            RowSource::Bindings => ProjectionInput::Feed(RowFeed::Held(RowStream::held(batch))),
+            // The sink already evaluated this clause's items on every row;
+            // per batch, only the column extraction is left.
+            RowSource::SinkProjected => ProjectionInput::SinkProjected(batch),
+            RowSource::SinkLanded(_) => {
+                return Err(Error::internal(
+                    "a landed sink reached the streaming terminal",
+                ))
+            }
+        };
+        let mut rows = project_rows(ctx, input, fields, true, None)?;
+        let announced = match columns.take() {
+            Some(announced) => announced,
+            None => announce(sink, &rows)?,
+        };
+        let cells = materialize_rows_strict(&mut rows, &announced)?;
+        columns = Some(announced);
+        if matches!(sink.batch(cells)?, BatchFlow::Stop) {
+            // The consumer's early exit is the stream's: stop the walk
+            // (a completing source still runs out its own work), then
+            // cancel the statement.
+            stream.stop()?;
+            return Err(Error::cancelled());
+        }
+    }
+    let columns = match columns {
+        Some(columns) => columns,
+        // An empty answer still announces its columns once.
+        None => announce(sink, &[])?,
+    };
+    Ok(QueryResult::intermediate(
+        columns,
+        Vec::new(),
+        graph.stats(),
+    ))
 }
 
 /// Whether a projection only maps rows: no aggregation, `DISTINCT`,

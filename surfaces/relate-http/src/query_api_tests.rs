@@ -24,26 +24,44 @@ pub(super) fn seed_person_and_city(db: &Database) {
     conn.query("CREATE (:City)").unwrap();
 }
 
-/// Dispatch one in-process request through the route: `handle` with the
-/// discovery classification this direct caller computes itself (the wire
-/// path reads the gate's carried flag instead).
+/// One in-process request, end to end: the credential check the
+/// connection gate makes on the wire (`read_admitted_request`, which then
+/// hands the route `Accepted`) — every route but the public discovery
+/// document is checked — then the route, its pending statement collected.
+pub(crate) fn handle(
+    db: &Database,
+    request: &Request,
+    auth: &relate_auth::AuthConfig,
+    bolt_direct: Option<&str>,
+    txs: &TxRegistry,
+    extension: Option<&dyn crate::HttpExtension>,
+) -> Reply {
+    if !is_discovery_probe(request) {
+        if let Err(err) = auth.check_authorization(request.header("authorization")) {
+            return auth_failure(auth, err);
+        }
+    }
+    handle_pending(
+        db,
+        request,
+        auth,
+        bolt_direct,
+        txs,
+        CredentialGate::Accepted,
+        extension,
+    )
+    .materialize()
+}
+
+/// Dispatch one in-process request through the route: [`handle`] with no
+/// Bolt endpoint and no extension.
 pub(super) fn dispatch(
     db: &Database,
     request: &Request,
     auth: &relate_auth::AuthConfig,
     txs: &TxRegistry,
 ) -> Reply {
-    handle(
-        db,
-        request,
-        auth,
-        None,
-        txs,
-        CredentialGate::Unchecked {
-            public: is_discovery_probe(request),
-        },
-        None,
-    )
+    handle(db, request, auth, None, txs, None)
 }
 
 /// Neo4j Browser's actual Accept list, verbatim (LABS-376): the versioned
@@ -561,9 +579,6 @@ fn discovery_document_is_public_and_minimal() {
         CLOSED,
         Some("bolt://127.0.0.1:7687"),
         &txs(),
-        CredentialGate::Unchecked {
-            public: is_discovery_probe(&get),
-        },
         None,
     );
     let body = body_json(&reply);

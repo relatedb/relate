@@ -55,15 +55,12 @@ fn identity_envelope(statement: &str) -> serde_json::Value {
         &[("content-type", JSON_CONTENT_TYPE)],
     )
     .into_request(statement.as_bytes().to_vec());
-    let reply = query_api::handle(
+    let reply = query_api::tests::handle(
         &db,
         &request,
         &AuthConfig::None,
         None,
         &crate::tx_registry::TxRegistry::new(),
-        query_api::CredentialGate::Unchecked {
-            public: query_api::is_discovery_probe(&request),
-        },
         None,
     );
     let body = body_json(&reply);

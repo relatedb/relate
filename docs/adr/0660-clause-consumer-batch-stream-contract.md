@@ -214,3 +214,4 @@ plus the `pokec_profile` lane (`docs/datasets.md`).
   is the whole-clause hold, not `pass` — its rels-before-nodes delete
   ordering is a whole-clause invariant the write barrier's per-batch split
   broke (the spec corpus's Set scenario). The other write arms keep `pass`.
+- **ADR-0682** adds the batch consumer: the `Return` terminal hands its bounded batches to a caller-supplied consumer instead of landing them into the part's rows, for a last, unscoped read `Return`.

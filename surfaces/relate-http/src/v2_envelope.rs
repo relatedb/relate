@@ -84,6 +84,63 @@ impl Serialize for DataBlock {
     }
 }
 
+/// The streamed success envelope (ADR-0682): the wire shape a collected
+/// [`ReplyBody`] carries — `{"data":{"fields":[…],"values":[` the rows
+/// `]}`, then the tail members, then `}` — written piece by piece as the
+/// engine's batches arrive, so a streamed body is byte for byte the body the
+/// collected reply would have been. Each piece fails as a
+/// [`serde_json::Error`]; a failed write is its `io` class
+/// ([`serde_json::Error::is_io`]).
+pub(crate) mod streamed {
+    use std::io::Write;
+
+    use super::{Member, RowView};
+    use crate::v2_json::Form;
+
+    /// `{"data":{"fields":[…],"values":[` — the envelope up to its first row.
+    pub(crate) fn open(out: &mut impl Write, fields: &[String]) -> serde_json::Result<()> {
+        out.write_all(br#"{"data":{"fields":"#)
+            .map_err(serde_json::Error::io)?;
+        serde_json::to_writer(&mut *out, fields)?;
+        out.write_all(br#","values":["#)
+            .map_err(serde_json::Error::io)
+    }
+
+    /// Append `rows` to the `values` array, each after a comma unless it is
+    /// the array's first (`wrote_row` carries that across batches).
+    pub(crate) fn rows(
+        out: &mut impl Write,
+        wrote_row: &mut bool,
+        rows: &[Vec<relate::Value>],
+        form: Form,
+    ) -> serde_json::Result<()> {
+        for row in rows {
+            if std::mem::replace(wrote_row, true) {
+                out.write_all(b",").map_err(serde_json::Error::io)?;
+            }
+            serde_json::to_writer(&mut *out, &RowView::new(row, form))?;
+        }
+        Ok(())
+    }
+
+    /// Close the `values` array and the `data` block, write the tail
+    /// `members` in order (the success tail, or the in-band `errors`
+    /// member), and close the envelope.
+    pub(crate) fn close(
+        out: &mut impl Write,
+        members: &[(String, Member)],
+    ) -> serde_json::Result<()> {
+        out.write_all(b"]}").map_err(serde_json::Error::io)?;
+        for (key, member) in members {
+            out.write_all(b",").map_err(serde_json::Error::io)?;
+            serde_json::to_writer(&mut *out, key)?;
+            out.write_all(b":").map_err(serde_json::Error::io)?;
+            serde_json::to_writer(&mut *out, member)?;
+        }
+        out.write_all(b"}").map_err(serde_json::Error::io)
+    }
+}
+
 /// The `values` array: each row an array of its v2-encoded values.
 struct RowsView<'a> {
     rows: &'a [Vec<relate::Value>],
@@ -103,9 +160,17 @@ impl Serialize for RowsView<'_> {
     }
 }
 
-struct RowView<'a> {
+/// One row as an array of its v2-encoded values — the element of the
+/// `values` array, and what the statement streamer writes per row.
+pub(crate) struct RowView<'a> {
     row: &'a [relate::Value],
     form: Form,
+}
+
+impl<'a> RowView<'a> {
+    pub(crate) fn new(row: &'a [relate::Value], form: Form) -> Self {
+        Self { row, form }
+    }
 }
 
 impl Serialize for RowView<'_> {

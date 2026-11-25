@@ -58,7 +58,7 @@ pub use binding::{
     query_result_to_wire, query_stats_to_wire, run_script_wire, timing_stamp_ms,
 };
 pub use clone::CloneOptions;
-pub use connection::{Connection, Executed, ExecutionFailure};
+pub use connection::{Connection, Executed, ExecutionFailure, StreamEvent};
 /// A cooperative cancellation flag for a running query (ADR-0111).
 ///
 /// A transport (or any caller) holds a handle and calls [`CancelToken::cancel`]
@@ -101,9 +101,9 @@ pub use relate_error::{
     INTERNAL_MESSAGE,
 };
 pub use relate_executor::{
-    FrontierCounters, FrontierDecline, FrontierDeclineReason, FrontierRunDecline, KernelRung,
-    MemoCounters, PatternEngine, PhaseTimes, Procedure, PullKind, QueryStats, StartReason,
-    StatementEffect, StoreReads, WalkStart,
+    BatchFlow, FrontierCounters, FrontierDecline, FrontierDeclineReason, FrontierRunDecline,
+    KernelRung, MemoCounters, PatternEngine, PhaseTimes, Procedure, PullKind, QueryStats,
+    StartReason, StatementEffect, StoreReads, WalkStart,
 };
 // Research-only (speed-of-light kernels), quarantined behind the
 // non-default `research` cargo feature (ADR-0476): this re-export and the

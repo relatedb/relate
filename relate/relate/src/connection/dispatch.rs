@@ -15,7 +15,8 @@ use std::collections::BTreeMap;
 use web_time::Instant;
 
 use relate_executor::{
-    execute_read_at, ExecGraph, ExecRequest, Graph, PlanMetricsSink, ReadAdmission, WriteScratch,
+    execute_read_at, execute_read_streaming_at, ExecGraph, ExecRequest, Graph, PlanMetricsSink,
+    ReadAdmission, WriteScratch,
 };
 
 use relate_core::Namespace;
@@ -195,6 +196,7 @@ impl Connection {
         cypher: &str,
         params: BTreeMap<String, Value>,
         token: &CancelToken,
+        stream: Option<&mut super::stream::ConsumerStream<'_>>,
     ) -> QueryOutcome {
         let admission = match self.admit_statement(cypher, &params, CacheUse::Query, Instant::now())
         {
@@ -205,7 +207,14 @@ impl Connection {
             // no statement body pre-empts it.
             Err(e) => return QueryOutcome::not_admitted(Err(e)),
         };
-        self.run_admitted(admission, cypher, &params, token, RetryHost::ThisThread)
+        self.run_admitted(
+            admission,
+            cypher,
+            &params,
+            token,
+            RetryHost::ThisThread,
+            stream,
+        )
     }
 
     /// The query body after admission (ADR-0504): the EXPLAIN early
@@ -249,6 +258,7 @@ impl Connection {
         params: &BTreeMap<String, Value>,
         token: &CancelToken,
         retry_host: RetryHost,
+        mut stream: Option<&mut super::stream::ConsumerStream<'_>>,
     ) -> QueryOutcome {
         // REL8-1120 retry eligibility, captured before the admission is
         // consumed — the doc above states the contract; read-ness needs
@@ -257,14 +267,21 @@ impl Connection {
         // that same plan.
         let started = admission.started;
         let retryable_hit = admission.timing.plan_cache.served_from_cache() && self.txn.is_none();
-        let outcome = self.run_admitted_once(admission, cypher, params, token);
+        let outcome =
+            self.run_admitted_once(admission, cypher, params, token, stream.as_deref_mut());
         // The run's own error is the staged failure (ADR-0319): every
         // executor type error rides `Ok(Executed::Failed(..))`, while an
         // `Err` is a pre-execution refusal or a post-run resource charge —
         // never this retry's class. The type-error family is read from
         // the one classification table (`error_info`'s `TYPE_ERROR_CODE`
         // grouping), never re-derived as a variant list here.
+        //
+        // ADR-0682: a consumer that already received its columns (or
+        // batches) cannot be re-served, so an engaged stream opts the
+        // attempt out of the retry — the first run's outcome stands.
+        let stream_engaged = stream.as_ref().is_some_and(|stream| stream.engaged());
         let retryable = retryable_hit
+            && !stream_engaged
             && outcome
                 .staged_failure()
                 .is_some_and(|failure| error_info(&failure.error).neo4j_code == TYPE_ERROR_CODE);
@@ -281,22 +298,30 @@ impl Connection {
         // route's arm (ADR-0663, an unasserted thread) sends it to the
         // worker, the re-run itself bounded by the same statement that
         // just ran inline.
-        #[cfg(not(target_arch = "wasm32"))]
-        if matches!(retry_host, RetryHost::Worker) {
-            return QueryOutcome::from_result(Self::run_on_worker(
-                self.worker_slot(),
-                || match self.admit_statement(cypher, params, CacheUse::Bypass, started) {
-                    Ok(admission) => self.run_admitted_once(admission, cypher, params, token),
-                    Err(e) => QueryOutcome::not_admitted(Err(e)),
-                },
-                // No heartbeat: the retry is one more run of a statement
-                // that just finished inline, far inside any interval a
-                // caller arms one for (the inline arm's own arithmetic).
-                None,
-            ));
+        // The match is exhaustive on every target: wasm32's enum has no
+        // `Worker` variant, so its one arm runs the retry in place.
+        match retry_host {
+            #[cfg(not(target_arch = "wasm32"))]
+            RetryHost::Worker => {
+                return QueryOutcome::from_result(Self::run_on_worker(
+                    self.worker_slot(),
+                    || match self.admit_statement(cypher, params, CacheUse::Bypass, started) {
+                        Ok(admission) => {
+                            self.run_admitted_once(admission, cypher, params, token, stream)
+                        }
+                        Err(e) => QueryOutcome::not_admitted(Err(e)),
+                    },
+                    // No heartbeat: the retry is one more run of a
+                    // statement that just finished inline, far inside any
+                    // interval a caller arms one for (the inline arm's own
+                    // arithmetic).
+                    None,
+                ));
+            }
+            RetryHost::ThisThread => {}
         }
         match self.admit_statement(cypher, params, CacheUse::Bypass, started) {
-            Ok(admission) => self.run_admitted_once(admission, cypher, params, token),
+            Ok(admission) => self.run_admitted_once(admission, cypher, params, token, stream),
             Err(e) => QueryOutcome::not_admitted(Err(e)),
         }
     }
@@ -309,6 +334,7 @@ impl Connection {
         cypher: &str,
         params: &BTreeMap<String, Value>,
         token: &CancelToken,
+        stream: Option<&mut super::stream::ConsumerStream<'_>>,
     ) -> QueryOutcome {
         // EXPLAIN plans and compile-time validates the wrapped statement,
         // then renders the plan — execution never touches it (no writes, no
@@ -405,7 +431,15 @@ impl Connection {
             timing,
             profile_metrics,
         };
-        let mut outcome = self.dispatch(logical, params, parse_plan_ns, cypher, token, ctx);
+        // ADR-0682: a streamed statement announces its columns before the
+        // result header exists, so the authored spellings (ADR-0663) ride
+        // the connection's stream to its consumer, which re-spells the
+        // announcement; the engine sees only its sink.
+        let stream = stream.map(|stream| {
+            stream.rename_columns(super::columns::authored_renames(logical, cypher, preview));
+            stream.sink()
+        });
+        let mut outcome = self.dispatch(logical, params, parse_plan_ns, cypher, token, ctx, stream);
         // `commit_write` reserves returned rows before it appends to the
         // WAL, so an auto-commit write's result is exempt from the charge
         // below. Read after dispatch, never before it: the dispatch's own
@@ -552,7 +586,9 @@ impl Connection {
     /// the `stamp` metadata derived above the
     /// EXPLAIN/dispatch split is applied once, at the single tail, so no
     /// arm can return an unstamped `QueryResult`. (`stamp` is bundled to
-    /// avoid `clippy::too_many_arguments`.)
+    /// avoid `clippy::too_many_arguments`; the ADR-0682 consumer stream
+    /// then joined as the eighth argument, past the lint's limit.)
+    #[allow(clippy::too_many_arguments)]
     fn dispatch(
         &mut self,
         logical: &LogicalPlan,
@@ -561,6 +597,7 @@ impl Connection {
         cypher: &str,
         token: &CancelToken,
         ctx: DispatchCtx,
+        stream: Option<&mut relate_executor::StreamSink<'_>>,
     ) -> QueryOutcome {
         // LABS-832: the EXECUTE phase — this whole dispatch stage (target
         // selection, pinning, the run itself), stamped at the single tail
@@ -601,7 +638,7 @@ impl Connection {
         } else {
             // A refused admission (read guard, target, pin) is not-admitted;
             // the run's own result pairs with `admitted: true`.
-            self.query_read(&ctx, logical, params, cypher, token)
+            self.query_read(&ctx, logical, params, cypher, token, stream)
         };
         let (result, admitted) = match arm {
             ArmRun::Refused(e) => return QueryOutcome::not_admitted(Err(e)),
@@ -677,6 +714,7 @@ impl Connection {
         params: &BTreeMap<String, Value>,
         cypher: &str,
         token: &CancelToken,
+        stream: Option<&mut relate_executor::StreamSink<'_>>,
     ) -> ArmRun {
         let (admin, namespace) = (ctx.admin, ctx.stamp.namespace);
         // The target is selected and pinned under the read guard: the
@@ -704,24 +742,29 @@ impl Connection {
         };
         #[cfg(test)]
         self.inner.pause_admitted_read();
-        ArmRun::Admitted(
-            execute_read_at(&ReadAdmission {
-                graph: target,
-                snapshot_ts: pin.ts(),
-                schema: &schema,
-                request: ExecRequest {
-                    plan: logical,
-                    params,
-                    query_text: cypher,
-                    principal: self.principal.as_deref(),
-                    batch_commit: None,
-                    plan_metrics: ctx.profile_metrics,
-                },
-                cancel: Some(token),
-                ontology_document: ontology_document.as_deref(),
-            })
-            .map(ArmOutput::read),
-        )
+        let admission = ReadAdmission {
+            graph: target,
+            snapshot_ts: pin.ts(),
+            schema: &schema,
+            request: ExecRequest {
+                plan: logical,
+                params,
+                query_text: cypher,
+                principal: self.principal.as_deref(),
+                batch_commit: None,
+                plan_metrics: ctx.profile_metrics,
+            },
+            cancel: Some(token),
+            ontology_document: ontology_document.as_deref(),
+        };
+        // ADR-0682: with a consumer attached, the read runs its streaming
+        // entry — the terminal RETURN hands it batches, or the materialized
+        // result replays through it; without one, the plain read.
+        let result = match stream {
+            Some(stream) => execute_read_streaming_at(&admission, stream),
+            None => execute_read_at(&admission),
+        };
+        ArmRun::Admitted(result.map(ArmOutput::read))
     }
 
     /// The explicit-transaction arm: derive the target and admit the read

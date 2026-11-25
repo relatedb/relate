@@ -17,7 +17,7 @@ use relate_model::wire::{self, WireStatsSnapshot};
 use crate::http::{is_query_family, APPLICATION_JSON, VND_NEO4J_QUERY};
 use crate::typed_params::{request_params, RequestDialect};
 use crate::v2_envelope::{DataBlock, Member, ReplyBody};
-use crate::v2_json::Form;
+use crate::v2_json::{refuse_entities_without_element_ids, Form};
 use crate::v2_plan;
 
 /// The outcome of dispatching one request: an HTTP status and the JSON body.
@@ -66,6 +66,101 @@ impl Reply {
             extra_headers: Vec::new(),
         }
     }
+}
+
+/// A dispatched request's answer (ADR-0682): a reply whose body is built,
+/// or an auto-commit statement the server runs while it writes the reply,
+/// streaming its rows as the engine's batches arrive (`crate::streamed`).
+pub(crate) enum Answer {
+    /// The reply, body and all.
+    Ready(Reply),
+    /// The statement not yet run, with the extra response headers its reply
+    /// will carry (the CORS echo the dispatcher adds).
+    Pending {
+        statement: Box<PendingStatement>,
+        extra_headers: Vec<(String, String)>,
+    },
+}
+
+impl Answer {
+    /// An answer whose statement runs when the reply is written.
+    pub(crate) fn pending(statement: PendingStatement) -> Self {
+        Self::Pending {
+            statement: Box::new(statement),
+            extra_headers: Vec::new(),
+        }
+    }
+
+    /// The extra response headers the reply will carry, either state.
+    pub(crate) fn extra_headers_mut(&mut self) -> &mut Vec<(String, String)> {
+        match self {
+            Self::Ready(reply) => &mut reply.extra_headers,
+            Self::Pending { extra_headers, .. } => extra_headers,
+        }
+    }
+
+    /// The answer as a whole reply: a pending statement runs to completion
+    /// and its collected reply is returned. The seam the in-process callers
+    /// use — tests that read [`Reply::body`], and a reply outside the
+    /// negotiated seam — while the server streams instead.
+    pub(crate) fn materialize(self) -> Reply {
+        match self {
+            Self::Ready(reply) => reply,
+            Self::Pending {
+                statement,
+                mut extra_headers,
+            } => {
+                let mut collected = statement.collect();
+                collected.extra_headers.append(&mut extra_headers);
+                collected
+            }
+        }
+    }
+}
+
+impl From<Reply> for Answer {
+    fn from(reply: Reply) -> Self {
+        Self::Ready(reply)
+    }
+}
+
+/// An auto-commit statement the route admitted and the writer will run
+/// (ADR-0682): the connection, the folded request, and the negotiated
+/// form of its answer.
+pub(crate) struct PendingStatement {
+    pub(crate) conn: relate::Connection,
+    pub(crate) statement: String,
+    pub(crate) params: std::collections::BTreeMap<String, relate::Value>,
+    pub(crate) include_counters: bool,
+    pub(crate) media_type: ResponseMediaType,
+}
+
+impl PendingStatement {
+    /// The collecting run: the whole answer materialized, then framed like
+    /// any other reply.
+    pub(crate) fn collect(self) -> Reply {
+        let Self {
+            mut conn,
+            statement,
+            params,
+            include_counters,
+            media_type,
+        } = self;
+        match conn.query_with_params(&statement, params) {
+            Ok(result) => collected(result, include_counters, media_type),
+            Err(e) => run_error(&e),
+        }
+    }
+}
+
+/// A finished statement's collected reply: the success envelope, or the
+/// error reply its refusal became.
+pub(crate) fn collected(
+    result: QueryResult,
+    include_counters: bool,
+    media_type: ResponseMediaType,
+) -> Reply {
+    success_envelope(result, include_counters, media_type, 200).unwrap_or_else(|reply| reply)
 }
 
 /// The GQLSTATUS code for an unauthenticated request (Neo4j's unauthorized
@@ -121,20 +216,28 @@ pub(crate) fn invalid_request_body(e: serde_json::Error) -> Reply {
 /// errors are genericized, everything else passes its message through.
 /// `metrics` is the optional receipt member on the error object.
 pub(crate) fn error_envelope(status: u16, code: &str, message: &str) -> Reply {
-    error_envelope_with(status, code, message, None)
+    errors_reply(status, error_json(code, message, None))
 }
 
-fn error_envelope_with(
-    status: u16,
-    code: &str,
-    message: &str,
-    metrics: Option<serde_json::Value>,
-) -> Reply {
+fn errors_reply(status: u16, error: Json) -> Reply {
+    Reply::json(status, ReplyBody::new([errors_member(error)]))
+}
+
+/// The `errors` member carrying one entry: the whole error reply's one
+/// member, and the in-band tail a streamed body ends with when its
+/// statement fails after the head (`crate::streamed`).
+pub(crate) fn errors_member(error: Json) -> (String, Member) {
+    ("errors".to_string(), Member::Json(json!([error])))
+}
+
+/// One `errors[]` entry: the code and message, and the optional `metrics`
+/// receipt member.
+fn error_json(code: &str, message: &str, metrics: Option<Json>) -> Json {
     let mut error = json!({"code": code, "message": message});
     if let Some(metrics) = metrics {
         error["metrics"] = metrics;
     }
-    Reply::json(status, ReplyBody::new([("errors", json!([error]))]))
+    error
 }
 
 /// The request-side 400 envelope (the general code): the one constructor
@@ -217,6 +320,14 @@ pub(crate) fn run_on(
 /// internal class (engine-internal, IO, storage, locked) as the server's
 /// own failure (500).
 pub(crate) fn run_error(e: &Error) -> Reply {
+    let (status, error) = engine_error(e);
+    errors_reply(status, error)
+}
+
+/// An engine error as its HTTP status and its `errors[]` entry: the one
+/// mapping both the error reply and the in-band tail of a streamed body
+/// (`crate::streamed`) write.
+pub(crate) fn engine_error(e: &Error) -> (u16, Json) {
     let info = error_info(e);
     let status = match e {
         Error::Capacity { .. } => 507,
@@ -247,7 +358,7 @@ pub(crate) fn run_error(e: &Error) -> Reply {
         metrics["retryable"] = json!(info.retryable);
         metrics
     });
-    error_envelope_with(status, info.gql_status, &message, metrics)
+    (status, error_json(info.gql_status, &message, metrics))
 }
 
 /// One parsed `Accept` entry: which servable family it names, if any.
@@ -352,12 +463,45 @@ fn success_envelope(
     media_type: ResponseMediaType,
     success_status: u16,
 ) -> Result<Reply, Reply> {
-    let mut members: Vec<(String, Member)> = Vec::with_capacity(8);
     let form = Form {
         media_type,
         namespace: Some(result.header.namespace),
     };
-    refuse_entities_without_element_ids(&result)?;
+    refuse_entities_without_element_ids(result.header.namespace, &result.rows)
+        .map_err(|e| run_error(&e))?;
+    let mut members =
+        success_tail(&result, include_counters, media_type).map_err(|e| run_error(&e))?;
+    // Rows stay the engine's values and are encoded one at a time by the
+    // writer (ADR-0675). The tail only borrowed the result, so the
+    // columns and rows move out once, here, and `data` leads the body:
+    // `fields` then `values`, the order the block's own `Serialize` fixes
+    // (ADR-0386 §3, pinned by the stream tests' `{"data":{"fields"` prefix).
+    let QueryResult { header, rows, .. } = result;
+    members.insert(
+        0,
+        (
+            "data".to_string(),
+            Member::Data(DataBlock::new(header.columns, rows, form)),
+        ),
+    );
+    Ok(Reply::json_as(
+        success_status,
+        ReplyBody::new(members),
+        media_type,
+    ))
+}
+
+/// The success envelope's members after `data`, in wire order (ADR-0386
+/// §3): the plan, `counters`, `notifications`, `bookmarks` and the timing
+/// block. Shared by the collected reply and the streamed body's tail
+/// (`crate::streamed`), so both carry the same bytes. Fails on the
+/// plan-wire budget refusal (ADR-0628).
+pub(crate) fn success_tail(
+    result: &QueryResult,
+    include_counters: bool,
+    media_type: ResponseMediaType,
+) -> Result<Vec<(String, Member)>, Error> {
+    let mut members: Vec<(String, Member)> = Vec::with_capacity(8);
     // The structured plan of an EXPLAIN/PROFILE statement (ADR-0344/0345,
     // ADR-0357) rides the envelope in the Neo4j Query API v2 field shape —
     // `queryPlan` for EXPLAIN, `profiledQueryPlan` for PROFILE — through
@@ -377,7 +521,7 @@ fn success_envelope(
             media_type,
             namespace: None,
         };
-        let (key, node) = v2_plan::plan_field(tree, plan_form).map_err(|e| run_error(&e))?;
+        let (key, node) = v2_plan::plan_field(tree, plan_form)?;
         members.push((key.to_string(), node.into()));
     }
     let stats: WireStatsSnapshot = query_stats_to_wire(&result.stats);
@@ -414,50 +558,13 @@ fn success_envelope(
     // members are unaffected (the official drivers' hydrators drop unknown
     // keys), and the alternative — no phase visibility on this surface —
     // is what LABS-1120 set out to fix.
-    let timings = relate::timing_stamp_ms(&result);
+    let timings = relate::timing_stamp_ms(result);
     members.push(("timings".to_string(), timings.to_timings_json().into()));
     members.push((
         "planCache".to_string(),
         Json::String(timings.plan_cache.into()).into(),
     ));
-    // Rows stay the engine's values and are encoded one at a time by the
-    // writer (ADR-0675). The tail above only borrowed the result, so the
-    // columns and rows move out once, here, and `data` leads the body:
-    // `fields` then `values`, the order the block's own `Serialize` fixes
-    // (ADR-0386 §3, pinned by the stream tests' `{"data":{"fields"` prefix).
-    let QueryResult { header, rows, .. } = result;
-    members.insert(
-        0,
-        (
-            "data".to_string(),
-            Member::Data(DataBlock::new(header.columns, rows, form)),
-        ),
-    );
-    Ok(Reply::json_as(
-        success_status,
-        ReplyBody::new(members),
-        media_type,
-    ))
-}
-
-/// Refuse a reply whose rows carry an entity under a namespace with no
-/// element-id segment: the wire form has no id to carry, and the ADR-0675
-/// writer encodes lazily, so the refusal has to happen before it starts
-/// rather than failing a chunk mid-stream. The scan is skipped entirely
-/// unless the namespace lacks a segment (`system` is the only one), and
-/// `carries_entity` descends into containers, so `collect(n)` / `{a: n}`
-/// are caught too.
-fn refuse_entities_without_element_ids(result: &QueryResult) -> Result<(), Reply> {
-    if result.header.namespace.element_id_segment().is_none()
-        && result
-            .rows
-            .iter()
-            .flatten()
-            .any(crate::v2_json::carries_entity)
-    {
-        return Err(run_error(&crate::v2_json::missing_element_id_error()));
-    }
-    Ok(())
+    Ok(members)
 }
 
 /// Whether any mutation counter is nonzero (the statement updated the graph).

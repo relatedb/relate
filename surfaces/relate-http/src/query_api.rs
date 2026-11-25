@@ -9,9 +9,11 @@ use serde_json::{json, Map, Value as Json};
 use relate::Database;
 
 use crate::http::{Request, RequestHead};
-use crate::reply::{error_envelope, invalid_request_body, run_on, AuthFailure, Reply};
+use crate::reply::{
+    bad_request, error_envelope, invalid_request_body, Answer, AuthFailure, PendingStatement, Reply,
+};
 use crate::tx_registry::TxRegistry;
-use crate::typed_params::RequestDialect;
+use crate::typed_params::{request_params, RequestDialect};
 use crate::v2_envelope::ReplyBody;
 use relate_error::{GQLSTATUS_DATABASE_NOT_FOUND, GQLSTATUS_GENERAL};
 
@@ -36,9 +38,6 @@ pub(crate) enum CredentialGate {
     Accepted,
     /// The gate skipped the check. A query route is still authenticated.
     Public,
-    /// A direct caller. `public` is that caller's skip bit.
-    #[cfg(test)]
-    Unchecked { public: bool },
 }
 
 /// An authentication failure in the Query API envelope.
@@ -58,7 +57,11 @@ fn auth_failure(auth: &relate_auth::AuthConfig, err: relate_auth::AuthError) -> 
 /// managed-transaction routes (`…/tx`, `…/tx/{id}`, `…/tx/{id}/commit`)
 /// follow ADR-0237. `bolt_direct` is advertised in the discovery document
 /// only when this server actually has a Bolt endpoint.
-pub fn handle(
+///
+/// The auto-commit route's statement is not run here: the answer carries it
+/// pending, for the server to run while it writes (`crate::streamed`,
+/// ADR-0682); [`Answer::materialize`] collects it instead.
+pub(crate) fn handle_pending(
     db: &Database,
     request: &Request,
     auth: &relate_auth::AuthConfig,
@@ -66,7 +69,7 @@ pub fn handle(
     txs: &TxRegistry,
     gate: CredentialGate,
     extension: Option<&dyn crate::HttpExtension>,
-) -> Reply {
+) -> Answer {
     // The one discovery predicate, surface-owned (the public `GET /`
     // document is a Query API fact, not a wire-layer one): the gate calls it
     // through its probe parameter and carries the classification on Pass;
@@ -79,25 +82,23 @@ pub fn handle(
     // `check_authorization`; calling it again would verify a Custom
     // credential twice.
     if is_discovery_probe(request) {
-        return discovery_document(request, bolt_direct);
+        return discovery_document(request, bolt_direct).into();
     }
     let must_check = match gate {
         CredentialGate::Accepted => false,
         CredentialGate::Public => is_query_route(&request.path),
-        #[cfg(test)]
-        CredentialGate::Unchecked { public } => !public || is_query_route(&request.path),
     };
     if must_check {
         if let Err(err) = auth.check_authorization(request.header("authorization")) {
-            return auth_failure(auth, err);
+            return auth_failure(auth, err).into();
         }
     }
     let segments: Vec<&str> = request.path.split('/').filter(|s| !s.is_empty()).collect();
     let ["db", database, "query", "v2", rest @ ..] = segments.as_slice() else {
         if let Some(reply) = extension.and_then(|extension| extension.handle(request)) {
-            return reply;
+            return reply.into();
         }
-        return not_found();
+        return not_found().into();
     };
     // Content negotiation: the response content type is negotiated from
     // the request's Accept header (order-insensitive: any vnd-family entry
@@ -111,7 +112,7 @@ pub fn handle(
     let Some(media_type) =
         crate::reply::negotiated_media_type(request.header_list("accept").as_deref())
     else {
-        return crate::reply::not_acceptable();
+        return crate::reply::not_acceptable().into();
     };
     // The arms' guards are fallible replies, so the route returns them
     // as `Err` and this one fold turns them into the reply: every arm's
@@ -119,7 +120,8 @@ pub fn handle(
     // guard (the owner lookup alone would otherwise be spelled once per
     // branch).
     match route(db, request, auth, database, rest, media_type, txs) {
-        Ok(reply) | Err(reply) => reply,
+        Ok(answer) => answer,
+        Err(reply) => reply.into(),
     }
 }
 
@@ -135,7 +137,7 @@ fn route(
     rest: &[&str],
     media_type: crate::reply::ResponseMediaType,
     txs: &TxRegistry,
-) -> Result<Reply, Reply> {
+) -> Result<Answer, Reply> {
     match rest {
         // The auto-commit statement route: POST-only, its parameter
         // dialect resolved by the arm's one guard.
@@ -146,18 +148,21 @@ fn route(
             // `{databaseName}` selects one of the ADR-0116 fixed
             // namespaces; an unknown name fails with the engine's 42N00
             // DatabaseNotFound.
-            let mut conn = db
+            let conn = db
                 .connect_namespace(database)
                 .map_err(|e| crate::reply::namespace_connect_failure(&e))?;
-            run_on(
-                &mut conn,
-                &body.statement,
-                body.parameters,
-                body.include_counters,
+            // A class-less request-side decode rejection is the route's
+            // GQLSTATUS_GENERAL 400; the statement itself runs when the
+            // reply is written (ADR-0682).
+            let params = request_params(dialect, body.parameters.as_ref())
+                .map_err(|message| bad_request(&message))?;
+            Ok(Answer::pending(PendingStatement {
+                conn,
+                statement: body.statement,
+                params,
+                include_counters: body.include_counters,
                 media_type,
-                dialect,
-                200,
-            )
+            }))
         }
         // The managed-transaction routes (ADR-0237). Every statement-
         // carrying arm is POST-only through the same one guard.
@@ -173,6 +178,7 @@ fn route(
                 owner.as_deref(),
                 dialect,
             )
+            .map(Answer::Ready)
         }
         ["tx", id] => {
             // The method dispatch comes first so the arm's guard order
@@ -191,10 +197,11 @@ fn route(
                         owner.as_deref(),
                         dialect,
                     )
+                    .map(Answer::Ready)
                 }
                 "DELETE" => {
                     let owner = tx_owner(auth, request)?;
-                    crate::tx::rollback(id, txs, media_type, owner.as_deref())
+                    crate::tx::rollback(id, txs, media_type, owner.as_deref()).map(Answer::Ready)
                 }
                 _ => Err(method_not_allowed()),
             }
@@ -210,6 +217,7 @@ fn route(
                 owner.as_deref(),
                 dialect,
             )
+            .map(Answer::Ready)
         }
         _ => Err(not_found()),
     }

@@ -18,11 +18,13 @@ mod columns;
 mod outcome;
 mod render;
 mod staged;
+mod stream;
 mod txn;
 mod worker;
 
 use cache::CacheUse;
 pub use outcome::{Executed, ExecutionFailure};
+pub use stream::StreamEvent;
 use txn::OpenTxn;
 
 /// Test hook for the processing-memory load test (ADR-0333). Unset in
@@ -402,9 +404,10 @@ impl Connection {
         params: BTreeMap<String, Value>,
         token: &CancelToken,
         heartbeat: Option<Heartbeat<'_>>,
+        stream: Option<&mut stream::ConsumerStream<'_>>,
     ) -> QueryOutcome {
         drop(heartbeat);
-        self.run_query(cypher, params, token)
+        self.run_query(cypher, params, token, stream)
     }
 
     /// The plan body, run on the connection's worker thread (ADR-0259):
@@ -428,8 +431,7 @@ impl Connection {
         cypher: &str,
         params: BTreeMap<String, Value>,
     ) -> Result<QueryResult> {
-        self.run_cancellable(cypher, params, &CancelToken::new(), None)
-            .and_then(Executed::into_result)
+        self.query_collecting(cypher, params, &CancelToken::new())
     }
 
     /// Like [`Self::query_with_params`], but the query can be stopped by
@@ -464,8 +466,7 @@ impl Connection {
         params: BTreeMap<String, Value>,
         token: CancelToken,
     ) -> Result<QueryResult> {
-        self.run_cancellable(cypher, params, &token, None)
-            .and_then(Executed::into_result)
+        self.query_collecting(cypher, params, &token)
     }
 
     /// Shared worker-thread wrapper for every query entry point: the
@@ -478,6 +479,7 @@ impl Connection {
         params: BTreeMap<String, Value>,
         token: &CancelToken,
         heartbeat: Option<Heartbeat<'_>>,
+        stream: Option<&mut stream::ConsumerStream<'_>>,
     ) -> Result<Executed> {
         // ADR-0259: parse, front-end lowering/validation, planning, and
         // execution all recurse proportionally to input nesting, so the
@@ -491,7 +493,7 @@ impl Connection {
         // the fast path for a connection whose caller asserted the
         // worker's own stack budget, the worker body for every other — so
         // this shared epilogue stays mode-free.
-        let outcome = self.dispatch_query(cypher, params, token, heartbeat);
+        let outcome = self.dispatch_query(cypher, params, token, heartbeat, stream);
         if matches!(outcome.result, Ok(Executed::Rows(_))) {
             log_logical_bytes(&self.inner);
         }

@@ -544,11 +544,35 @@ carry `framing::BodyEncoding` (`identity` or `gzip`).
   and never building a JSON tree of the rows (ADR-0675); what
   the pre-ADR-0386 writer did with `serde_json::to_vec` — a body-sized
   serialized copy on top of the reply — is gone above the threshold, where
-  the body goes straight into the frame writer. The engine's rows
-  and the whole-object replies are still materialized before the reply seam
-  (ADR-0386 §6). Every other in-seam body (error envelopes, a
+  the body goes straight into the frame writer. The whole-object
+  replies are still materialized before the reply seam (ADR-0386 §6); an
+  auto-commit statement's rows are not, as the next item states. Every other in-seam body (error envelopes, a
   statement-less transaction answer) is serialized as one JSON object,
   chunked when it clears the threshold.
+- **An auto-commit statement streams as the engine produces its rows**
+  (ADR-0682). `POST /db/{databaseName}/query/v2` runs the statement while it
+  writes the reply: the engine hands its result batches (at most 1024 rows
+  each) to the writer, which holds the rows until their encoding reaches
+  `STREAM_THRESHOLD_BYTES`, then sends the chunked head and the opening of
+  the envelope and encodes every later batch straight into the frame
+  writer — the server holds one batch at a time, so peak memory does not grow
+  with the row count. A statement whose whole answer stays below the
+  threshold is collected and answered one-shot, exactly as before. The tx
+  routes' statements are collected, not streamed.
+  - **An error after the chunked head is in-band.** The `200` and the head
+    are already sent, so the failure is written as the envelope's `errors`
+    member after the rows, and the body ends there (with its last chunk, no
+    `bookmarks`/`counters` tail):
+    `{"data":{"fields":[...],"values":[...]},"errors":[{"code":"...","message":"..."}]}`.
+    A client that reads `data.values` must check for `errors` before treating
+    the rows as the complete answer. An error before the head — a failure
+    ahead of the first byte of an answer that never reached the threshold —
+    is the ordinary error reply with its own status.
+  - **A peer that stops reading ends the statement.** The socket write
+    timeout (`HttpConfig::write_timeout`, default 30 s like the read timeout)
+    fails a stalled write, the writer answers the engine "stop", and the
+    statement is cancelled and its connection dropped, rather than the engine
+    producing rows for a client that is not reading.
 - **The `GET /` discovery document is excluded from the seam**: it is
   one-shot identity — never gzipped and never chunked, whatever its
   serialized size — and carries no `Vary` (ADR-0385 §2, ADR-0386 §7). Its

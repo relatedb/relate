@@ -12,14 +12,15 @@ use std::time::Duration;
 use relate::Database;
 use relate_auth::AuthConfig;
 
-use crate::content_encoding::{self, BodyEncoding, ReplyEncodingPolicy, VARY_ACCEPT_ENCODING};
+use crate::content_encoding::{self, ReplyEncodingPolicy};
 use crate::http::{
-    drain_reader, read_admitted_request, write_head, AdmissionError, AdmissionOutcome, Cors,
-    DrainPlan, Framing, OriginAllowlist, ReadLimits, REJECT_DRAIN_TIMEOUT,
+    drain_reader, read_admitted_request, AdmissionError, AdmissionOutcome, Cors, DrainPlan,
+    OriginAllowlist, ReadLimits, REJECT_DRAIN_TIMEOUT,
 };
 use crate::query_api;
-use crate::reply::Reply;
+use crate::reply::{Answer, Reply};
 use crate::stream::{self, CountedJson};
+use crate::streamed::{self, Streamed};
 use relate_serve::{
     serve_capped, ConnectionCap, DEFAULT_BODY_DEADLINE, DEFAULT_CONNECTION_STACK_BYTES,
     DEFAULT_HEADER_DEADLINE, DEFAULT_MAX_CONNECTIONS, DEFAULT_READ_TIMEOUT,
@@ -47,6 +48,11 @@ pub struct HttpConfig {
     /// Per-read timeout: a stalled reader is dropped instead of pinning its
     /// connection thread (default [`DEFAULT_READ_TIMEOUT`]).
     pub read_timeout: Duration,
+    /// Per-write timeout on the socket (default [`DEFAULT_READ_TIMEOUT`]): a
+    /// peer that stops reading a streamed answer fails its write after this
+    /// long, which cancels the running statement (ADR-0682) instead of
+    /// pinning the connection thread and the engine behind it.
+    pub write_timeout: Duration,
     /// Absolute deadline for a complete request header block, measured from
     /// the start of the connection (default [`DEFAULT_HEADER_DEADLINE`],
     /// 10 s; ADR-0451). The per-read timeout is re-armed to the time
@@ -87,7 +93,10 @@ pub trait HttpExtension: Send + Sync {
     fn handle(&self, request: &crate::http::Request) -> Option<crate::Reply>;
     /// Last look at a reply before it is written. The default leaves it
     /// unchanged. A host uses this to remap a status it understands
-    /// (MemoryDB rewrites a growable graph-capacity 507 to 429).
+    /// (MemoryDB rewrites a growable graph-capacity 507 to 429). It sees
+    /// every buffered reply, an error before the first row included. A
+    /// reply streamed chunked (ADR-0682) has already committed its `200`
+    /// head, so it never reaches this hook: no status is left to remap.
     fn map_reply(&self, reply: Reply) -> Reply {
         reply
     }
@@ -110,6 +119,7 @@ impl HttpConfig {
             max_connections: DEFAULT_MAX_CONNECTIONS,
             connection_cap: None,
             read_timeout: DEFAULT_READ_TIMEOUT,
+            write_timeout: DEFAULT_READ_TIMEOUT,
             header_deadline: DEFAULT_HEADER_DEADLINE,
             body_deadline: DEFAULT_BODY_DEADLINE,
             bolt_direct: None,
@@ -174,7 +184,7 @@ fn validate_config(config: &HttpConfig) -> io::Result<ReadLimits> {
 /// at or above it goes out as `Transfer-Encoding: chunked` chunk frames.
 /// Above the threshold gzip is selected by weight and size alone (the
 /// compressed size cannot be known before the head,
-/// [`BodyEncoding::for_streamed_body`]) and wraps the frame writer, so the
+/// [`BodyEncoding::for_streamed_body`](content_encoding::BodyEncoding::for_streamed_body)) and wraps the frame writer, so the
 /// compressor's writes feed the same fixed-size frame buffer. A chunk
 /// boundary is therefore a buffer flush — a transport detail clients must
 /// not depend on — never a row boundary.
@@ -193,6 +203,7 @@ fn write_reply(
         body,
         content_type,
         mut extra_headers,
+        ..
     } = reply;
     // The policy match carries both seam effects: `Excluded` (the small
     // public discovery document) is identity bytes, no `Vary`, never
@@ -205,14 +216,14 @@ fn write_reply(
             CountedJson::OneShot(serde_json::to_vec(&body).map_err(io::Error::other)?),
         ),
         ReplyEncodingPolicy::Negotiated(accept_encoding) => {
-            extra_headers.push(("vary".to_string(), VARY_ACCEPT_ENCODING.to_string()));
+            content_encoding::push_vary(&mut extra_headers);
             (accept_encoding, stream::count_json(&body)?)
         }
     };
     match framed {
         CountedJson::OneShot(payload) => {
             let encoded = content_encoding::encode_body(accept_encoding.as_deref(), payload)?;
-            push_content_encoding(&mut extra_headers, encoded.encoding);
+            encoded.encoding.push_header(&mut extra_headers);
             crate::http::write_response(
                 writer,
                 status,
@@ -222,27 +233,51 @@ fn write_reply(
             )
         }
         CountedJson::Stream => {
-            let body_encoding = BodyEncoding::for_streamed_body(accept_encoding.as_deref());
-            push_content_encoding(&mut extra_headers, body_encoding);
-            write_head(
+            let body_encoding = stream::write_chunked_head(
                 writer,
                 status,
                 content_type,
-                Framing::Chunked,
-                &extra_headers,
+                extra_headers,
+                accept_encoding.as_deref(),
             )?;
             stream::write_chunked(writer, &body, body_encoding)
         }
     }
 }
 
-/// The `content-encoding` header for one decided representation — the one
-/// place the header is emitted: identity omits it entirely (never
-/// `content-encoding: identity`), gzip names the coding.
-fn push_content_encoding(extra_headers: &mut Vec<(String, String)>, encoding: BodyEncoding) {
-    if let Some(value) = encoding.header_value() {
-        extra_headers.push(("content-encoding".to_string(), value.to_string()));
-    }
+/// Write a dispatched reply. A pending statement (ADR-0682) runs here and
+/// streams as its batches arrive; what it buffers instead — an answer under
+/// the threshold, a failure ahead of the head — and every other reply is
+/// framed by [`write_reply`] after the extension's last look at it.
+fn write_outcome(
+    writer: &mut (impl Write + Send),
+    answer: Answer,
+    encoding: ReplyEncodingPolicy,
+    extension: Option<&dyn HttpExtension>,
+) -> io::Result<()> {
+    let reply = match (answer, &encoding) {
+        (
+            Answer::Pending {
+                statement,
+                extra_headers,
+            },
+            ReplyEncodingPolicy::Negotiated(accept_encoding),
+        ) => match streamed::serve(
+            writer,
+            *statement,
+            extra_headers,
+            accept_encoding.as_deref(),
+        )? {
+            Streamed::Done => return Ok(()),
+            Streamed::Buffered(buffered) => buffered,
+        },
+        (answer, _) => answer.materialize(),
+    };
+    let reply = match extension {
+        Some(extension) => extension.map_reply(reply),
+        None => reply,
+    };
+    write_reply(writer, reply, encoding)
 }
 
 /// Write the CORS preflight answer: the body-less 204 with the allow methods
@@ -296,6 +331,7 @@ fn serve_handler_validated(
     limits: &ReadLimits,
 ) -> io::Result<()> {
     stream.set_read_timeout(Some(config.read_timeout))?;
+    stream.set_write_timeout(Some(config.write_timeout))?;
     let arm = stream.try_clone()?;
     serve_stream(
         db,
@@ -320,7 +356,7 @@ fn serve_handler_validated(
 /// timeout: a host that wants the deadline to hold *during* a blocking read
 /// must set a read timeout no longer than the deadline (the same rule as
 /// the drain).
-pub fn serve_connection<S: Read + Write>(
+pub fn serve_connection<S: Read + Write + Send>(
     db: &Database,
     stream: S,
     config: &HttpConfig,
@@ -329,7 +365,7 @@ pub fn serve_connection<S: Read + Write>(
     serve_stream(db, stream, config, &limits, |_| Ok(()), |_| Ok(()))
 }
 
-fn serve_stream<S: Read + Write>(
+fn serve_stream<S: Read + Write + Send>(
     db: &Database,
     stream: S,
     config: &HttpConfig,
@@ -347,11 +383,12 @@ fn serve_stream<S: Read + Write>(
             encoding,
             drain,
         } => {
-            let reply = match &config.extension {
-                Some(extension) => extension.map_reply(reply),
-                None => reply,
-            };
-            write_reply(reader.get_mut(), reply, encoding)?;
+            write_outcome(
+                reader.get_mut(),
+                reply,
+                encoding,
+                config.extension.as_deref(),
+            )?;
             if !matches!(drain, DrainPlan::None) {
                 arm_drain(reader.get_ref())?;
                 drain_reader(&mut reader, drain, config.max_body_bytes);
@@ -367,7 +404,7 @@ enum Dispatch {
         origin: Option<String>,
     },
     Reply {
-        reply: Reply,
+        reply: Answer,
         encoding: ReplyEncodingPolicy,
         drain: DrainPlan,
     },
@@ -420,7 +457,7 @@ fn dispatch<S: Read>(
     // pre-body rejection carries its parsed head, so the Origin echo and the
     // encoding negotiation read the real headers and the already-sent body is
     // drained after the answer (no RST clobbering the response).
-    let (mut reply, drain, encoding): (Reply, DrainPlan, ReplyEncodingPolicy) = match admitted {
+    let (mut reply, drain, encoding): (Answer, DrainPlan, ReplyEncodingPolicy) = match admitted {
         AdmissionOutcome::Closed => return Ok(Dispatch::Silent),
         AdmissionOutcome::Preflight { .. } => {
             return Ok(Dispatch::Preflight {
@@ -430,7 +467,7 @@ fn dispatch<S: Read>(
         // A malformed head never produced a request head to read
         // `Accept-Encoding` from: identity, but still on the seam.
         AdmissionOutcome::BadRequest { message, drain } => (
-            crate::reply::bad_request(&message),
+            crate::reply::bad_request(&message).into(),
             drain,
             ReplyEncodingPolicy::for_unparsed_head(),
         ),
@@ -438,12 +475,12 @@ fn dispatch<S: Read>(
             let (head, public, wire) = rejection.into_parts();
             let reply = wire.into_reply();
             let encoding = ReplyEncodingPolicy::for_head(&head, public);
-            (reply, drain, encoding)
+            (reply.into(), drain, encoding)
         }
         AdmissionOutcome::Request { request, public } => {
             let encoding = ReplyEncodingPolicy::for_head(&request.head, public);
             (
-                query_api::handle(
+                query_api::handle_pending(
                     db,
                     &request,
                     &config.auth,
@@ -466,7 +503,7 @@ fn dispatch<S: Read>(
     // closes.
     if let Some(origin) = reply_origin {
         reply
-            .extra_headers
+            .extra_headers_mut()
             .push(("access-control-allow-origin".to_string(), origin));
     }
     Ok(Dispatch::Reply {
