@@ -13,6 +13,7 @@ REFERENCES:
   - "[[adr/0219-python-parameter-conversion]]"
   - "[[adr/0224-result-column-types]]"
   - "[[adr/0328-bolt-bytes-parameters-round-trip]]"
+  - "[[adr/0688-tostring-renders-every-list]]"
 ---
 
 # ADR-0327: The engine gains a statement-scoped byte-array value
@@ -106,3 +107,10 @@ Parquet/JSON checkpoint codecs)"**.
 - The surfaces' docs say a byte array renders as a list of byte values.
   When the persistence follow-up lands, it replaces the statement-scoped
   rule and decides the `CypherValue` question.
+
+## Later references
+
+- [ADR-0688](./0688-tostring-renders-every-list.md): the §2 analogy "`toString()` rejects it like a
+  homogeneous list" lost its referent — every list renders now, and a byte
+  array is the one value `toString()` rejects. The bytes rejection itself
+  stands.

@@ -33,19 +33,16 @@ pub(super) fn bi_string_interp(graph: &ExecGraph<'_>, _n: &str, vals: Vec<Value>
     // running total (each part is built and retained) and the cap check.
     let mut retained = graph.retain_bytes(0)?;
     for v in &vals {
+        // A null part nulls the whole interpolation.
+        if matches!(v, Value::Null) {
+            return Ok(Value::Null);
+        }
         // The scalar renderer shares its `Arc<str>` payload; keep the borrow
         // instead of copying it per part.
-        let rendered: Arc<str> = match v {
-            Value::Null => return Ok(Value::Null),
-            Value::Vector { .. } => Arc::from(v.to_display_string()),
-            other => {
-                let Some(rendered) = render_scalar(other) else {
-                    return Err(Error::ty(
-                        "InvalidArgumentValue: string interpolation cannot coerce value to STRING",
-                    ));
-                };
-                rendered
-            }
+        let Some(rendered) = render_scalar(v) else {
+            return Err(Error::ty(
+                "InvalidArgumentValue: string interpolation cannot coerce value to STRING",
+            ));
         };
         retained.add_allocation(graph, relate_core::str_logical_bytes(&rendered))?;
         out.push_str(&rendered);

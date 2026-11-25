@@ -280,7 +280,7 @@ bound is rejected before execution (`[1,2,3][1.0]` → error
 
 ### UUID functions
 
-The UUID value type (CIP-246): constructors and 64-bit-half accessors.
+The UUID value type: constructors and 64-bit-half accessors.
 
 | Function | Description | Example |
 |----------|-------------|---------|
@@ -291,25 +291,22 @@ The UUID value type (CIP-246): constructors and 64-bit-half accessors.
 | `uuid.leastSignificantBits(u)` | Low 64 bits | `RETURN uuid.leastSignificantBits(uuid('...'))` |
 | `randomUUID()` | Random UUID **as a STRING** | `RETURN valueType(randomUUID())` |
 
-`toString` also renders maps, heterogeneous lists, and graph values in
-display form (CIP-271): `toString({a: 1})` → `'{a: 1}'`. The display form is
+`toString` also renders maps, lists, and graph values in
+display form: `toString({a: 1})` → `'{a: 1}'`. The display form is
 the cypher-shell one — map keys sorted with a backtick-quoted key outside the
 plain identifier shape, node labels sorted and quoted the same way, relationship
-types backticked, and temporals in their canonical `HH:MM:SS` form
-(`toString(localtime('10:00'))` → `'10:00:00'`).
+types backticked, strings unquoted, and temporals in their canonical `HH:MM:SS`
+form (`toString(localtime('10:00'))` → `'10:00:00'`).
 
-A homogeneous list *literal* — a statically typed `LIST<T>` whose elements all
-share one type (`[1, 2]`, `['a', 'b']`, `[1, 2.0]`, `[[1]]`) — is not the
-`LIST<ANY>` `toString()` accepts, so `toString()` reports a type error during
-semantic analysis (a compile-time `TypeError`), as Neo4j's type checker does.
-The rule is a static-type one, as in Neo4j: a value read from a property or a
-parameter has no statically known element type and renders. `toStringOrNull()`
-renders the homogeneous list instead of raising, for a literal and a dynamic
-value alike. A heterogeneous list, an empty list, or one holding a `null`
-element is `LIST<ANY>` and renders; so does a list of graph values or
-temporals, whose elements are outside the literal type vocabulary.
+Every list renders — a literal, a variable, a property, a parameter, or a
+function result alike, homogeneous elements or not
+([ADR-0688](../adr/0688-tostring-renders-every-list.md)):
+`toString([1, 2])` → `'[1, 2]'`, `toString(['a', 'b'])` → `'[a, b]'`,
+`toString([[1, 2], [3]])` → `'[[1, 2], [3]]'`. `toStringOrNull()` renders
+the same values. The one value with no string form is a byte array:
+`toString()` raises a type error, `toStringOrNull()` is null.
 
-CIP-271 applies to every statement: with `CYPHER 25` the only Cypher
+The display-form rendering applies to every statement: with `CYPHER 25` the only Cypher
 version — its preamble an accepted no-op
 ([ADR-0584](../adr/0584-one-cypher-version-cypher25-noop.md)) — there is no
 dialect in which containers and graph values are a type error for `toString`
@@ -439,8 +436,8 @@ Implemented beyond the openCypher function set (Neo4j Cypher 25 / GQL alignment)
 
 ### List
 
-- `coll.zip(list1, list2, ...)` (CIP-274) — zip two or more lists into a list of per-index lists, to the length of the longest input, padding missing positions with `null`; a `null` argument returns `null`, fewer than two arguments or a non-list argument is an error. Gated by `RELATE_PREVIEW=coll-zip` (ADR-0497): without the opt-in the name is the ordinary unknown-function error (42N48) and `SHOW FUNCTIONS` lists no row
-- `coll.hasAnyOf(list, values)` / `coll.hasAllOf(list, subset)` / `coll.hasNoneOf(list, values)` (CIP-286) — quantifiers over the `IN` membership predicate: `any(x IN values WHERE x IN list)`, `all(x IN subset WHERE x IN list)` (set logic — duplicates in the subset are not new elements; the direction is asymmetric), and `none(x IN values WHERE x IN list)`. Equality is Cypher's (`1 = 1.0`, structural lists/maps, `NaN <> NaN`); a `null` element is an unknown value, so an undecided outcome is `null`, never a fabricated boolean; a `null` argument returns `null`. All three are gated by `RELATE_PREVIEW=coll-has` (ADR-0497) with the same unknown-function disabled form
+- `coll.zip(list1, list2, ...)` — zip two or more lists into a list of per-index lists, to the length of the longest input, padding missing positions with `null`; a `null` argument returns `null`, fewer than two arguments or a non-list argument is an error. Gated by `RELATE_PREVIEW=coll-zip` (ADR-0497): without the opt-in the name is the ordinary unknown-function error (42N48) and `SHOW FUNCTIONS` lists no row
+- `coll.hasAnyOf(list, values)` / `coll.hasAllOf(list, subset)` / `coll.hasNoneOf(list, values)` — quantifiers over the `IN` membership predicate: `any(x IN values WHERE x IN list)`, `all(x IN subset WHERE x IN list)` (set logic — duplicates in the subset are not new elements; the direction is asymmetric), and `none(x IN values WHERE x IN list)`. Equality is Cypher's (`1 = 1.0`, structural lists/maps, `NaN <> NaN`); a `null` element is an unknown value, so an undecided outcome is `null`, never a fabricated boolean; a `null` argument returns `null`. All three are gated by `RELATE_PREVIEW=coll-has` (ADR-0497) with the same unknown-function disabled form
 
 ### Type
 

@@ -12,6 +12,7 @@ REFERENCES:
   - "[[adr/0002-cypher-25-semantic-target]]"
   - "[[adr/0006-tck-harness-and-skips]]"
   - "[[adr/0056-opencypher-tck-language-contract]]"
+  - "[[adr/0688-tostring-renders-every-list]]"
 ---
 
 # 0188. Remove the superseded toString() TCK scenario from the pinned corpus
@@ -104,4 +105,6 @@ rather than unmodified upstream 2024.3.
 - Later references: [ADR-0002](./0002-cypher-25-semantic-target.md) (display-form authority ordering), [ADR-0006](./0006-tck-harness-and-skips.md)
   (skip-list policy — the list reached its natural empty end state, and the
  shrink-only rule is upheld), [ADR-0056](./0056-opencypher-tck-language-contract.md) (the 2024.3 pin itself, now with a
-  documented local deviation).
+  documented local deviation), [ADR-0688](./0688-tostring-renders-every-list.md)
+  (the `LIST<ANY>`-only acceptance residue recorded above — homogeneous
+  lists erroring — is retired: `toString()` renders every list).

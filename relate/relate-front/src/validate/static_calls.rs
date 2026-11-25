@@ -14,46 +14,56 @@
 //! them. Every rejection here rides the front-end boundary, which reports the
 //! SyntaxError class.
 
-use relate_core::{
-    builtin_arity, homogeneous_element_class, LiteralElementClass, LiteralValueKind, Value,
-    TOSTRING_TYPE_ERROR_DETAIL,
-};
+use relate_core::{builtin_arity, LiteralValueKind, Value};
 use relate_error::{EngineError, ErrorKind};
 use relate_model::VectorCoordToken;
 use relate_parser::{Clause, Concurrency, Expr, FunctionCallExpr, PathCount, PathSelector};
 
-use crate::ast::tree::{unparen, walk_clause_list_tree, SubqueryDescent};
+use crate::ast::tree::{unparen, walk_clause_list_tree_with_clauses, SubqueryDescent};
 
 use super::static_arithmetic::expr_is_bare_var;
 use super::static_literal::{
     non_numeric_leaf_class, require_integer_argument, require_static_type, static_int_value,
-    static_list_element_kinds, static_literal_type, static_string_value, INTEGER_ONLY,
-    INTEGER_OR_NULL, LIST_OR_NULL, MAP_OR_NULL, STRING_OR_NULL,
+    static_literal_type, static_string_value, INTEGER_ONLY, INTEGER_OR_NULL, LIST_OR_NULL,
+    MAP_OR_NULL, STRING_OR_NULL,
 };
 use super::static_types::is_statically_non_boolean;
 
 /// Apply this module's static argument checks to one statement node's
 /// clauses (the module contract above).
 pub fn validate_static_call_types(clauses: &[Clause]) -> Result<(), EngineError> {
-    // Every expression of this node's clause shapes (the CIP-168 page stages
-    // included). Nested statement bodies are opaque here: the validation
-    // battery already visits each as its own node, so entering them would
-    // re-check every body once per ancestor.
-    walk_clause_list_tree(clauses, SubqueryDescent::Opaque, &mut check_static_call)?;
-    for clause in clauses {
-        match clause {
-            Clause::Match(mc) => {
-                for path in &mc.pattern {
-                    check_path_selector(path.selector.as_ref())?;
-                }
+    // Every expression of this node's clause shapes (the page stages
+    // included) and the two clause-shaped checks (path selectors, `IN
+    // TRANSACTIONS` concurrency) — one walk, one traversal. Nested
+    // statement bodies are opaque here: the validation battery already
+    // visits each as its own node, so entering them would re-check every
+    // body once per ancestor.
+    walk_clause_list_tree_with_clauses(
+        clauses,
+        SubqueryDescent::Opaque,
+        &mut check_static_call,
+        &mut check_clause_static_call,
+    )
+}
+
+/// The clause-shaped static checks — the two decided per clause rather
+/// than per expression: a MATCH pattern's path selectors and a subquery
+/// call's `IN TRANSACTIONS` concurrency.
+fn check_clause_static_call(clause: &Clause) -> Result<(), EngineError> {
+    match clause {
+        Clause::Match(mc) => {
+            for path in &mc.pattern {
+                check_path_selector(path.selector.as_ref())?;
             }
-            Clause::CallSubquery(cs) => {
-                if let Some(in_tx) = &cs.in_transactions {
-                    check_concurrency(&in_tx.concurrency)?;
-                }
-            }
-            _ => {}
         }
+        Clause::CallSubquery(cs) => {
+            if let Some(in_tx) = &cs.in_transactions {
+                check_concurrency(&in_tx.concurrency)?;
+            }
+        }
+        // Every other clause shape carries no clause-level static check;
+        // its expressions were the expression visitor's.
+        _ => {}
     }
     Ok(())
 }
@@ -86,14 +96,14 @@ fn check_path_selector(selector: Option<&PathSelector>) -> Result<(), EngineErro
     }
 }
 
-/// CIP-34's concurrency value is an integer; a statically-known value of any
-/// other type (`IN null CONCURRENT TRANSACTIONS`) is a compile-time type
-/// error.
+/// The `IN TRANSACTIONS` concurrency value is an integer; a statically-known
+/// value of any other type (`IN null CONCURRENT TRANSACTIONS`) is a
+/// compile-time type error.
 fn check_concurrency(concurrency: &Concurrency) -> Result<(), EngineError> {
     let Concurrency::Value(expr) = concurrency else {
         return Ok(());
     };
-    // A null concurrency is rejected here too: CIP-34's value is an integer.
+    // A null concurrency is rejected here too: the value is an integer.
     require_integer_argument(expr, "concurrency", INTEGER_ONLY)
 }
 
@@ -112,44 +122,28 @@ fn check_static_function_call(fc: &FunctionCallExpr) -> Result<(), EngineError> 
     check_builtin_arity(&name, &fc.args)?;
     match name.as_str() {
         "vector" => check_vector_call(&fc.args),
-        // Both take two vector-shaped operands. A missing/extra argument is
-        // the runtime arity rejection (a dynamic shape, not a type fault).
-        "vector.similarity.cosine" | "vector.similarity.euclidean" if fc.args.len() == 2 => {
-            require_vector_operand(&fc.args[0], &name)?;
-            require_vector_operand(&fc.args[1], &name)
+        "vector.similarity.cosine" | "vector.similarity.euclidean" => {
+            check_vector_similarity_call(&fc.args, &name)
         }
         "char_length" | "character_length" => check_string_argument(&fc.args, &format!("{name}()")),
-        // CIP-271's static half. `toStringOrNull()` is deliberately not
-        // matched: it maps the rule's type error to null at the value level
-        // and must not raise.
-        "tostring" => check_tostring_argument(&fc.args),
         "properties" => check_properties_argument(&fc.args),
-        // Arity alone: the contract above owns the count and its message.
-        "nullif" | "format" => Ok(()),
         "replace" => check_replace_limit(&fc.args),
         n if relate_core::temporal::is_constructor(n) => check_temporal_call(&fc.args),
         _ => Ok(()),
     }
 }
 
-/// CIP-271's static half: `toString()` rejects a `LIST<T>` with a concrete
-/// `T` — a list literal whose elements all share one known class. The rule
-/// is implemented once (`homogeneous_element_class`) and the executor
-/// applies the same one to a runtime value, so a list is refused whatever
-/// spelling produced it. The static check still owns the compile-time phase
-/// for the shapes it can type; `EXPLAIN` and a zero-row CASE arm fail with
-/// the rest of semantic analysis.
-fn check_tostring_argument(args: &[Expr]) -> Result<(), EngineError> {
-    let [arg] = args else {
+/// `vector.similarity.cosine`/`vector.similarity.euclidean` take two
+/// vector-shaped operands. A missing/extra argument is the runtime arity
+/// rejection (a dynamic shape, not a type fault), so only the two-argument
+/// form is checked here — the slice pattern states that shape once, the
+/// same idiom as the sibling checks.
+fn check_vector_similarity_call(args: &[Expr], name: &str) -> Result<(), EngineError> {
+    let [a, b] = args else {
         return Ok(());
     };
-    if is_homogeneous_list_literal(arg) {
-        return Err(EngineError::semantic(
-            ErrorKind::InvalidArgumentValue,
-            TOSTRING_TYPE_ERROR_DETAIL,
-        ));
-    }
-    Ok(())
+    require_vector_operand(a, name)?;
+    require_vector_operand(b, name)
 }
 
 /// `properties(x)` requires a node, relationship or map; a statically known
@@ -166,27 +160,13 @@ fn check_properties_argument(args: &[Expr]) -> Result<(), EngineError> {
     })
 }
 
-/// Whether `list` is a list *literal* (or the plan-cache placeholder that
-/// replaced one) whose elements all share one known element class — the
-/// `LIST<T>` CIP-271 rejects for `toString()`. The element derivation is the
-/// one shared [`static_list_element_kinds`]; the equality rule (the
-/// empty-list case included) is the one core [`homogeneous_element_class`].
-fn is_homogeneous_list_literal(list: &Expr) -> bool {
-    static_list_element_kinds(list).is_some_and(|kinds| {
-        homogeneous_element_class(
-            kinds
-                .into_iter()
-                .map(|kind| kind.and_then(LiteralElementClass::of_kind)),
-        )
-        .is_some()
-    })
-}
-
 /// The cross-layer arity contract `relate-core` owns for `name`: a call with
 /// the wrong argument count is the compile-phase
 /// `InvalidNumberOfArguments` rejection. One table feeds this check and the
 /// planner's rule dispatch, so the count and the authored message have one
-/// home.
+/// home. Names with an arity contract and no further static argument check
+/// (`nullif()`, `format()`) are this contract's alone — the dispatcher's
+/// match lists only the names with a check behind them.
 fn check_builtin_arity(name: &str, args: &[Expr]) -> Result<(), EngineError> {
     let Some(contract) = builtin_arity(name) else {
         return Ok(());
@@ -309,7 +289,7 @@ fn check_string_argument(args: &[Expr], what: &str) -> Result<(), EngineError> {
     })
 }
 
-/// CIP-215's `replace(source, search, replace [, limit])`: a statically
+/// `replace(source, search, replace [, limit])`: a statically
 /// negative limit is a compile-time value rejection. A limit of a *wrong
 /// type* stays the runtime `TypeError`: the corpus pins that class for
 /// `replace(…, '3')` / `replace(…, 3.0)` / `replace(…, true)` even as
@@ -328,7 +308,7 @@ fn check_replace_limit(args: &[Expr]) -> Result<(), EngineError> {
     Ok(())
 }
 
-/// A temporal constructor: the CIP-228 `(value, pattern)` form's pattern must
+/// A temporal constructor: the `(value, pattern)` form's pattern must
 /// be a STRING. (A literal that cannot construct is the planner's rejection:
 /// its class depends on the construction error, which the front-end boundary
 /// would flatten to SyntaxError.)
@@ -555,44 +535,23 @@ mod tests {
         assert_accepted(&["CALL { CREATE (n) } IN 2 CONCURRENT TRANSACTIONS"]);
     }
 
-    // ---- CIP-271: toString() rejects a homogeneous LIST<T> ----
+    // ---- ADR-0688: toString() renders every list — no static rejection ----
 
     #[test]
-    fn tostring_rejects_a_homogeneous_list_literal_at_compile_time() {
-        // The four shapes Neo4j's checker rejects: homogeneous INTEGER,
-        // STRING and nested-LIST literals, plus the mixed number list
-        // (INTEGER and FLOAT are one class). The error is the
-        // InvalidArgumentValue detail CIP-271 pins.
-        for query in [
+    fn tostring_accepts_every_list_literal_and_the_ornull_spelling() {
+        // Every list spelling plans statically — homogeneous literals
+        // included (ADR-0688: the value layer renders them; the old
+        // static homogeneous-`LIST<T>` rejection is retired) —
+        // and `toStringOrNull()` never raises here.
+        assert_accepted(&[
             "RETURN toString([1, 2]) AS result",
             "RETURN toString(['a', 'b']) AS result",
+            "RETURN toString([true, false]) AS result",
             "RETURN toString([1, 2.0]) AS result",
             "RETURN toString([[1]]) AS result",
+            "RETURN toString([{a: 1}]) AS result",
             "RETURN toString([1 + 1, 2]) AS result",
             "CYPHER 25 RETURN toString([1, 2]) AS result",
-        ] {
-            let err = parse_and_check_static_calls(query)
-                .expect_err(&format!("`{query}` must be rejected statically"));
-            assert!(
-                matches!(err, EngineError::Semantic { .. }),
-                "`{query}` must fail at compile time (Semantic), got {err:?}"
-            );
-            assert_eq!(
-                err.kind(),
-                ErrorKind::InvalidArgumentValue,
-                "`{query}` must carry the InvalidArgumentValue detail"
-            );
-            assert_eq!(err.tck_class(), relate_error::TckErrorClass::TypeError);
-        }
-    }
-
-    #[test]
-    fn tostring_accepts_a_dynamic_or_mixed_list_and_the_ornull_spelling() {
-        // `LIST<ANY>` (or a non-list) falls through to the runtime, which
-        // applies the same homogeneous-list rule to the value it sees.
-        // `toStringOrNull()` is never rejected here: it maps that rule's
-        // type error to null at the value level and must not raise.
-        assert_accepted(&[
             "RETURN toString([]) AS result",
             "RETURN toString([1, 'a']) AS result",
             "RETURN toString([1, null, 'a']) AS result",

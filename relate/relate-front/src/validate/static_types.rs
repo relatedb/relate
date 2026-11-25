@@ -2,7 +2,7 @@
 //! literal-type vocabulary ([`super::static_literal`]) they share:
 //! boolean-operator operands, `IN` list operands, and quantifier-variable
 //! arithmetic over a statically non-numeric list literal. The builtin-call
-//! argument rules — `properties()`, CIP-271's `toString()` — live in
+//! argument rules — `properties()` and the rest — live in
 //! [`super::static_calls`]; page bounds live in [`super::page_bounds`], the
 //! `reduce()` accumulator rule in [`super::static_reduce`]. Everything whose
 //! type depends on runtime data is deliberately left to the runtime evaluator.
@@ -28,7 +28,7 @@ pub(super) fn is_statically_non_boolean(expr: &Expr) -> bool {
 }
 
 /// `||` admits strings and lists, plus NULL. Its rejection carries the
-/// `TypeError` class Neo4j reports for the concatenation mismatch (CIP-144),
+/// `TypeError` class Neo4j reports for the concatenation mismatch,
 /// not the `SyntaxError` the other static operand checks use.
 fn require_string_or_list_literal_operand(operand: &Expr) -> Result<(), EngineError> {
     require_static_type_kind(

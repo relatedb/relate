@@ -1,11 +1,9 @@
 //! Conversion builtins: `toString`/`toInteger`/`toFloat`/`toBoolean` and
 //! their `OrNull` variants, the `toStringList`/`toFloatList`/
 //! `toIntegerList` list conversions, plus the shared coercion helpers.
-//! CIP-271's homogeneous-`LIST<T>` rule is one implementation in
-//! `relate_core::homogeneous_element_class`, applied by the front end over
-//! the literal types it can decide. A property or parameter read has no
-//! statically known element type, so its value renders here — Neo4j's own
-//! boundary (probed live). String → number parsing lives in the [`string`]
+//! `toString()` renders every `LIST` value here, whatever spelling
+//! produced it (ADR-0688) — the front end carries no list rejection for
+//! it. String → number parsing lives in the [`string`]
 //! submodule (ADR-0175).
 
 use std::borrow::Cow;
@@ -164,8 +162,8 @@ fn convert_element(v: &Value, projection: ListProjection) -> Value {
 }
 
 /// The one `toString()` value-level type error — raised when a value's type
-/// is not stringifiable in the statement's dialect. The authored detail is
-/// the one core constant the front-end's compile-phase rejection also uses.
+/// is not stringifiable in the statement's dialect (a byte array, the one
+/// such kind). The authored detail is the one core constant.
 fn tostring_type_error() -> Error {
     Error::invalid_argument_value(relate_core::TOSTRING_TYPE_ERROR_DETAIL)
 }
@@ -173,14 +171,9 @@ fn tostring_type_error() -> Error {
 /// Shared body of `toString()`/`toStringOrNull()`: convert an optional
 /// value to its string form. Null and absent input yield `Value::Null`;
 /// only a non-convertible *type* errors (a byte array, ADR-0327), which the
-/// `OrNull` variant maps to null.
-///
-/// The homogeneous-`LIST<T>` rule is deliberately not applied here: Neo4j's
-/// rule is a *static-type* one (probed live: a list literal and a
-/// `WITH`-bound literal variable fail 22N27, while the same value read from a
-/// property or a parameter renders), so the front end owns it for the
-/// expressions it can type and a runtime value renders — `toStringOrNull()`
-/// renders every list in Neo4j too.
+/// `OrNull` variant maps to null. Every `LIST` renders in display form,
+/// whatever spelling produced it — the value layer owns the policy
+/// (ADR-0688, on ADR-0448's principle).
 fn to_string_value(v: Option<&Value>) -> Result<Value> {
     let Some(v) = v else {
         return Ok(Value::Null);
@@ -190,18 +183,17 @@ fn to_string_value(v: Option<&Value>) -> Result<Value> {
     match v {
         Value::Null => Ok(Value::Null),
         Value::Bytes(_) => Err(tostring_type_error()),
-        // One arm for the container and graph-value vocabulary: CIP-271
-        // renders every one in display form — a temporal nested in any
-        // container renders at full precision (ADR-0448) — so the
-        // vocabulary has one spelling.
+        // One arm for the container and graph-value vocabulary — a VECTOR
+        // included, whose literal and display forms are the same text
+        // (both render through the one `vector_text`): every one renders
+        // in display form — a temporal nested in any container renders at
+        // full precision (ADR-0448) — so the vocabulary has one spelling.
         Value::List(_)
         | Value::Map(_)
         | Value::Node(_)
         | Value::Relationship(_)
-        | Value::Path(_) => Ok(Value::String(v.to_display_string().into())),
-        // A Vector renders in its literal form — the one scalar outside
-        // the shared renderer's acceptance set. Every dialect renders it.
-        Value::Vector { .. } => Ok(Value::String(v.to_cypher_literal().into())),
+        | Value::Path(_)
+        | Value::Vector { .. } => Ok(Value::String(v.to_display_string().into())),
         // Every accepted scalar — a STRING included, shared payload and
         // all — renders through the one policy (temporals at full
         // precision, ADR-0448).

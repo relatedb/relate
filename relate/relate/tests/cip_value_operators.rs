@@ -1,8 +1,9 @@
 //! The 2026.09/2026.10 Cypher additions in one suite: the value
 //! operators (map addition, map comprehension, string interpolation),
 //! explicit GROUP BY keys, UUID values and their WAL roundtrips,
-//! dynamic property access, SET left-hand-side precedence, toString
-//! static typing, and the fulltext, vector, and hybrid SEARCH clause
+//! dynamic property access, SET left-hand-side precedence, the
+//! toString() list-rendering pins and their retired-rejection regression
+//! guard (ADR-0688), and the fulltext, vector, and hybrid SEARCH clause
 //! filters. Every case below is authored locally for this suite; the
 //! expectations are recomputed on this engine, and the value-operator
 //! semantics were cross-checked against live Neo4j images where one
@@ -13,7 +14,7 @@ mod common;
 use relate::{Database, Value};
 use std::collections::BTreeMap;
 
-use common::{connection, map};
+use common::{connection, map, rows, run, text};
 
 // Map addition: MAP + MAP merges with last-write-wins; null on either
 // side is null; MAP + LIST / LIST + MAP build a list; anything else is a
@@ -661,67 +662,67 @@ fn uuid_wal_roundtrip() {
     assert_eq!(Value::from_json_tagged(&tagged).unwrap(), v);
 }
 
-// A homogeneous list *literal* is a statically typed `LIST<T>`, not the
-// `LIST<ANY>` `toString` accepts, so it is refused at compile time — under
-// EXPLAIN and in a CASE arm that never evaluates. The rule is one shared
-// implementation (relate_core::homogeneous_element_class) and stays a
-// static-type rule, live Neo4j's boundary (probed 2026.11.24).
+// A list literal renders like every other list value — the display form,
+// whatever spelling produced it (ADR-0688: the retired static
+// homogeneous-list rejection made these a compile-time error). The literal
+// rows pin the synced corpus's expectations.
 #[test]
-fn tostring_rejects_a_homogeneous_list_literal_at_compile_time() {
+fn tostring_renders_a_list_literal_in_display_form() {
     let mut c = connection();
-    for query in [
-        "RETURN toString([4, 6]) AS r",
-        "EXPLAIN RETURN toString([4, 6]) AS r",
-        "RETURN CASE WHEN false THEN toString([4, 6]) ELSE 'x' END AS r",
+    for (query, expected) in [
+        ("RETURN toString([1, 2]) AS r", "[1, 2]"),
+        ("RETURN toString(['a', 'b']) AS r", "[a, b]"),
+        ("RETURN toString([true, false]) AS r", "[true, false]"),
+        ("RETURN toString([1.0, 2.0]) AS r", "[1.0, 2.0]"),
+        ("RETURN toString([1, 2.5]) AS r", "[1, 2.5]"),
+        ("RETURN toString([[1, 2], [3]]) AS r", "[[1, 2], [3]]"),
+        ("RETURN toString([{a: 1}, {b: 2}]) AS r", "[{a: 1}, {b: 2}]"),
+        ("RETURN toString([4, null, 6]) AS r", "[4, null, 6]"),
     ] {
-        let err = c.query(query).expect_err(query);
-        assert!(
-            err.to_string().contains("InvalidArgumentValue"),
-            "`{query}` should be a compile-time type error, got {err}"
-        );
+        assert_eq!(text(&mut c, query), expected, "{query}");
     }
 }
 
-// A property or parameter read has no statically known element type, so its
-// value renders — live-verified — and `toStringOrNull` renders every list.
-// On unpatched main the `toStringOrNull` literal raised a compile-time error;
-// that is the regression this asserts away (issue 28). A `WITH`/`UNWIND`-bound
-// literal variable also renders: Relate has no static type for it, where live's
-// checker would refuse — the recorded residual divergence.
+// The retired rejection's planning residue (ADR-0688): a list-literal
+// `toString()` call plans under EXPLAIN, and a never-evaluated CASE arm
+// no longer fails the statement.
+#[test]
+fn tostring_list_literal_plans_and_a_dead_case_arm_survives() {
+    let mut c = connection();
+    run(&mut c, "EXPLAIN RETURN toString([4, 6]) AS r");
+    assert_eq!(
+        rows(
+            &mut c,
+            "RETURN CASE WHEN false THEN toString([4, 6]) ELSE 'x' END AS r"
+        ),
+        vec![vec![Value::String("x".into())]]
+    );
+}
+
+// `toStringOrNull` renders every list, and a property read or a
+// `WITH`/`UNWIND`-bound variable renders like a literal — every spelling
+// renders (ADR-0688). On pre-ADR-0688 main the `toStringOrNull` literal
+// raised a compile-time error; that is the regression this asserts away.
 #[test]
 fn tostring_or_null_and_property_lists_render() {
     let mut c = connection();
+    // The store setup the property-read row reads from.
+    run(&mut c, "CREATE (n:T {l: [4, 6]})");
 
-    for query in [
-        "CREATE (n:T {l: [4, 6]}) RETURN toString(n.l) AS r",
-        "UNWIND [[4, 6]] AS xs RETURN toString(xs) AS r",
+    // One table: every spelling renders the same display form — the
+    // property read, the `WITH`/`UNWIND`-bound variable, `toStringOrNull`
+    // on the literal and the variable, and the mixed-element list. (The
+    // null-element literal row is the sibling rendering table's fact.)
+    for (query, expected) in [
+        ("MATCH (n:T) RETURN toString(n.l) AS r", "[4, 6]"),
+        ("UNWIND [[4, 6]] AS xs RETURN toString(xs) AS r", "[4, 6]"),
+        ("RETURN toStringOrNull([4, 6]) AS r", "[4, 6]"),
+        (
+            "UNWIND [[4, 6]] AS xs RETURN toStringOrNull(xs) AS r",
+            "[4, 6]",
+        ),
+        ("RETURN toString([4, 'k']) AS r", "[4, k]"),
     ] {
-        let r = c.query(query).expect(query);
-        assert_eq!(
-            r.rows,
-            vec![vec![Value::String("[4, 6]".into())]],
-            "`{query}`"
-        );
+        assert_eq!(text(&mut c, query), expected, "{query}");
     }
-
-    // `toStringOrNull` renders the homogeneous list instead of raising.
-    for query in [
-        "RETURN toStringOrNull([4, 6]) AS r",
-        "UNWIND [[4, 6]] AS xs RETURN toStringOrNull(xs) AS r",
-    ] {
-        let r = c.query(query).expect(query);
-        assert_eq!(
-            r.rows,
-            vec![vec![Value::String("[4, 6]".into())]],
-            "`{query}`"
-        );
-    }
-
-    // Mixed classes (and a null element) are `LIST<ANY>` and render.
-    let r = c.query("RETURN toString([4, 'k']) AS r").expect("mixed");
-    assert_eq!(r.rows, vec![vec![Value::String("[4, k]".into())]]);
-    let r = c
-        .query("RETURN toString([4, null, 6]) AS r")
-        .expect("with null");
-    assert_eq!(r.rows, vec![vec![Value::String("[4, null, 6]".into())]]);
 }

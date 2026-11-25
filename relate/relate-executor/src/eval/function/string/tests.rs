@@ -57,8 +57,7 @@ fn string_interp_renders_every_scalar_kind_in_order() {
         values: vec![Value::Int(1), Value::Int(2)].into(),
     };
 
-    // Each part renders as its toString() form, except a Vector, which
-    // uses its display form.
+    // Each part renders as its toString() form.
     let parts = vec![
         Value::Int(-42),
         s("|"),

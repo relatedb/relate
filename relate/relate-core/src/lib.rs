@@ -55,9 +55,7 @@ pub use error_kinds::{
     duplicate_variable_detail, undefined_variable_detail, unknown_function_detail, ErrorKind,
     TckErrorClass,
 };
-pub use literal::{
-    homogeneous_element_class, LiteralElementClass, LiteralValueKind, TOSTRING_TYPE_ERROR_DETAIL,
-};
+pub use literal::{LiteralValueKind, TOSTRING_TYPE_ERROR_DETAIL};
 pub use load_pool::{
     current_load_threads, record_transient_lease, resolve_load_threads, run_load_tasks,
     with_load_scope, LoadThreads, OpenTransientTracker, TransientLease,
@@ -93,7 +91,7 @@ pub use value::{
 pub type NodeId = i64;
 pub type RelId = i64;
 
-/// Whether `id` belongs to a CIP-257 **virtual** entity — a graph-type
+/// Whether `id` belongs to a **virtual** entity — a graph-type
 /// projection synthesized with a negative id and carried by its value alone
 /// (it has no store entry). Persisted ids are non-negative
 /// ([`validate_persisted_id`]), so the sign is the one virtual-entity test.
