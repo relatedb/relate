@@ -57,6 +57,12 @@ pub struct ConnLimits {
     /// non-zero; a zero value is rejected when the heartbeat is built
     /// (ADR-0334).
     pub keep_alive_interval: Duration,
+    /// Bound on how long a streamed result's statement waits for the next
+    /// PULL (ADR-0682): the worker holding the statement's engine state
+    /// stops it after this long without one, and the PULL that arrives
+    /// later answers FAILURE. `None` waits indefinitely. Defaults to the
+    /// idle read timeout; a library knob, not a CLI flag.
+    pub pull_idle_timeout: Option<Duration>,
 }
 
 impl Default for ConnLimits {
@@ -73,6 +79,7 @@ impl Default for ConnLimits {
             max_result_bytes: DEFAULT_MAX_RESULT_BYTES,
             max_connections: DEFAULT_MAX_CONNECTIONS,
             keep_alive_interval: crate::keepalive::DEFAULT_KEEP_ALIVE_INTERVAL,
+            pull_idle_timeout: secs_to_opt(DEFAULT_IDLE_TIMEOUT_SECS),
         }
     }
 }
@@ -384,6 +391,9 @@ mod route_auth;
 #[cfg(test)]
 #[path = "protocol_runtime_error_tests.rs"]
 mod runtime_error_tests;
+#[cfg(test)]
+#[path = "protocol_stream_tests.rs"]
+mod stream_tests;
 #[cfg(test)]
 #[path = "protocol_summary_tests.rs"]
 mod summary_tests;

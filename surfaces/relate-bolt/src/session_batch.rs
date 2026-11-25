@@ -41,11 +41,19 @@ impl Session {
         config: &ConnConfig,
     ) -> Result<Flow, Box<dyn std::error::Error + Send + Sync>> {
         let scan = BatchScan::new(&batch, self.decode_limit(), self.dialect.version);
-        if scan.reachable_runs() > 1 {
-            self.conn.begin_write_batch();
+        // A batch that pipelines writes runs its statements materialized: its
+        // commit needs the connection back at the batch's end, which a
+        // streamed result's worker would still hold (ADR-0682).
+        self.pipelined = scan.reachable_runs() > 1;
+        if self.pipelined {
+            self.conn().begin_write_batch();
         }
         let dispatched = self.dispatch_messages(stream, &batch, scan.last_reset(), config);
-        let committed = self.conn.commit_write_batch();
+        let committed = if self.pipelined {
+            self.conn().commit_write_batch()
+        } else {
+            Ok(None)
+        };
         let flow = dispatched?;
         committed?;
         Ok(flow)

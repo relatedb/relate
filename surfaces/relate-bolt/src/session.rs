@@ -9,9 +9,9 @@
 
 use std::io::Write;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use relate::{Connection, Executed, Value};
+use relate::{Connection, Value};
 
 use crate::auth::AuthConfig;
 use crate::dialect::Dialect;
@@ -23,16 +23,18 @@ use crate::fields::{
     bolt_agent_is_string_map, db_name, extra_str, illegal_value_for_field,
     metadata_notifications_failure, patch_names, ConsumeRequest, NotificationConfig, RunRequest,
 };
-use crate::keepalive::{run_statement, with_keep_alive};
+use crate::keepalive::with_keep_alive;
 use crate::packstream::{chunk_message, encode, encode_error, DecodeLimit, Pack};
 use crate::patches::BoltPatches;
 use crate::protocol::{ConnConfig, QueryOutcome};
 use crate::requests::{breach_text, Message, OverBudget, Refused, Undecodable};
-use crate::results::{fails_run, Body, OpenResults, OverCap};
+use crate::results::{Body, OpenResults, OverCap};
 use crate::summary::{self, send_success};
 use crate::value_codec::{MdbPackError, ValueCodec};
 use crate::version::BoltVersion;
-use relate_error::{TRANSACTION_OUT_OF_MEMORY_CODE, UNKNOWN_ERROR_CODE};
+use relate_error::{
+    TRANSACTION_OUT_OF_MEMORY_CODE, TRANSACTION_TIMED_OUT_CODE, UNKNOWN_ERROR_CODE,
+};
 use session_pages::{write_page, Page, RecordError};
 
 /// The FAILURE message of a HELLO without a string `user_agent` (ADR-0313),
@@ -85,7 +87,13 @@ enum Gate {
 /// validated HELLO's patches (ADR-0329, ADR-0484) — and the notifications
 /// filter its 5.2 keys configure (ADR-0484 decision 8).
 pub(crate) struct Session {
-    conn: Connection,
+    /// The engine connection; `None` exactly while a streamed result's
+    /// worker holds it (ADR-0682, `session_stream.rs`) — read through
+    /// [`Self::conn`], which takes it back.
+    conn: Option<Connection>,
+    /// Whether the framed message batch being served pipelines writes
+    /// (ADR-0642): its statements run materialized, never streamed.
+    pipelined: bool,
     gate: Gate,
     failed: bool,
     results: OpenResults,
@@ -120,7 +128,8 @@ pub(crate) struct Session {
 impl Session {
     pub(crate) fn new(conn: Connection, config: &ConnConfig, version: BoltVersion) -> Self {
         Self {
-            conn,
+            conn: Some(conn),
+            pipelined: false,
             // With AuthConfig::None every 4.4 connection starts open;
             // otherwise the validated HELLO opens it. A 5.4 connection
             // always starts awaiting HELLO: the 5.x HELLO does not
@@ -279,8 +288,8 @@ impl Session {
                     Message::Hello => self.hello(stream, &fields, config),
                     Message::Reset => self.reset(stream),
                     Message::Run => self.run(stream, &fields, config),
-                    Message::Pull => self.pull(stream, &fields),
-                    Message::Discard => self.discard(stream, &fields),
+                    Message::Pull => self.pull(stream, &fields, config),
+                    Message::Discard => self.discard(stream, &fields, config),
                     Message::Begin => self.begin(stream, &fields),
                     Message::Commit => self.commit(stream, config),
                     Message::Rollback => self.rollback(stream),
@@ -306,8 +315,8 @@ impl Session {
     /// breach (ADR-0484 decision 4).
     fn is_breach(&self, message: Message) -> bool {
         match message {
-            Message::Commit | Message::Rollback => !self.conn.in_transaction(),
-            Message::Begin => self.conn.in_transaction(),
+            Message::Commit | Message::Rollback => !self.in_tx(),
+            Message::Begin => self.in_tx(),
             Message::Pull | Message::Discard => self.results.is_empty(),
             // The handlers answer these from any open session state.
             Message::Hello
@@ -323,7 +332,7 @@ impl Session {
 
     /// The Neo4j 4.4 state the session is in, as its breach text names it.
     fn state_name(&self) -> &'static str {
-        match (self.conn.in_transaction(), self.results.is_empty()) {
+        match (self.in_tx(), self.results.is_empty()) {
             (false, true) => "READY",
             (false, false) => "STREAMING",
             (true, true) => "IN_TRANSACTION",
@@ -368,7 +377,7 @@ impl Session {
         }
         self.gate = Gate::Open;
         if let Some(user) = config.auth.verified_principal() {
-            self.conn.set_principal(Some(user));
+            self.conn().set_principal(Some(user));
         }
         Ok(None)
     }
@@ -436,11 +445,11 @@ impl Session {
     /// ADR-0484 decision 8) and answer SUCCESS.
     fn reset<W: Write>(&mut self, stream: &mut W) -> std::io::Result<Flow> {
         self.end_tx();
-        if self.conn.in_transaction() {
+        if self.in_tx() {
             // A failed rollback (storage I/O) is a FAILURE, not a clean
             // reset: the failed state stays set, so a retrying RESET gets
             // another attempt instead of the session pretending it worked.
-            if let Err(e) = self.conn.rollback() {
+            if let Err(e) = self.conn().rollback() {
                 return self.fail_engine(stream, &e);
             }
         }
@@ -482,10 +491,10 @@ impl Session {
             Ok(config) => config,
             Err(parse_failure) => return self.fail_metadata_notifications(stream, &parse_failure),
         };
-        if let Err(e) = apply_extra_db(&mut self.conn, fields, 0) {
+        if let Err(e) = apply_extra_db(self.conn(), fields, 0) {
             return self.fail_engine(stream, &e);
         }
-        if let Err(e) = self.conn.begin() {
+        if let Err(e) = self.conn().begin() {
             return self.fail_engine(stream, &e);
         }
         self.begin_tx(tx_notifications);
@@ -501,7 +510,7 @@ impl Session {
     /// mirrored end every transaction-ending path shares.
     fn begin_tx(&mut self, notifications: NotificationConfig) {
         self.tx_notifications = notifications;
-        self.results.clear();
+        self.clear_results();
     }
 
     /// End the transaction-scoped session state together: every open
@@ -510,7 +519,7 @@ impl Session {
     /// COMMIT, ROLLBACK and RESET call, so a transaction-ending path
     /// cannot drift.
     fn end_tx(&mut self) {
-        self.results.clear();
+        self.clear_results();
         self.tx_notifications = self.notifications.clone();
     }
 
@@ -522,7 +531,7 @@ impl Session {
     /// with it (ADR-0484 decision 8).
     fn commit<W: Write>(&mut self, stream: &mut W, config: &ConnConfig) -> std::io::Result<Flow> {
         self.end_tx();
-        let conn = &mut self.conn;
+        let conn = self.conn();
         let committed = with_keep_alive(stream, config.limits.keep_alive_interval, |heartbeat| {
             conn.commit_with_heartbeat(heartbeat)
         })?;
@@ -539,7 +548,7 @@ impl Session {
     /// with them (ADR-0484 decision 8).
     fn rollback<W: Write>(&mut self, stream: &mut W) -> std::io::Result<Flow> {
         self.end_tx();
-        if let Err(e) = self.conn.rollback() {
+        if let Err(e) = self.conn().rollback() {
             return self.fail_engine(stream, &e);
         }
         send_success(stream, vec![])?;
@@ -577,9 +586,9 @@ impl Session {
         fields: &[Pack],
         config: &ConnConfig,
     ) -> std::io::Result<Flow> {
-        let in_transaction = self.conn.in_transaction();
+        let in_transaction = self.in_tx();
         if !in_transaction {
-            self.results.clear();
+            self.clear_results();
         }
         // ADR-0342: the statement field is required and the params must
         // convert; both malformed shapes are the same request failure
@@ -609,47 +618,15 @@ impl Session {
         // transaction RUN carries no `db` and keeps the namespace chosen at
         // BEGIN. The extra's `bookmarks` are accepted and ignored
         // (ADR-0310).
-        if let Err(e) = apply_extra_db(&mut self.conn, fields, 2) {
+        if let Err(e) = apply_extra_db(self.conn(), fields, 2) {
             return self.fail_engine(stream, &e);
         }
-        let staged = match run_statement(
-            &mut self.conn,
-            stream,
-            &cypher,
-            params,
-            config.limits.query_timeout,
-            config.limits.keep_alive_interval,
-        )? {
+        // ADR-0319: a failure before execution fails the RUN. An auto-commit
+        // statement outside a pipelined batch streams (ADR-0682); every
+        // other one is staged whole (`session_stream.rs`).
+        let (body, headline) = match self.stage(stream, &cypher, params, config, in_transaction)? {
             Ok(staged) => staged,
-            // ADR-0319: a failure before execution fails the RUN.
             Err(e) => return self.fail_engine(stream, &e),
-        };
-        let (body, headline) = match staged {
-            Executed::Rows(result) => {
-                let headline = RunHeadline {
-                    columns: result.header.columns.clone(),
-                    column_types: result.header.column_types.clone(),
-                    t_first: result.header.elapsed,
-                };
-                (
-                    Body::Rows {
-                        result: Box::new(result),
-                        cursor: 0,
-                    },
-                    headline,
-                )
-            }
-            Executed::Failed(failure) if fails_run(&failure.error) => {
-                return self.fail_engine(stream, &failure.error);
-            }
-            Executed::Failed(failure) => (
-                Body::Failed(failure.error),
-                RunHeadline {
-                    columns: failure.header.columns,
-                    column_types: failure.header.column_types,
-                    t_first: failure.header.elapsed,
-                },
-            ),
         };
         // ADR-0110/0311: the reservation measures the result against the
         // cap minus the bytes every open result already holds; `0` disables
@@ -663,7 +640,8 @@ impl Session {
                 .open(body, config.limits.max_result_bytes, cypher, notifications)
             {
                 Ok(qid) => qid,
-                Err(OverCap) => {
+                Err(OverCap(body)) => {
+                    self.discard_body(body);
                     return self.fail_with_code(
                         stream,
                         TRANSACTION_OUT_OF_MEMORY_CODE,
@@ -671,7 +649,7 @@ impl Session {
                             "query result exceeds max-result-bytes limit of {} bytes",
                             config.limits.max_result_bytes
                         ),
-                    )
+                    );
                 }
             };
         // ADR-0309: the RUN SUCCESS carries the row metadata — `fields`,
@@ -687,126 +665,6 @@ impl Session {
         Ok(Flow::Continue)
     }
 
-    /// PULL {n, qid} (0x3F): at most `n` buffered RECORDs of the addressed
-    /// result, `n = -1` drains (ADR-0110, ADR-0311).
-    fn pull<W: Write>(&mut self, stream: &mut W, fields: &[Pack]) -> std::io::Result<Flow> {
-        self.consume(stream, fields, Consume::Pull)
-    }
-
-    /// DISCARD {n, qid} (0x2F): drop at most `n` rows of the addressed
-    /// result, `n = -1` drops the rest (ADR-0311).
-    fn discard<W: Write>(&mut self, stream: &mut W, fields: &[Pack]) -> std::io::Result<Flow> {
-        self.consume(stream, fields, Consume::Discard)
-    }
-
-    /// The shared PULL/DISCARD step. A result that leaves rows answers
-    /// `{has_more: true}` and stays open; the step that takes its last row
-    /// sends the ending summary (ADR-0309) and closes it; a deferred
-    /// execution failure answers FAILURE and closes it (ADR-0319). The
-    /// session guarantees at least one result is open (ADR-0314).
-    fn consume<W: Write>(
-        &mut self,
-        stream: &mut W,
-        fields: &[Pack],
-        mode: Consume,
-    ) -> std::io::Result<Flow> {
-        // ADR-0342: a present-but-malformed `n` or `qid` is a request
-        // failure, exactly like an unknown `qid` below; `ConsumeRequest`
-        // owns that decode, so every malformed shape leaves through this
-        // one exit.
-        let request = match ConsumeRequest::parse(fields) {
-            Ok(request) => request,
-            Err(message) => return self.fail_with_code(stream, REQUEST_INVALID_CODE, &message),
-        };
-        let Some(mut open) = self.results.take(request.qid) else {
-            return self.fail_with_code(
-                stream,
-                REQUEST_INVALID_CODE,
-                &format!("no open result with qid {}", request.qid),
-            );
-        };
-        let started = Instant::now();
-        let page = match &mut open.body {
-            Body::Rows { result, cursor } => {
-                let remaining = result.rows.len() - *cursor;
-                let take = request.take(remaining);
-                // ADR-0484: the page's rows and the ending summary's plan
-                // value encode under the connection's dialect beside the
-                // namespace the result's own header stamped — the same
-                // fact its ending `db` entry reports.
-                let codec = ValueCodec::new(self.dialect, result.header.namespace);
-                // PULL writes the rows it takes; DISCARD writes nothing. A
-                // row past the packstream depth limit is client-reachable
-                // (ADR-0110), so the write's outcome decides the page.
-                let written = match mode {
-                    Consume::Pull => {
-                        write_page(stream, &result.rows[*cursor..*cursor + take], codec)
-                    }
-                    Consume::Discard => Ok(()),
-                };
-                // ADR-0309: t_last is the whole milliseconds spent
-                // streaming or discarding, summed over the result's PULL
-                // and DISCARD messages. This message's share is measured
-                // after its work, so the ending summary and every later
-                // page carry the real running total.
-                open.streamed += started.elapsed();
-                match written {
-                    // A path-invariant break, an unrepresentable value or
-                    // an element with no element id is an engine bug or an
-                    // engine-side value problem, never client input: keep
-                    // it loud as the io error.
-                    Err(RecordError::Fatal(e)) => return Err(e),
-                    Err(RecordError::DepthExceeded) => Page::DepthExceeded,
-                    Ok(()) => {
-                        *cursor += take;
-                        if *cursor == result.rows.len() {
-                            // ADR-0357: the ending summary carries the plan
-                            // pair — Neo4j's placement for the drained
-                            // result, so strict clients (cypher-shell) read
-                            // it from the PULL or DISCARD that ends the
-                            // result. The one plan-summary policy decides
-                            // the entry, never a second spelling here. The
-                            // query notifications ride beside it (ADR-0363
-                            // decision 11), through their one policy too.
-                            Page::Ending(summary::ending(
-                                result,
-                                open.streamed,
-                                codec,
-                                &open.notification_config,
-                            )?)
-                        } else {
-                            Page::HasMore
-                        }
-                    }
-                }
-            }
-            Body::Failed(error) => return self.fail_engine(stream, error),
-        };
-        match page {
-            Page::Ending(metadata) => {
-                send_success(stream, metadata)?;
-                self.note_query(QueryOutcome::Success);
-            }
-            Page::HasMore => {
-                self.results.restore(open);
-                send_success(stream, summary::has_more())?;
-            }
-            Page::DepthExceeded => {
-                // ADR-0110: the depth limit is client-reachable (a deeply
-                // nested parameter value returned in a row), so it degrades
-                // the session — FAILURE, failed state, IGNORED until RESET,
-                // after any RECORDs already written, never a killed
-                // connection mid-stream. The result keeps its cursor.
-                self.results.restore(open);
-                return self.fail_with_code(
-                    stream,
-                    REQUEST_INVALID_CODE,
-                    &format!("result value {}", MdbPackError::DepthExceeded),
-                );
-            }
-        }
-        Ok(Flow::Continue)
-    }
     /// The ADR-0110 failure idiom for an engine error, written once: the
     /// failed state, the FAILURE on the wire, and the session continues
     /// (RESET clears it).
@@ -938,13 +796,6 @@ struct RunHeadline {
     t_first: Duration,
 }
 
-/// PULL streams the rows it takes; DISCARD drops them.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Consume {
-    Pull,
-    Discard,
-}
-
 /// The 5.x session leg (ADR-0484): the HELLO that no longer authenticates
 /// (decision 3), LOGON and LOGOFF (decision 4) and TELEMETRY (decision 5)
 /// — the handlers behind the 5.4 arms of the dispatch above, split from
@@ -959,6 +810,18 @@ mod session_5x;
 /// the 5.x leg. A child of this module.
 #[path = "session_batch.rs"]
 mod session_batch;
+
+/// PULL/DISCARD (ADR-0110, ADR-0311): the shared consume step over the
+/// result store, and its streamed-result form (ADR-0682) — split from this
+/// file at the thousand-line rule. A child of this module.
+#[path = "session_consume.rs"]
+mod session_consume;
+
+/// The streamed RUN (ADR-0682): the connection lent to a statement's
+/// worker, reclaimed whenever the session needs it again. A child of this
+/// module.
+#[path = "session_stream.rs"]
+mod session_stream;
 
 /// The PULL/DISCARD page-writing machinery (ADR-0309, ADR-0110): the
 /// page outcome, the typed RECORD-write failure and the page writers

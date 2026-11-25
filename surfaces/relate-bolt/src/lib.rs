@@ -27,6 +27,7 @@ mod results;
 pub mod server;
 mod session;
 pub mod signal;
+mod stream;
 mod summary;
 pub mod tls;
 pub mod transport;

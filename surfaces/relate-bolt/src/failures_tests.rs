@@ -468,6 +468,55 @@ fn result_cap_failure_is_transaction_out_of_memory() {
     );
 }
 
+/// A streamed result whose later batch exceeds the cap closes with the
+/// out-of-memory FAILURE and hands the engine connection back: the next
+/// statement on the session runs (ADR-0682).
+#[test]
+fn a_streamed_batch_over_the_cap_leaves_the_session_usable() {
+    let mut client = client_with(ConnConfig {
+        limits: ConnLimits {
+            max_result_bytes: 100_000,
+            ..ConnLimits::default()
+        },
+        ..Default::default()
+    });
+    let long = "x".repeat(200);
+    run(
+        &mut client,
+        &format!(
+            "UNWIND range(1, 3000) AS i RETURN CASE WHEN i > 1024 THEN '{long}' ELSE '' END AS s"
+        ),
+        map(vec![]),
+        map(vec![]),
+    );
+    success_map(read_msg(&mut client));
+    pull_all(&mut client);
+    // The first batch's RECORDs, then the FAILURE at the batch that is over.
+    let fields = loop {
+        match read_msg(&mut client) {
+            Pack::Struct { tag: 0x71, .. } => {}
+            other => break failure_map(other),
+        }
+    };
+    assert_eq!(
+        field(&fields, "code"),
+        "Neo.ClientError.General.TransactionOutOfMemoryError"
+    );
+    send_struct(&mut client, 0x0F, vec![]);
+    success_map(read_msg(&mut client));
+    run(&mut client, "RETURN 1 AS n", map(vec![]), map(vec![]));
+    success_map(read_msg(&mut client));
+    pull_all(&mut client);
+    assert_eq!(
+        read_msg(&mut client),
+        Pack::Struct {
+            tag: 0x71,
+            fields: vec![Pack::List(vec![Pack::Int(1)])],
+        }
+    );
+    success_map(read_msg(&mut client));
+}
+
 #[test]
 fn workspace_refusal_is_only_the_logical_workspace_limit() {
     use crate::protocol::QueryOutcome;
