@@ -98,7 +98,7 @@ mod builder;
 mod guards;
 
 use builder::Builder;
-use guards::{interior_guard, node_element, InteriorGuard, TransitionPredicate};
+use guards::{interior_guard, InteriorGuard, TransitionPredicate};
 
 /// The state ceiling: the frontier's dedup set is one `u64` bitmask per
 /// node slot (the prototype's `seen: Vec<u64>`), so an NFA that would
@@ -204,23 +204,71 @@ pub(crate) fn exactly_one_quantified(elements: &[PatternElement]) -> bool {
         == 1
 }
 
-/// The alternating-chain shape fact both NFA walks require: a strictly
-/// alternating element chain that starts and ends with a node — nodes at
-/// the even positions, hops (plain rels and quantified groups) at the odd
-/// ones — and therefore at least one hop (a chain shorter than three
-/// elements has no interior to alternate over). `compile` and
-/// `Builder::chain` decline on the same fact through this one predicate.
-pub(crate) fn alternating_chain(elements: &[PatternElement]) -> bool {
+/// A hop position of an alternating chain: a plain relationship or a
+/// quantified group.
+pub(crate) enum Hop<'a> {
+    Rel(&'a RelPattern),
+    Quantified(&'a QuantifiedPathPattern),
+}
+
+/// One position of an alternating element chain, typed — the single view
+/// both NFA walks (`compile` and `Builder::chain`) iterate instead of
+/// re-deriving positions by index parity.
+pub(crate) enum Position<'a> {
+    /// A node. `boundary` is the chain's first or last node: its
+    /// admission is the caller's (or the round split's), not an interior
+    /// node's.
+    Node {
+        node: &'a NodePattern,
+        boundary: bool,
+    },
+    /// A hop. `last` is the chain's final hop (the one a close target
+    /// serves); `next` is the node that follows it, a boundary node
+    /// exactly when `last`.
+    Hop {
+        hop: Hop<'a>,
+        last: bool,
+        next: &'a NodePattern,
+    },
+}
+
+/// The typed position view of a strictly alternating element chain that
+/// starts and ends with a node — nodes at the even positions, hops (plain
+/// rels and quantified groups) at the odd ones — and therefore at least
+/// one hop (a chain shorter than three elements has no interior to
+/// alternate over). `None` when the chain is not of that shape: the one
+/// decline both walks share. Positions come in element order.
+pub(crate) fn chain_positions(elements: &[PatternElement]) -> Option<Vec<Position<'_>>> {
     if elements.len() < 3 || elements.len().is_multiple_of(2) {
-        return false;
+        return None;
     }
-    elements
-        .iter()
-        .enumerate()
-        .all(|(i, element)| match element {
-            PatternElement::Node(_) => i.is_multiple_of(2),
-            PatternElement::Relationship(_) | PatternElement::Quantified(_) => !i.is_multiple_of(2),
-        })
+    let PatternElement::Node(first) = &elements[0] else {
+        return None;
+    };
+    let (hops, _) = elements[1..].as_chunks::<2>();
+    let hop_count = hops.len();
+    let mut positions = Vec::with_capacity(elements.len());
+    positions.push(Position::Node {
+        node: first,
+        boundary: true,
+    });
+    for (n, pair) in hops.iter().enumerate() {
+        let hop = match &pair[0] {
+            PatternElement::Relationship(rel) => Hop::Rel(rel),
+            PatternElement::Quantified(quantified) => Hop::Quantified(quantified),
+            PatternElement::Node(_) => return None,
+        };
+        let PatternElement::Node(next) = &pair[1] else {
+            return None;
+        };
+        let last = n + 1 == hop_count;
+        positions.push(Position::Hop { hop, last, next });
+        positions.push(Position::Node {
+            node: next,
+            boundary: last,
+        });
+    }
+    Some(positions)
 }
 
 /// Compile `pattern` into the frontier NFA, or `None` on any shape out
@@ -253,11 +301,9 @@ pub(crate) fn compile(
     // parser allows `(x)((a)-->(b))*((c)-->(d))*`) would be a second
     // cycle: decline.
     let elements = &pattern.elements;
-    if !alternating_chain(elements) {
-        return None;
-    }
-    // The Quantified group (exactly one, by the gate below) sits at an
-    // odd position — `alternating_chain` already establishes that, so it
+    let positions = chain_positions(elements)?;
+    // The Quantified group (exactly one, by the gate below) sits at a
+    // hop position — `chain_positions` already establishes that, so it
     // needs no separate spine parity check.
     if !exactly_one_quantified(elements) {
         return None;
@@ -270,9 +316,9 @@ pub(crate) fn compile(
     // widens the hop window.
     let mut context = 0u32;
     let mut spine_len = None;
-    for (i, element) in elements.iter().enumerate() {
-        match element {
-            PatternElement::Node(node) if i.is_multiple_of(2) => {
+    for position in positions {
+        match position {
+            Position::Node { node, boundary } => {
                 // The first and last nodes are the pattern's boundary —
                 // their admission (labels, properties, predicates) is the
                 // caller's, through the kernel layer's `NodeTarget`
@@ -283,11 +329,13 @@ pub(crate) fn compile(
                 // quantified group that state is the spine's own exit
                 // state past the round boundary (`split_exit`), never the
                 // close every round ends at.
-                if i != 0 && i + 1 != elements.len() {
+                if !boundary {
                     builder.admit_interior(node, current)?;
                 }
             }
-            PatternElement::Relationship(rel) if !i.is_multiple_of(2) => {
+            Position::Hop {
+                hop: Hop::Rel(rel), ..
+            } => {
                 // A plain one-hop context rel (a top-level var-length rel
                 // is out of vocabulary: the front end quantifies every
                 // top-level var-length spelling, so one here is not
@@ -301,17 +349,18 @@ pub(crate) fn compile(
                 context += 1;
                 current = to;
             }
-            PatternElement::Quantified(quantified) if !i.is_multiple_of(2) => {
+            Position::Hop {
+                hop: Hop::Quantified(quantified),
+                last,
+                next,
+            } => {
                 // The node after the group carries the caller's guard on
                 // the spine's exit state (the loop attaches it there) —
                 // the spine only needs the presence fact, to allocate
                 // that state; the guard itself compiles once, in
                 // `admit_interior` on the next iteration.
-                let exit_guarded = if builder.forced && i + 2 < elements.len() {
-                    matches!(
-                        interior_guard(node_element(elements, i + 1)?)?,
-                        InteriorGuard::Guard(_)
-                    )
+                let exit_guarded = if builder.forced && !last {
+                    matches!(interior_guard(next)?, InteriorGuard::Guard(_))
                 } else {
                     false
                 };
@@ -319,9 +368,6 @@ pub(crate) fn compile(
                 current = close;
                 spine_len = Some(len);
             }
-            // A node at a hop position, a rel or group at a node
-            // position: the alternation is broken.
-            _ => return None,
         }
     }
     let spine_len = spine_len

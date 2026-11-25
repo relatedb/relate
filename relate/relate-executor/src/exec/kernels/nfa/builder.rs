@@ -15,8 +15,8 @@ use super::guards::{
     ChainEdges, InteriorGuard, TransitionPredicate,
 };
 use super::{
-    alternating_chain, epsilon_closure, epsilon_index, plain_rel, quantified_admissible,
-    var_length_quantified, FrontierNfa, NfaTransition, STATE_CEILING,
+    chain_positions, epsilon_closure, epsilon_index, plain_rel, quantified_admissible,
+    var_length_quantified, FrontierNfa, Hop, NfaTransition, Position, STATE_CEILING,
 };
 
 /// The hop-length range of a compiled segment: fixed iff
@@ -431,9 +431,7 @@ impl<'a> Builder<'a> {
         close: Option<u32>,
         edges: ChainEdges<'_>,
     ) -> Option<(u32, Len)> {
-        if !alternating_chain(elements) {
-            return None;
-        }
+        let positions = chain_positions(elements)?;
         // Guards and the group predicate ride only a plain one-hop-rel
         // body: a var-length or nested quantified element unrolls the
         // emission into copies whose stitching has no guard positions.
@@ -455,66 +453,61 @@ impl<'a> Builder<'a> {
         // the emission runs.
         let mut node_states: Vec<(Option<SmallName>, u32)> = Vec::new();
         let mut last_rel_transition = None;
-        for (i, element) in elements.iter().enumerate() {
-            // The final hop sits at the second-to-last position — the
-            // chain always ends with a node. It is the hop the close
-            // target serves.
-            let last_hop = i + 2 == elements.len();
-            let exit = if last_hop { last_target } else { None };
-            match element {
-                PatternElement::Node(node) if i.is_multiple_of(2) => {
+        for position in positions {
+            match position {
+                Position::Node { node, boundary } => {
                     // Under the forced rung the boundary positions' guards
                     // were attached by the split above (or carry none);
                     // under the auto rung every chain node is an inner
                     // node of the v1 vocabulary. The interior ones attach
                     // here, to the state the preceding hop allocated for
                     // the position.
-                    let interior = i != 0 && i + 1 != elements.len();
-                    if interior || !self.forced {
-                        self.admit_interior(node, current)?;
-                    }
+                    self.admit_chain_node(node, boundary, current)?;
                     node_states.push((node.variable.clone(), current));
                 }
-                PatternElement::Relationship(rel) if !i.is_multiple_of(2) => {
-                    if rel.var_length {
-                        // The nested var-length rel: predicates on the
-                        // traversed edges decline before the
-                        // normalization drops them.
-                        if rel.properties.is_some() || rel.where_clause.is_some() {
-                            return None;
+                Position::Hop { hop, last, .. } => {
+                    // The final hop is the one the close target serves.
+                    let exit = if last { last_target } else { None };
+                    match hop {
+                        Hop::Rel(rel) if rel.var_length => {
+                            // The nested var-length rel: predicates on
+                            // the traversed edges decline before the
+                            // normalization drops them.
+                            if rel.properties.is_some() || rel.where_clause.is_some() {
+                                return None;
+                            }
+                            (current, len) =
+                                self.nest(&var_length_quantified(rel), current, exit, len)?;
                         }
-                        (current, len) =
-                            self.nest(&var_length_quantified(rel), current, exit, len)?;
-                    } else {
-                        if !plain_rel(rel) {
-                            return None;
+                        Hop::Rel(rel) => {
+                            if !plain_rel(rel) {
+                                return None;
+                            }
+                            let to = if last {
+                                last_target.or_else(|| self.alloc())
+                            } else {
+                                self.alloc()
+                            }?;
+                            let types = self.interned(rel)?;
+                            self.push_transition(current, to, types, rel.direction);
+                            last_rel_transition = Some(self.tables.transitions.len() - 1);
+                            current = to;
+                            len = len.plus(Len {
+                                min: 1,
+                                max: Some(1),
+                            })?;
                         }
-                        let to = if last_hop {
-                            last_target.or_else(|| self.alloc())
-                        } else {
-                            self.alloc()
-                        }?;
-                        let types = self.interned(rel)?;
-                        self.push_transition(current, to, types, rel.direction);
-                        last_rel_transition = Some(self.tables.transitions.len() - 1);
-                        current = to;
-                        len = len.plus(Len {
-                            min: 1,
-                            max: Some(1),
-                        })?;
+                        Hop::Quantified(quantified) => {
+                            // A nested quantified group — unconstructible
+                            // by the parser (the `NestedQuantification`
+                            // rule), but the IR shape exists; the same
+                            // nested rules apply, its own WHERE included
+                            // (only the spine's group predicate
+                            // compiles).
+                            (current, len) = self.nest(quantified, current, exit, len)?;
+                        }
                     }
                 }
-                PatternElement::Quantified(quantified) if !i.is_multiple_of(2) => {
-                    // A nested quantified group — unconstructible by the
-                    // parser (the `NestedQuantification` rule), but the IR
-                    // shape exists; the same nested rules apply, its own
-                    // WHERE included (only the spine's group predicate
-                    // compiles).
-                    (current, len) = self.nest(quantified, current, exit, len)?;
-                }
-                // A node at a hop position, a rel or group at a node
-                // position: the alternation is broken.
-                _ => return None,
             }
         }
         // The group WHERE (class F), compiled against the positions the
@@ -545,6 +538,18 @@ impl Builder<'_> {
             self.guard(state, guard);
         }
         Some(())
+    }
+
+    /// The chain walk's admission matrix, one spelling: an interior node
+    /// always admits through [`Self::admit_interior`]; a boundary node
+    /// does too under the auto rung (every chain node is an inner node
+    /// of the v1 vocabulary), and under the forced rung carries no guard
+    /// here (the round split attached it).
+    fn admit_chain_node(&mut self, node: &NodePattern, boundary: bool, state: u32) -> Option<()> {
+        if boundary && self.forced {
+            return Some(());
+        }
+        self.admit_interior(node, state)
     }
 
     /// The round boundary's states for one chain emission entered at
