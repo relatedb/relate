@@ -31,6 +31,31 @@ pub(super) enum ZoneSpec<'a> {
     Other(&'a str),
 }
 
+/// The zone specs that complete through a written offset — never a zone
+/// calendar: `Z`, a numeric offset, and a `GMT`/`UTC`-prefixed one. The
+/// one statement of the offset-completable subset, so the two completion
+/// sites and the resolver cannot drift on which spellings they take.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum WrittenZone {
+    Utc,
+    Fixed,
+    Prefixed,
+}
+
+impl ZoneSpec<'_> {
+    /// This spec's written-offset completion, or `None` for the named
+    /// zones (the IANA resolver's — or the far-year path's rejection's —
+    /// business).
+    pub(super) fn written(self) -> Option<WrittenZone> {
+        match self {
+            ZoneSpec::Utc => Some(WrittenZone::Utc),
+            ZoneSpec::Fixed(_) => Some(WrittenZone::Fixed),
+            ZoneSpec::Prefixed(_) => Some(WrittenZone::Prefixed),
+            ZoneSpec::Iana(_) | ZoneSpec::Other(_) => None,
+        }
+    }
+}
+
 /// The numeric tail of a `GMT`/`UTC` prefixed fixed-offset spelling, or
 /// `None` when `z` carries no such prefix. The one prefix rule: the zone
 /// classifier and [`parse_offset`] both read it, so the accepted prefix set

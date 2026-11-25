@@ -150,9 +150,10 @@ fn clock_kind(t: &Temporal) -> Option<ClockKind> {
         Temporal::Time { .. } => Some(ClockKind::Time),
         Temporal::LocalDateTime(_) => Some(ClockKind::LocalDateTime),
         Temporal::DateTime { .. } => Some(ClockKind::DateTime),
-        Temporal::CivilDate { .. } | Temporal::CivilDateTime { .. } | Temporal::Duration { .. } => {
-            None
-        }
+        Temporal::CivilDate { .. }
+        | Temporal::CivilDateTime { .. }
+        | Temporal::CivilZoned(_)
+        | Temporal::Duration { .. } => None,
     }
 }
 

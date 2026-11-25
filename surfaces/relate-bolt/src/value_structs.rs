@@ -6,7 +6,7 @@
 
 use chrono::{Datelike, NaiveDateTime, NaiveTime, Timelike};
 use relate::Temporal;
-use relate_core::temporal::{civil_epoch_days, zone_region};
+use relate_core::temporal::{civil_epoch_days, civil_epoch_seconds, zone_region, CivilZonedFields};
 use relate_core::PointValue;
 
 use crate::dialect::Dialect;
@@ -41,7 +41,6 @@ pub(crate) const POINT_2D: u8 = 0x58;
 pub(crate) const POINT_3D: u8 = 0x59;
 
 pub(crate) const NANOS_PER_SECOND: i64 = 1_000_000_000;
-const SECONDS_PER_DAY: i128 = 86_400;
 
 /// A temporal result as its Bolt structure (ADR-0325). Under the `utc`
 /// patch or on a 5.x connection a DateTime uses `0x49`/`0x69`
@@ -74,8 +73,7 @@ pub(crate) fn temporal_pack(t: &Temporal, dialect: Dialect) -> Result<Pack, Stri
             day,
             time,
         } => {
-            let seconds = civil_epoch_days(*year, *month, *day) * SECONDS_PER_DAY
-                + i128::from(time.num_seconds_from_midnight());
+            let seconds = civil_epoch_seconds(*year, *month, *day, *time);
             Pack::Struct {
                 tag: LOCAL_DATE_TIME,
                 fields: vec![
@@ -85,6 +83,7 @@ pub(crate) fn temporal_pack(t: &Temporal, dialect: Dialect) -> Result<Pack, Stri
             }
         }
         Temporal::DateTime { utc, offset, zone } => datetime_pack(*utc, *offset, zone, dialect)?,
+        Temporal::CivilZoned(fields) => civil_zoned_pack(fields, dialect)?,
         Temporal::Duration {
             months,
             days,
@@ -163,6 +162,38 @@ fn datetime_pack(
     Ok(Pack::Struct {
         tag,
         fields: vec![Pack::Int(seconds), Pack::Int(nanos), tz],
+    })
+}
+
+/// The far-year zoned datetime's Bolt structure (ADR-0683): the same
+/// fields [`datetime_pack`] emits for an offset-only zone — seconds, the
+/// wall clock's nanos, the offset — over the wide day arithmetic. The zone
+/// is always offset-only (`Z` or a fixed/prefixed spelling; the parser
+/// rejects a named zone at a far year), so the zone-id structure never
+/// arises here.
+fn civil_zoned_pack(fields: &CivilZonedFields, dialect: Dialect) -> Result<Pack, String> {
+    let utc_structures = dialect.utc_datetime_structures();
+    let local_seconds = civil_epoch_seconds(fields.year, fields.month, fields.day, fields.time);
+    let utc_seconds = local_seconds - i128::from(fields.offset);
+    let tag = if utc_structures {
+        DATE_TIME_UTC
+    } else {
+        DATE_TIME
+    };
+    // The legacy structure carries the local wall clock read as UTC; the
+    // UTC structure the instant itself — [`datetime_pack`]'s rule.
+    let seconds = if utc_structures {
+        utc_seconds
+    } else {
+        local_seconds
+    };
+    Ok(Pack::Struct {
+        tag,
+        fields: vec![
+            Pack::Int(fit(tag, seconds)?),
+            Pack::Int(fields.time.nanosecond().into()),
+            Pack::Int(fields.offset.into()),
+        ],
     })
 }
 

@@ -13,6 +13,7 @@ use super::clock::now_value;
 use super::clock::{self, ClockKind};
 use super::exact::{exact_number, DurationTiers, ExactNumber};
 use super::field::DurationLane;
+use super::field::NANOS_PER_DAY;
 use super::field_rules::{
     self, DateForm, EpochField, Fields, Sources, DAY_OF_QUARTER_KEYS, DAY_OF_WEEK_KEYS,
     EPOCH_MILLIS_KEYS, EPOCH_SECONDS_KEYS, ORDINAL_DAY_KEYS,
@@ -20,7 +21,8 @@ use super::field_rules::{
 use super::parse::{parse_iso, parse_pattern};
 use super::zone::{add_offset, apply_timezone, offset_from_map, IanaAt, ResolvedZone};
 use super::{
-    checked_lane, weekday_from_i, DurationField, Temporal, MONTHS_PER_QUARTER, NANOS_PER_SECOND,
+    checked_lane, civil_from_days, weekday_from_i, CivilZonedFields, DurationField, Temporal,
+    MONTHS_PER_QUARTER, NANOS_PER_SECOND,
 };
 
 /// The integer a temporal component map holds under `k`, or `None` when the
@@ -74,6 +76,56 @@ fn epoch_from_map(m: &Fields, field: EpochField) -> Result<(i64, u32)> {
     let value = map_int_alias(m, field.keys())?
         .ok_or_else(|| Error::argument_error(format!("{} must be an integer", field.name())))?;
     Ok(field.split(value))
+}
+
+/// The far-epoch civil construction for `datetime({epochMillis|epochSeconds:
+/// ...})` (ADR-0683): `Some(Ok(value))` when the named instant is outside
+/// chrono's range and the map carries no component override — the wall
+/// clock is the UTC instant itself, `Z` zone; `Some(Err(..))` when it does
+/// (the civil forms carry no construction vocabulary); `None` when the
+/// instant is in chrono's range, the kind is not zoned, or the epoch field
+/// does not read — the chrono path answers those unchanged.
+fn far_epoch_zoned(kind: ClockKind, m: &Fields, field: EpochField) -> Option<Result<Temporal>> {
+    if kind != ClockKind::DateTime {
+        return None;
+    }
+    let (secs, nanos) = match epoch_from_map(m, field) {
+        Ok(pair) => pair,
+        // A non-integer epoch value: the chrono path raises its own
+        // typed rejection.
+        Err(_) => return None,
+    };
+    if chrono::DateTime::from_timestamp(secs, nanos).is_some() {
+        return None;
+    }
+    if m.iter()
+        .any(|(key, value)| !field_rules::is_epoch_field(key) && !value.is_null())
+    {
+        return Some(Err(Error::argument_error("epoch out of range")));
+    }
+    let total_nanos = i128::from(secs) * NANOS_PER_SECOND + i128::from(nanos);
+    let days = total_nanos.div_euclid(NANOS_PER_DAY);
+    let nanos_of_day = total_nanos.rem_euclid(NANOS_PER_DAY);
+    let (year, month, day) = civil_from_days(days);
+    // The civil family's own documented range (TCK ±999999999): an
+    // instant past it — reachable through `epochSeconds`, whose i64
+    // seconds span ~292 billion years — is the typed out-of-range
+    // rejection, not an unbounded civil value.
+    if !(-999_999_999..=999_999_999).contains(&year) {
+        return Some(Err(Error::argument_error("epoch out of range")));
+    }
+    let time = NaiveTime::from_num_seconds_from_midnight_opt(
+        u32::try_from(nanos_of_day / NANOS_PER_SECOND).ok()?,
+        u32::try_from(nanos_of_day % NANOS_PER_SECOND).ok()?,
+    )?;
+    Some(Ok(Temporal::CivilZoned(Box::new(CivilZonedFields {
+        year,
+        month,
+        day,
+        time,
+        offset: 0,
+        zone: Some("Z".into()),
+    }))))
 }
 
 /// The UTC naive datetime the selected epoch field names. Epoch fields are
@@ -266,6 +318,14 @@ fn construct_map(kind: ClockKind, m: &Fields) -> Result<Temporal> {
 /// `1970-01-01T02:05+02:00`).
 fn epoch_map(kind: ClockKind, m: &Fields) -> Result<Temporal> {
     let field = field_rules::validate_epoch(kind, m)?;
+    // A far epoch instant is outside chrono's range: the zoned
+    // construction takes the civil representation (ADR-0683's
+    // construction twin), with no component overrides — the civil forms
+    // carry no construction vocabulary, so a map carrying one keeps the
+    // chrono-bound rejection.
+    if let Some(result) = far_epoch_zoned(kind, m, field) {
+        return result;
+    }
     let utc = epoch_utc_dt(m, field)?;
     let resolved = offset_from_map(m, IanaAt::Utc(utc))?;
     // The instant's wall clock in the resolved zone is this map's source
@@ -358,6 +418,7 @@ fn temporal_of(kind: ClockKind, value: &Temporal) -> Result<Temporal> {
             let time = time_of(value).ok_or_else(|| Error::ty("cannot convert to time"))?;
             let offset = match value {
                 Temporal::Time { offset, .. } | Temporal::DateTime { offset, .. } => *offset,
+                Temporal::CivilZoned(fields) => fields.offset,
                 _ => 0,
             };
             Temporal::Time { time, offset }
@@ -374,7 +435,8 @@ fn temporal_of(kind: ClockKind, value: &Temporal) -> Result<Temporal> {
             _ => return Err(Error::ty("cannot convert to localdatetime")),
         },
         ClockKind::DateTime => match value {
-            Temporal::DateTime { .. } => value.clone(),
+            // A zoned source is kept verbatim, either representation.
+            Temporal::DateTime { .. } | Temporal::CivilZoned(_) => value.clone(),
             Temporal::LocalDateTime(_) | Temporal::CivilDateTime { .. } => {
                 clock::zoned(local_dt_of(value)?, ResolvedZone::utc())
             }
@@ -460,7 +522,9 @@ pub(super) fn date_of(t: &Temporal) -> Result<NaiveDate> {
                 .ok_or_else(|| Error::ty("civil date out of chrono range"))
         }
         Temporal::LocalDateTime(dt) => Ok(dt.date()),
-        Temporal::CivilDateTime { .. } => Err(field_rules::cannot_get_temporal("date", t)),
+        Temporal::CivilDateTime { .. } | Temporal::CivilZoned(_) => {
+            Err(field_rules::cannot_get_temporal("date", t))
+        }
         Temporal::DateTime { utc, offset, .. } => Ok(add_offset(*utc, *offset)?.date()),
         _ => Err(Error::ty("cannot convert to date")),
     }
@@ -653,6 +717,7 @@ pub(super) fn time_of(t: &Temporal) -> Option<NaiveTime> {
         Temporal::LocalTime(t) | Temporal::Time { time: t, .. } => Some(*t),
         Temporal::LocalDateTime(dt) => Some(dt.time()),
         Temporal::CivilDateTime { time, .. } => Some(*time),
+        Temporal::CivilZoned(fields) => Some(fields.time),
         Temporal::DateTime { utc, offset, .. } => utc
             .checked_add_signed(ChronoDur::seconds(i64::from(*offset)))
             .map(|local| local.time()),

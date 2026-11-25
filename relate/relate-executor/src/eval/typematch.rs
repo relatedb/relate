@@ -1,6 +1,7 @@
 //! `IS TYPED` / property-value type checks against `TypeExpr`.
 
-use relate_core::{temporal, Value};
+use relate_core::temporal::TemporalKind;
+use relate_core::Value;
 use relate_ir::{PredefinedType, TypeExpr};
 
 pub(crate) fn value_matches_type(value: &Value, ty: &TypeExpr) -> bool {
@@ -17,32 +18,17 @@ pub(crate) fn value_matches_type(value: &Value, ty: &TypeExpr) -> bool {
                 PredefinedType::Uuid => matches!(value, Value::Uuid(_)),
                 PredefinedType::Integer => matches!(value, Value::Int(_)),
                 PredefinedType::Float => matches!(value, Value::Float(_)),
-                PredefinedType::Date => matches!(
-                    value,
-                    Value::Temporal(
-                        temporal::Temporal::Date(_) | temporal::Temporal::CivilDate { .. }
-                    )
-                ),
-                PredefinedType::Duration => {
-                    matches!(value, Value::Temporal(temporal::Temporal::Duration { .. }))
-                }
+                // Every temporal arm reads core's one kind partition
+                // (`Temporal::kind`) — never a second variant list, so a
+                // representation added to a kind answers here unchanged
+                // (the civil far-year forms included, ADR-0683).
+                PredefinedType::Date => matches_kind(value, TemporalKind::Date),
+                PredefinedType::Duration => matches_kind(value, TemporalKind::Duration),
                 PredefinedType::Point => matches!(value, Value::Point(_)),
-                PredefinedType::LocalTime => {
-                    matches!(value, Value::Temporal(temporal::Temporal::LocalTime(_)))
-                }
-                PredefinedType::ZonedTime => {
-                    matches!(value, Value::Temporal(temporal::Temporal::Time { .. }))
-                }
-                PredefinedType::LocalDateTime => matches!(
-                    value,
-                    Value::Temporal(
-                        temporal::Temporal::LocalDateTime(_)
-                            | temporal::Temporal::CivilDateTime { .. }
-                    )
-                ),
-                PredefinedType::ZonedDateTime => {
-                    matches!(value, Value::Temporal(temporal::Temporal::DateTime { .. }))
-                }
+                PredefinedType::LocalTime => matches_kind(value, TemporalKind::LocalTime),
+                PredefinedType::ZonedTime => matches_kind(value, TemporalKind::Time),
+                PredefinedType::LocalDateTime => matches_kind(value, TemporalKind::LocalDateTime),
+                PredefinedType::ZonedDateTime => matches_kind(value, TemporalKind::DateTime),
                 PredefinedType::Node => matches!(value, Value::Node(_)),
                 PredefinedType::Relationship => matches!(value, Value::Relationship(_)),
                 PredefinedType::Path => matches!(value, Value::Path(_)),
@@ -98,6 +84,12 @@ pub(crate) fn value_matches_type(value: &Value, ty: &TypeExpr) -> bool {
 /// `[] IS :: ANY PROPERTY VALUE` on the reference engine.
 pub(crate) fn is_property_value(value: &Value) -> bool {
     !value.is_null() && crate::props::property_value_invalidity(value).is_none()
+}
+
+/// Whether `value` is a temporal of `kind` — the one predicate every
+/// temporal `IS ::` arm reads.
+fn matches_kind(value: &Value, kind: TemporalKind) -> bool {
+    value.as_temporal().is_some_and(|t| t.kind() == kind)
 }
 
 #[cfg(test)]

@@ -105,7 +105,8 @@ pub fn column_type_kind(value: &Value) -> ColumnTypeKind {
             Temporal::LocalTime(_) | Temporal::Time { .. } => ColumnTypeKind::Time,
             Temporal::LocalDateTime(_)
             | Temporal::CivilDateTime { .. }
-            | Temporal::DateTime { .. } => ColumnTypeKind::DateTime,
+            | Temporal::DateTime { .. }
+            | Temporal::CivilZoned(_) => ColumnTypeKind::DateTime,
             Temporal::Duration { .. } => ColumnTypeKind::Duration,
         },
     }
@@ -318,6 +319,10 @@ pub(crate) fn temporal_to_cypher(t: &Temporal) -> CypherValue {
             Some(d) => CypherValue::LocalDateTime(d.and_time(*time)),
             None => CypherValue::Str(t.iso_string()),
         },
+        // A far-year zoned datetime (ADR-0683) crosses as its ISO
+        // rendering — the same stated fallback the other out-of-range
+        // civil arms use; the model's DateTime is chrono-bound.
+        Temporal::CivilZoned(_) => CypherValue::Str(t.iso_string()),
         Temporal::DateTime { utc, offset, zone } => {
             let Some(off) = FixedOffset::east_opt(*offset) else {
                 return CypherValue::Str(t.iso_string());

@@ -30,6 +30,8 @@ mod tests_arith;
 #[cfg(test)]
 mod tests_between;
 #[cfg(test)]
+mod tests_civil_zoned;
+#[cfg(test)]
 mod tests_clock;
 #[cfg(test)]
 mod tests_construct;
@@ -50,7 +52,8 @@ use format::format_zone_offset;
 use zone::add_offset;
 
 pub use arith::{
-    add_duration, civil_epoch_days, civil_from_days, negate_duration, scale_duration, sub_duration,
+    add_duration, civil_epoch_days, civil_epoch_seconds, civil_from_days, negate_duration,
+    scale_duration, sub_duration,
 };
 pub use between::{duration_between, duration_between_unit, BetweenUnit};
 pub use clock::{
@@ -96,11 +99,49 @@ pub enum Temporal {
         offset: i32,
         zone: Option<String>,
     },
+    /// Out-of-range zoned datetime (TCK ±999999999): the wall clock as
+    /// proleptic civil fields — [`CivilZonedFields`], [`Temporal::CivilDateTime`]'s
+    /// payload plus the offset and optional zone spelling
+    /// [`Temporal::DateTime`] carries. Only an offset or `Z` zone spec
+    /// constructs one (ADR-0683); the instant is the wall clock minus the
+    /// offset, computed over the wide day arithmetic and never a chrono
+    /// conversion. The payload is boxed: unboxed it is 56 bytes against
+    /// the chrono `DateTime` variant's 48, and `Temporal` growing past 48
+    /// grows every row's `Value` with it — the far-year form is rare
+    /// enough to pay one allocation instead.
+    CivilZoned(Box<CivilZonedFields>),
     Duration {
         months: i64,
         days: i64,
         nanos: i128,
     },
+}
+
+/// The boxed payload of [`Temporal::CivilZoned`] (ADR-0683): the wall
+/// clock's proleptic civil fields plus the offset and optional zone
+/// spelling — the fields a `parse_zoned_dt` far-year fallback fills and
+/// every zoned relation reads.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CivilZonedFields {
+    /// The wall clock's proleptic year, ±999999999.
+    pub year: i64,
+    pub month: u32,
+    pub day: u32,
+    pub time: NaiveTime,
+    pub offset: i32,
+    pub zone: Option<String>,
+}
+
+impl CivilZonedFields {
+    /// The UTC instant in epoch nanoseconds — the wall clock minus the
+    /// offset over the wide day arithmetic ([`zoned_parts`]'s one civil
+    /// derivation, and the executor's group/index key: the same value the
+    /// ordering relations rank by). Never a chrono conversion.
+    pub fn epoch_nanos(&self) -> i128 {
+        civil_epoch_days(self.year, self.month, self.day) * NANOS_PER_DAY
+            + i128::from(time_to_nanos(self.time))
+            - i128::from(self.offset) * 1_000_000_000
+    }
 }
 
 /// The six temporal type kinds, one per Cypher type name — the variant
@@ -110,7 +151,7 @@ pub enum Temporal {
 /// DURATION (live Neo4j 2026.10.1, value-independent), so a kind's
 /// discriminant is that rank's offset.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum TemporalKind {
+pub enum TemporalKind {
     DateTime,
     LocalDateTime,
     Date,
@@ -138,9 +179,9 @@ impl TemporalKind {
 impl Temporal {
     /// This value's type kind — the one spelling of the variant grouping
     /// (the civil out-of-range forms share their kind's name).
-    pub(crate) fn kind(&self) -> TemporalKind {
+    pub fn kind(&self) -> TemporalKind {
         match self {
-            Temporal::DateTime { .. } => TemporalKind::DateTime,
+            Temporal::DateTime { .. } | Temporal::CivilZoned(_) => TemporalKind::DateTime,
             Temporal::LocalDateTime(_) | Temporal::CivilDateTime { .. } => {
                 TemporalKind::LocalDateTime
             }
@@ -238,24 +279,19 @@ impl Temporal {
     /// list.
     pub fn has_date(&self) -> bool {
         matches!(
-            self,
-            Temporal::Date(_)
-                | Temporal::CivilDate { .. }
-                | Temporal::LocalDateTime(_)
-                | Temporal::CivilDateTime { .. }
-                | Temporal::DateTime { .. }
+            self.kind(),
+            TemporalKind::Date | TemporalKind::LocalDateTime | TemporalKind::DateTime
         )
     }
 
     /// Whether the value carries a time of day (see [`Temporal::has_date`]).
     pub fn has_time(&self) -> bool {
         matches!(
-            self,
-            Temporal::LocalTime(_)
-                | Temporal::Time { .. }
-                | Temporal::LocalDateTime(_)
-                | Temporal::CivilDateTime { .. }
-                | Temporal::DateTime { .. }
+            self.kind(),
+            TemporalKind::LocalTime
+                | TemporalKind::Time
+                | TemporalKind::LocalDateTime
+                | TemporalKind::DateTime
         )
     }
 
@@ -339,7 +375,14 @@ impl Temporal {
                     time: tb,
                 },
             ) => (ya, ma, da, ta) == (yb, mb, db, tb),
-            (Temporal::DateTime { .. }, Temporal::DateTime { .. }) => {
+            (
+                Temporal::DateTime { .. } | Temporal::CivilZoned(_),
+                Temporal::DateTime { .. } | Temporal::CivilZoned(_),
+            ) => {
+                // The zoned relation over either representation (the civil
+                // far-year form included, ADR-0683): wall clock plus zone
+                // identity, so the two halves of a DST fall-back overlap
+                // stay equal across the representations they parse into.
                 self.datetime_eq_identity() == other.datetime_eq_identity()
             }
             (
@@ -358,17 +401,22 @@ impl Temporal {
         }
     }
 
-    /// The two components [`Self::equals`] compares for a zoned `DateTime`:
+    /// The two components [`Self::equals`] compares for a zoned datetime —
+    /// either representation, the civil far-year form included (ADR-0683):
     /// its local wall clock and its [`ZoneId`]. `None` for every other
     /// temporal kind. This is the `=` identity only; the property index,
     /// uniqueness probe and `MERGE` key the finer equivalence identity
     /// (UTC instant plus zone), so the two halves of a DST fall-back overlap
     /// are equal yet separate index entries (LABS-785).
-    pub fn datetime_eq_identity(&self) -> Option<(NaiveDateTime, ZoneId)> {
+    pub fn datetime_eq_identity(&self) -> Option<(WallClockParts, ZoneId)> {
         match self {
             Temporal::DateTime { utc, offset, zone } => Some((
-                local_of(*utc, *offset),
+                local_datetime_parts(local_of(*utc, *offset)),
                 ZoneId::of(zone.as_deref(), *offset),
+            )),
+            Temporal::CivilZoned(fields) => Some((
+                (fields.year, fields.month, fields.day, fields.time),
+                ZoneId::of(fields.zone.as_deref(), fields.offset),
             )),
             _ => None,
         }
@@ -444,24 +492,27 @@ impl Temporal {
                     .cmp(&utc_time_nanos(*b, *ob))
                     .then(oa.cmp(ob)),
             ),
+            // A zoned pair — both representations — orders by the one
+            // representation (ADR-0683) orders by the one instant both
+            // representations share, then offset, then zone — the DateTime
+            // rule, over the wide i128 instant.
             (
-                Temporal::DateTime {
-                    utc: ua,
-                    offset: oa,
-                    zone: za,
-                },
-                Temporal::DateTime {
-                    utc: ub,
-                    offset: ob,
-                    zone: zb,
-                },
-            ) => Some(
-                ua.cmp(ub)
-                    .then_with(|| oa.cmp(ob))
-                    // A named (IANA) zone sorts after the plain offset it
-                    // equals, by name: `None < Some(_)`.
-                    .then_with(|| zone_region(za.as_deref()).cmp(&zone_region(zb.as_deref()))),
-            ),
+                Temporal::DateTime { .. } | Temporal::CivilZoned(_),
+                Temporal::DateTime { .. } | Temporal::CivilZoned(_),
+            ) => {
+                let (Some((ia, oa, za)), Some((ib, ob, zb))) =
+                    (zoned_parts(self), zoned_parts(other))
+                else {
+                    return None;
+                };
+                Some(
+                    ia.cmp(&ib)
+                        .then_with(|| oa.cmp(&ob))
+                        // A named (IANA) zone sorts after the plain offset
+                        // it equals, by name: `None < Some(_)`.
+                        .then_with(|| za.cmp(&zb)),
+                )
+            }
             (Temporal::Duration { .. }, Temporal::Duration { .. }) => None,
             _ => None,
         }
@@ -475,7 +526,13 @@ impl Temporal {
     /// caller, this relation only answers for a comparable pair.
     pub fn same_instant(&self, other: &Temporal) -> bool {
         match (self, other) {
-            (Temporal::DateTime { utc: a, .. }, Temporal::DateTime { utc: b, .. }) => a == b,
+            // The instant-bearing pairs — both zoned representations
+            // (ADR-0683) and the two times — are the instant ordering's
+            // equality, one derivation.
+            (
+                Temporal::DateTime { .. } | Temporal::CivilZoned(_),
+                Temporal::DateTime { .. } | Temporal::CivilZoned(_),
+            ) => self.instant_ordering(other) == Some(Ordering::Equal),
             (
                 Temporal::Time {
                     time: a,
@@ -497,8 +554,17 @@ impl Temporal {
     /// `None`).
     pub fn instant_ordering(&self, other: &Temporal) -> Option<Ordering> {
         match (self, other) {
-            (Temporal::DateTime { utc: a, .. }, Temporal::DateTime { utc: b, .. }) => {
-                Some(a.cmp(b))
+            // A zoned pair — both representations — orders by the wide
+            // instant (ADR-0683).
+            (
+                Temporal::DateTime { .. } | Temporal::CivilZoned(_),
+                Temporal::DateTime { .. } | Temporal::CivilZoned(_),
+            ) => {
+                let (Some((ia, ..)), Some((ib, ..))) = (zoned_parts(self), zoned_parts(other))
+                else {
+                    return None;
+                };
+                Some(ia.cmp(&ib))
             }
             (
                 Temporal::Time {
@@ -559,6 +625,42 @@ fn date_parts(d: NaiveDate) -> (i64, u32, u32) {
 fn local_datetime_parts(dt: NaiveDateTime) -> (i64, u32, u32, NaiveTime) {
     let (year, month, day) = date_parts(dt.date());
     (year, month, day, dt.time())
+}
+
+/// The wall clock of a zoned datetime as its normalized `(year, month,
+/// day, time)` parts (ADR-0683): either representation constructs the
+/// same tuple — a chrono wall clock through [`local_datetime_parts`], a
+/// civil one from its own fields — so equality is the tuple's. Named for
+/// its shape: `zone::WallClock` owns the resolver concept.
+pub type WallClockParts = (i64, u32, u32, NaiveTime);
+
+/// The zoned view every zoned relation reads (ADR-0683): the UTC instant
+/// in epoch nanoseconds, the offset, and the zone region — the one match
+/// over the DateTime/CivilZoned partition, from either representation.
+/// `None` for a non-zoned value; the relations' zoned arms never see it,
+/// and a `None` there answers "incomparable", never a fabricated default.
+///
+/// Wide i128 arithmetic throughout: a chrono instant converts through its
+/// seconds (never `timestamp_nanos`, which overflows `i64` far inside the
+/// range chrono represents), and a civil one through the wide day number.
+fn zoned_parts(t: &Temporal) -> Option<(i128, i32, Option<&str>)> {
+    match t {
+        Temporal::DateTime { utc, offset, zone } => {
+            let instant = utc.and_utc();
+            Some((
+                i128::from(instant.timestamp()) * 1_000_000_000
+                    + i128::from(instant.timestamp_subsec_nanos()),
+                *offset,
+                zone_region(zone.as_deref()),
+            ))
+        }
+        Temporal::CivilZoned(fields) => Some((
+            fields.epoch_nanos(),
+            fields.offset,
+            zone_region(fields.zone.as_deref()),
+        )),
+        _ => None,
+    }
 }
 
 /// Nanoseconds of the UTC clock time a `Time` denotes. Deliberately *not*

@@ -11,9 +11,9 @@ use super::duration_pattern::parse_duration_pattern;
 use super::pattern::{invalid_value, parse_instant_pattern};
 use super::zone::{
     parse_offset, resolve_wall_forward, sub_offset, zone_kind, zone_offset_mismatch, OverlapPolicy,
-    ZoneSpec,
+    WrittenZone,
 };
-use super::{range_err, weekday_from_i, Temporal};
+use super::{range_err, weekday_from_i, CivilZonedFields, Temporal};
 
 pub fn parse_iso(kind: &str, s: &str) -> Result<Temporal> {
     match kind {
@@ -66,6 +66,13 @@ pub fn parse_pattern(kind: &str, value: &str, pattern: &str) -> Result<Temporal>
     parse_instant_pattern(kind, value, pattern)
 }
 
+/// Whether `year` is inside chrono's `NaiveDate` range — the one statement
+/// of the chrono/civil representation split, consulted by the date parse,
+/// the far-year body parse, and the named-zone rejection's bounds.
+fn in_chrono_year_range(year: i64) -> bool {
+    (i64::from(NaiveDate::MIN.year())..=i64::from(NaiveDate::MAX.year())).contains(&year)
+}
+
 fn parse_civil_ymd(s: &str) -> Option<(i64, u32, u32)> {
     let t = s.trim();
     let (sign, rest) = if let Some(rest) = t.strip_prefix('+') {
@@ -92,7 +99,7 @@ fn parse_date_str(s: &str) -> Result<Temporal> {
         // `NaiveDate::from_ymd_opt` is the calendar, and outside it
         // `is_civil_date` is (the check chrono cannot make for an i64 year).
         // The split only chooses the representation.
-        if (i64::from(NaiveDate::MIN.year())..=i64::from(NaiveDate::MAX.year())).contains(&year) {
+        if in_chrono_year_range(year) {
             let date =
                 NaiveDate::from_ymd_opt(i32::try_from(year).map_err(|_| range_err())?, month, day)
                     .ok_or_else(|| Error::ty(format!("invalid date '{s}'")))?;
@@ -218,15 +225,7 @@ fn parse_localdatetime_str(s: &str) -> Result<Temporal> {
     if let Ok(dt) = parse_naive_dt(body) {
         return Ok(Temporal::LocalDateTime(dt));
     }
-    let (date_s, time_s) = match body.split_once('T') {
-        Some((d, t)) => (d, Some(t)),
-        None => (body, None),
-    };
-    if let Temporal::CivilDate { year, month, day } = parse_date_str(date_s)? {
-        let time = match time_s {
-            Some(t) if !t.is_empty() => parse_naive_time(t).unwrap_or(NaiveTime::MIN),
-            _ => NaiveTime::MIN,
-        };
+    if let Some((year, month, day, time)) = parse_civil_body(body) {
         return Ok(Temporal::CivilDateTime {
             year,
             month,
@@ -390,33 +389,36 @@ fn parse_zoned_dt(s: &str) -> Result<Temporal> {
     // inside a DST overlap: `datetime('2020-10-25T02:30+01:00[Europe/Stockholm]')`
     // is the post-transition 02:30, not an error.
     let (body, body_offset) = split_offset(body);
-    let local = parse_naive_dt(body)?;
+    // The chrono parse stays first so its own rejections — a malformed
+    // time, an unparsable date — answer exactly as before; the civil
+    // fallback (ADR-0683) only claims a body whose year is outside
+    // chrono's range, and only an offset or `Z` zone spec can complete it.
+    let local = match parse_naive_dt(body) {
+        Ok(dt) => dt,
+        Err(chrono_err) => {
+            return match parse_civil_body(body) {
+                Some(wall) => civil_zoned_dt(s, zone_part, body_offset, wall),
+                None => Err(chrono_err),
+            }
+        }
+    };
     if let Some(z) = zone_part {
         let want = body_offset.map(parse_offset).transpose()?;
         // Every arm answers the same three facts — the (possibly
         // gap-shifted) wall clock, its offset, and the zone spelling to
         // keep — and the value is built once.
         let spec = zone_kind(z);
-        let (local, offset, zone) = match spec {
-            ZoneSpec::Iana(_) | ZoneSpec::Other(_) => {
-                // A supplied offset must name the zone's own occurrence of
-                // the wall clock (never silently replaced), an overlap needs
-                // one, and a gap shifts forward only when none was written.
+        let (local, offset, zone) = match spec.written() {
+            // A supplied offset must name the zone's own occurrence of
+            // the wall clock (never silently replaced), an overlap needs
+            // one, and a gap shifts forward only when none was written.
+            None => {
                 let policy = want.map_or(OverlapPolicy::Reject, OverlapPolicy::Require);
                 let (local, offset) = resolve_wall_forward(z, local, policy)?;
                 (local, offset, Some(z.to_string()))
             }
-            ZoneSpec::Utc => {
-                check_matching_offset(z, want, 0)?;
-                (local, 0, Some("Z".into()))
-            }
-            // The classifier already split the two spellings: a numeric
-            // offset stays offset-only, a `GMT`/`UTC` prefixed one keeps its
-            // spelling as the value's zone.
-            ZoneSpec::Fixed(_) | ZoneSpec::Prefixed(_) => {
-                let offset = parse_offset(z)?;
-                check_matching_offset(z, want, offset)?;
-                let zone = matches!(spec, ZoneSpec::Prefixed(_)).then(|| z.to_string());
+            Some(written) => {
+                let (offset, zone) = resolve_written_zone(written, z, want)?;
                 (local, offset, zone)
             }
         };
@@ -431,4 +433,96 @@ fn parse_zoned_dt(s: &str) -> Result<Temporal> {
         offset: 0,
         zone: Some("Z".into()),
     })
+}
+
+/// The far-year civil body of a zoned literal (ADR-0683): a wall clock
+/// whose year is outside chrono's range, or `None` — an in-range body
+/// never reaches the caller (the chrono parse took it), and a malformed
+/// one stays with the chrono parse's own error.
+/// The far-year civil wall clock one `Y-M-D` body names — the one body
+/// parse the localdatetime and zoned-literal paths share (ADR-0683):
+/// `None` unless the year is outside chrono's range (an in-range body
+/// reached a civil fallback only because the chrono parse rejected it,
+/// and its rejection stands), an absent or empty time part is midnight,
+/// and a present malformed time declines — never a midnight substitution.
+fn parse_civil_body(body: &str) -> Option<(i64, u32, u32, NaiveTime)> {
+    // A date-alone body is midnight, the chrono parse's own rule.
+    let (date_s, time_s) = body.split_once('T').unwrap_or((body, ""));
+    let (year, month, day) = parse_civil_ymd(date_s)?;
+    if in_chrono_year_range(year) {
+        return None;
+    }
+    // The calendar check `parse_date_str` applies to its civil branch: an
+    // impossible far-year date declines, so the chrono parse's `invalid
+    // date` rejection stands instead of a stored impossible value.
+    if !is_civil_date(year, month, day) {
+        return None;
+    }
+    let time = if time_s.is_empty() {
+        NaiveTime::MIN
+    } else {
+        parse_naive_time(time_s).ok()?
+    };
+    Some((year, month, day, time))
+}
+
+/// Complete a far-year zoned datetime (ADR-0683): the civil wall clock
+/// plus an offset or `Z` zone spec — the two spellings whose completion
+/// never runs a zone-calendar resolution. A named zone at a far year keeps
+/// the rejection; the resolver is chrono-bound there.
+fn civil_zoned_dt(
+    s: &str,
+    zone_part: Option<&str>,
+    body_offset: Option<&str>,
+    wall: (i64, u32, u32, NaiveTime),
+) -> Result<Temporal> {
+    let (year, month, day, time) = wall;
+    let want = body_offset.map(parse_offset).transpose()?;
+    let (offset, zone) = match zone_part {
+        // No offset and no bracket: the UTC reading, as the chrono path.
+        None => (0, Some("Z".to_string())),
+        Some(z) => match zone_kind(z).written() {
+            Some(written) => resolve_written_zone(written, z, want)?,
+            None => {
+                return Err(Error::ty(format!(
+                    "cannot parse datetime '{s}': a named time zone needs a year within \
+                     {}..={}",
+                    NaiveDate::MIN.year(),
+                    NaiveDate::MAX.year()
+                )))
+            }
+        },
+    };
+    Ok(Temporal::CivilZoned(Box::new(CivilZonedFields {
+        year,
+        month,
+        day,
+        time,
+        offset,
+        zone,
+    })))
+}
+
+/// The `(offset, zone spelling)` a written-offset zone spec completes to
+/// — the one policy the chrono path and the far-year civil fallback
+/// share: `Z` and a numeric offset stay offset-only, a `GMT`/`UTC`
+/// prefixed one keeps its spelling as the value's zone, and a supplied
+/// offset must match the zone's own (never silently replaced).
+fn resolve_written_zone(
+    written: WrittenZone,
+    z: &str,
+    want: Option<i32>,
+) -> Result<(i32, Option<String>)> {
+    match written {
+        WrittenZone::Utc => {
+            check_matching_offset(z, want, 0)?;
+            Ok((0, Some("Z".to_string())))
+        }
+        WrittenZone::Fixed | WrittenZone::Prefixed => {
+            let offset = parse_offset(z)?;
+            check_matching_offset(z, want, offset)?;
+            let zone = matches!(written, WrittenZone::Prefixed).then(|| z.to_string());
+            Ok((offset, zone))
+        }
+    }
 }

@@ -145,6 +145,13 @@ enum NormTemporal {
         utc: NaiveDateTime,
         zone: ZoneId,
     },
+    /// A far-year zoned datetime (ADR-0683): the same UTC instant plus
+    /// zone identity, over the wide i128 epoch nanos the civil wall clock
+    /// denotes.
+    CivilZoned {
+        instant: i128,
+        zone: ZoneId,
+    },
     Duration {
         months: i64,
         days: i64,
@@ -186,6 +193,12 @@ fn norm_temporal(t: &Temporal) -> NormTemporal {
         Temporal::DateTime { utc, offset, zone } => NormTemporal::DateTime {
             utc: *utc,
             zone: ZoneId::of(zone.as_deref(), *offset),
+        },
+        // The instant is the fields' one derivation (ADR-0683) — the same
+        // value the ordering relations rank by.
+        Temporal::CivilZoned(fields) => NormTemporal::CivilZoned {
+            instant: fields.epoch_nanos(),
+            zone: ZoneId::of(fields.zone.as_deref(), fields.offset),
         },
         Temporal::Duration {
             months,
@@ -498,11 +511,14 @@ fn value_has_nan(v: &Value) -> bool {
 /// (ADR-0614) and the overlay's scratch-mode decision read this as
 /// their decline.
 pub(crate) fn identity_narrower_than_eq(value: &Value) -> bool {
+    // The zone identity is the value's own `=` identity
+    // (`datetime_eq_identity`, either zoned representation) — never a
+    // re-derivation from one variant's fields, so a representation added
+    // to the identity follows here unchanged.
     value_any(value, &|v| {
         matches!(
-            v,
-            Value::Temporal(Temporal::DateTime { zone, offset, .. })
-                if matches!(ZoneId::of(zone.as_deref(), *offset), ZoneId::Named(_))
+            v.as_temporal().and_then(Temporal::datetime_eq_identity),
+            Some((_, ZoneId::Named(_)))
         )
     })
 }

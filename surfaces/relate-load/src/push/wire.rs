@@ -189,6 +189,8 @@ fn temporal_tag(t: &Temporal) -> WireTag {
         Temporal::LocalDateTime(_) | Temporal::CivilDateTime { .. } => WireTag::LocalDateTime,
         Temporal::DateTime { zone: Some(_), .. } => WireTag::ZonedDateTime,
         Temporal::DateTime { zone: None, .. } => WireTag::OffsetDateTime,
+        Temporal::CivilZoned(fields) if fields.zone.is_some() => WireTag::ZonedDateTime,
+        Temporal::CivilZoned(_) => WireTag::OffsetDateTime,
         Temporal::Duration { .. } => WireTag::Duration,
     }
 }

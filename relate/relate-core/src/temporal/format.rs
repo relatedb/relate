@@ -339,7 +339,7 @@ pub fn format_pattern(value: &Temporal, pattern: &str) -> Result<String> {
             days,
             nanos,
         } => return format_duration_pattern(*months, *days, *nanos, pattern),
-        Temporal::CivilDate { .. } | Temporal::CivilDateTime { .. } => {
+        Temporal::CivilDate { .. } | Temporal::CivilDateTime { .. } | Temporal::CivilZoned(_) => {
             return if pattern.is_empty() {
                 Ok(String::new())
             } else {
