@@ -342,6 +342,13 @@ impl Database {
     /// the release is best-effort: a spawn failure is logged and does not
     /// report the demotion as failed. `draining` clears whether this
     /// succeeds or fails.
+    ///
+    /// A writer detaches its database by calling this and then dropping
+    /// the handle (ADR-0684): one full checkpoint covers every
+    /// acknowledged commit, including under `EverySecond` durability, and
+    /// it is published before the lease is released. The drop that
+    /// follows writes no second checkpoint. A follower detaches by the
+    /// drop alone.
     pub fn demote(&self) -> Result<()> {
         let shared = &self.inner;
         let _role = shared.role.lock()?;
