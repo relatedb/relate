@@ -61,26 +61,32 @@ pub enum DetectorKind {
     Float16,
     PathConstruction,
     Chronological,
-    /// The graph-type family: the one graph-type walk reports membership.
-    GraphTypeMembership,
 }
 
 /// Where in the pipeline a preview feature's gate is checked, for the
-/// sites whose consumers a test can read. A feature gated somewhere else
-/// (statement validation, run-time evaluation, the executor's graph-type
-/// layer) declares no site.
+/// sites whose consumers a test can read. A feature gated where this
+/// vocabulary cannot name the site (statement validation, run-time
+/// evaluation, the executor's graph-type layer) declares
+/// [`GateSite::GatedElsewhere`]; a row never declares no site.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum GateSite {
     /// The lexer or parser decides it, through this parse option.
     ParseOption(ParseOption),
     /// The front's AST detector loop rejects the feature's syntax.
     AstDetector(DetectorKind),
+    /// The graph-type family: the front's one graph-type walk reports the
+    /// features a statement's graph-type bodies use, checked in the same
+    /// admission loop.
+    GraphTypeMembership,
     /// A function name is admitted or hidden by the function registry.
     NameAdmission,
     /// Procedure dispatch gates a built-in procedure family.
     ProcedureDispatch,
     /// The namespace registry hides a fixed namespace.
     Namespace,
+    /// Gated at a site this vocabulary does not name; the row's own doc says
+    /// where. Distinct from "ungated": an empty site list is rejected.
+    GatedElsewhere,
 }
 
 /// The one registry: each preview feature's variant, doc comment,
@@ -147,9 +153,9 @@ macro_rules! preview_feature_registry {
 preview_feature_registry! {
     (HybridSearch, "CIP-278 hybrid search `COMBINE` (reserved; lands later).", "hybrid-search", [GateSite::AstDetector(DetectorKind::HybridSearch)]),
     (LocalCallables, "CIP-231 local callables: DEFINE PROCEDURE/FUNCTION, ADR-0382.", "local-callables", [GateSite::AstDetector(DetectorKind::LocalCallables)]),
-    (GraphTypeOptProps, "CIP-283 graph-type optional properties (`prop :: ANY` in element types).", "graph-type-opt-props", [GateSite::AstDetector(DetectorKind::GraphTypeMembership)]),
-    (GraphTypeDefaultValues, "CIP-262 graph-type property default values (`DEFAULT ON COMMIT <value expression>`).", "graph-type-default-values", [GateSite::AstDetector(DetectorKind::GraphTypeMembership)]),
-    (GraphTypeImpliedLabels, "CIP-266 graph-type implied labels that identify node element types (inheritance).", "graph-type-implied-labels", [GateSite::AstDetector(DetectorKind::GraphTypeMembership)]),
+    (GraphTypeOptProps, "CIP-283 graph-type optional properties (`prop :: ANY` in element types).", "graph-type-opt-props", [GateSite::GraphTypeMembership]),
+    (GraphTypeDefaultValues, "CIP-262 graph-type property default values (`DEFAULT ON COMMIT <value expression>`).", "graph-type-default-values", [GateSite::GraphTypeMembership]),
+    (GraphTypeImpliedLabels, "CIP-266 graph-type implied labels that identify node element types (inheritance).", "graph-type-implied-labels", [GateSite::GraphTypeMembership]),
     (
         Ontology,
         "The ontology feature's whole dialect surface: the `db.ontology.*` procedures \
@@ -243,7 +249,7 @@ preview_feature_registry! {
         GraphTypeShowVariants,
         "CIP-275 graph-type display variants of SHOW CURRENT GRAPH TYPE: consolidated and flattened.",
         "graph-type-show-variants",
-        [GateSite::AstDetector(DetectorKind::GraphTypeMembership)]
+        [GateSite::GraphTypeMembership]
     ),
     (
         PathConstruction,
@@ -259,7 +265,7 @@ preview_feature_registry! {
          node. Gates the `||` operator over path operands at evaluation; the disabled \
          form is the existing `||` operand type error, not the authored error.",
         "path-concatenation",
-        []
+        [GateSite::GatedElsewhere]
     ),
 }
 
@@ -387,6 +393,19 @@ mod tests {
             assert_eq!(PreviewFeature::from_kebab_name(name), Some(*feature));
         }
         assert_eq!(PreviewFeature::from_kebab_name("nope"), None);
+    }
+
+    #[test]
+    fn every_row_declares_a_gate_site() {
+        // An empty row would conflate "gated where the vocabulary cannot
+        // name it" with "not gated"; the former is `GatedElsewhere`.
+        for feature in PREVIEW_FEATURES {
+            assert!(
+                !feature.gate_sites().is_empty(),
+                "{} declares no gate site",
+                feature.kebab_name()
+            );
+        }
     }
 
     #[test]
