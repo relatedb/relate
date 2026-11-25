@@ -622,6 +622,27 @@ action, which never writes certificate material to disk — and is deleted
 from the runner in an `always()` cleanup step. No credential is ever
 echoed.
 
+Before the sign step, the action preflights the credentials with
+`smctl healthcheck`: `smctl` is downloaded from the same CDN location the
+pinned vendor action installs it from, but verified against a SHA-256
+pinned in the action itself — not the CDN's own sidecar, which proves no
+provenance — and that pin moves only by an explicit bump, the same rule
+as the third-party action SHA pins. The preflight's scratch (the
+downloaded binary and the healthcheck report) is removed in an
+`always()` cleanup step.
+[`scripts/check-smctl-healthcheck.sh`](scripts/check-smctl-healthcheck.sh)
+classifies the report — `Authentication: 2FA` proceeds to signing; a
+connected-but-1FA report fails naming the client-certificate secrets to
+fix (`WINDOWS_SIGN_CLIENT_CERT_FILE_B64` /
+`WINDOWS_SIGN_CLIENT_CERT_PASSWORD`); a not-connected or
+connection-failed report fails naming `WINDOWS_SIGN_SM_HOST` /
+`WINDOWS_SIGN_API_KEY`; a no-credentials report fails naming the
+certificate-load pair. Without the preflight, the same failure reaches
+DigiCert's API only at sign time, as a bare 403 ("User is not
+multi-factor authenticated") that names neither the failing credential
+nor the remedy — the state the first credentialed release run shipped
+in.
+
 ### Windows secrets and variables
 
 Three repository secrets and three repository variables:

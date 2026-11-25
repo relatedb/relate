@@ -606,7 +606,8 @@ test-bolt-compat-scripts:
 	$(PYTHON) $(CURDIR)/scripts/tests/test_bolt_compat_probe.py
 
 ## test-release-scripts: Unit-test the release sweep, its changelog and
-##   release-notes guards, and the per-channel packaging scripts
+##   release-notes guards, the per-channel packaging scripts, and the
+##   release runners' signing-credentials gates
 test-release-scripts:
 	$(PYTHON) $(CURDIR)/scripts/tests/test_version_tokens.py
 	$(PYTHON) $(CURDIR)/scripts/tests/test_version_element.py
@@ -630,6 +631,7 @@ test-release-scripts:
 	sh $(CURDIR)/scripts/tests/test_sedi_sh.sh
 	sh $(CURDIR)/scripts/tests/test_check_linux_isa.sh
 	sh $(CURDIR)/scripts/tests/test_check_glibc_floor.sh
+	sh $(CURDIR)/scripts/tests/test_check_smctl_healthcheck.sh
 
 ## test-front-bench-scripts: Unit-test the front-bench statement corpus
 ##   builder (scripts/front_bench_corpus.py): the Gherkin walk's container
