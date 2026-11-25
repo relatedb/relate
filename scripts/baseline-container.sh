@@ -161,7 +161,8 @@ if ! docker image inspect "${BASELINE_BUILD_IMAGE}" >/dev/null 2>&1 \
 fi
 
 echo "${label}  image ${image}  container ${BASELINE_MEMORY}"
-# The target-cache suffix follows the resolved build image's toolchain, so
+# The target-cache suffix follows the resolved build image's toolchain (the
+# one place it is derived; Dockerfile.baseline has no default), so
 # an env override pinning a different Rust moves the cache with it (a
 # non-`rust:<version>-…` image keys the cache on its whole reference).
 BASELINE_TOOLCHAIN="${BASELINE_TOOLCHAIN:-$(printf '%s' "${BASELINE_BUILD_IMAGE}" | sed -n 's/^rust:\([0-9][0-9.]*\)-.*/\1/p')}"
