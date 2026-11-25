@@ -44,69 +44,47 @@ fn vector_maps_to_fixed_size_list() {
     assert_eq!(floats.values(), &[1.0f32, 2.0, 3.0]);
 }
 
+/// A `Vector` value; `dim` is passed apart from `values` so malformed
+/// declarations stay expressible.
+fn vector(coord: VectorCoordKind, dim: usize, values: Vec<CypherValue>) -> CypherValue {
+    CypherValue::Vector { coord, dim, values }
+}
+
 #[test]
 fn malformed_vectors_return_arrow_errors_before_building_or_chunking() {
     let invalid = vec![
-        CypherValue::Vector {
-            coord: VectorCoordKind::Int8,
-            dim: 2,
-            values: vec![CypherValue::Int(1)],
-        },
-        CypherValue::Vector {
-            coord: VectorCoordKind::Int8,
-            dim: i32::MAX as usize + 1,
-            values: vec![],
-        },
-        CypherValue::Vector {
-            coord: VectorCoordKind::Int8,
-            dim: 1,
-            values: vec![CypherValue::Str("bad".into())],
-        },
-        CypherValue::Vector {
-            coord: VectorCoordKind::Int8,
-            dim: 1,
-            values: vec![CypherValue::Int(128)],
-        },
-        CypherValue::Vector {
-            coord: VectorCoordKind::Int16,
-            dim: 1,
-            values: vec![CypherValue::Int(32768)],
-        },
-        CypherValue::Vector {
-            coord: VectorCoordKind::Int32,
-            dim: 1,
-            values: vec![CypherValue::Int(i64::MAX)],
-        },
-        CypherValue::Vector {
-            coord: VectorCoordKind::Float32,
-            dim: 1,
-            values: vec![CypherValue::Float(f64::MAX)],
-        },
-        CypherValue::Vector {
-            coord: VectorCoordKind::Float32,
-            dim: 1,
-            values: vec![CypherValue::Float(1e-300)],
-        },
-        CypherValue::Vector {
-            coord: VectorCoordKind::Float32,
-            dim: 1,
-            values: vec![CypherValue::Float(0.1)],
-        },
-        CypherValue::Vector {
-            coord: VectorCoordKind::Float32,
-            dim: 1,
-            values: vec![CypherValue::Float(f64::NAN)],
-        },
-        CypherValue::Vector {
-            coord: VectorCoordKind::Float32,
-            dim: 1,
-            values: vec![CypherValue::Float(f64::INFINITY)],
-        },
-        CypherValue::Vector {
-            coord: VectorCoordKind::Float64,
-            dim: 1,
-            values: vec![CypherValue::Int(5)],
-        },
+        vector(VectorCoordKind::Int8, 2, vec![CypherValue::Int(1)]),
+        vector(VectorCoordKind::Int8, i32::MAX as usize + 1, vec![]),
+        vector(
+            VectorCoordKind::Int8,
+            1,
+            vec![CypherValue::Str("bad".into())],
+        ),
+        vector(VectorCoordKind::Int8, 1, vec![CypherValue::Int(128)]),
+        vector(VectorCoordKind::Int16, 1, vec![CypherValue::Int(32768)]),
+        vector(VectorCoordKind::Int32, 1, vec![CypherValue::Int(i64::MAX)]),
+        vector(
+            VectorCoordKind::Float32,
+            1,
+            vec![CypherValue::Float(f64::MAX)],
+        ),
+        vector(
+            VectorCoordKind::Float32,
+            1,
+            vec![CypherValue::Float(1e-300)],
+        ),
+        vector(VectorCoordKind::Float32, 1, vec![CypherValue::Float(0.1)]),
+        vector(
+            VectorCoordKind::Float32,
+            1,
+            vec![CypherValue::Float(f64::NAN)],
+        ),
+        vector(
+            VectorCoordKind::Float32,
+            1,
+            vec![CypherValue::Float(f64::INFINITY)],
+        ),
+        vector(VectorCoordKind::Float64, 1, vec![CypherValue::Int(5)]),
     ];
     for bad in invalid {
         let (cols, rows) = one_col("v", vec![CypherValue::Null, bad.clone()]);

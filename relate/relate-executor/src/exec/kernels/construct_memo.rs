@@ -147,6 +147,11 @@ mod tests {
         Value::String(s.into())
     }
 
+    /// The unmemoised answer the memo must reproduce.
+    fn oracle(name: &str, s: &Value) -> Value {
+        temporal::construct_named(name, std::slice::from_ref(s)).unwrap()
+    }
+
     fn call(memos: &ConstructMemos, meter: &Charged, name: &str, s: &Value) -> Result<Value> {
         memos.construct(meter, name, std::slice::from_ref(s))
     }
@@ -163,10 +168,7 @@ mod tests {
         for i in 0..rows {
             let arg = if i.is_multiple_of(2) { &a } else { &b };
             let got = call(&memos, &meter, "datetime", arg).unwrap();
-            assert_eq!(
-                got,
-                temporal::construct_named("datetime", std::slice::from_ref(arg)).unwrap()
-            );
+            assert_eq!(got, oracle("datetime", arg));
         }
         let bytes = memos.datetime.borrow().stats().bytes;
         (bytes, meter.0.get())
@@ -194,10 +196,7 @@ mod tests {
         let s = text("2024-05-05T10:00:00Z");
         for _ in 0..20 {
             let dt = call(&memos, &meter, "datetime", &s).unwrap();
-            assert_eq!(
-                dt,
-                temporal::construct_named("datetime", std::slice::from_ref(&s)).unwrap()
-            );
+            assert_eq!(dt, oracle("datetime", &s));
         }
         assert!(memos.datetime.borrow().stats().hits > 0);
         let probes = memos.datetime.borrow().stats().probes;
@@ -307,10 +306,7 @@ mod tests {
         let before = hashes();
         for _ in 0..100 {
             let got = call(&memos, &meter, "datetime", &arg).unwrap();
-            assert_eq!(
-                got,
-                temporal::construct_named("datetime", std::slice::from_ref(&arg)).unwrap()
-            );
+            assert_eq!(got, oracle("datetime", &arg));
         }
         assert_eq!(hashes(), before);
         let stats = memos.datetime.borrow().stats();

@@ -115,21 +115,20 @@ def _required_image(given: str | None, key: str, flag: str) -> str:
     return value
 
 
+def _arg_or_env(arg: Any, env: str, default: Any, cast: Any) -> Any:
+    """The flag when given, else the environment variable, else the default."""
+    if arg is not None:
+        return arg
+    return cast(os.environ.get(env, str(default)))
+
+
 def discover_environment(report: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
     build_image = args.build_image
     run_image = args.run_image
-    cpus = args.cpus if args.cpus is not None else int(os.environ.get("BASELINE_CPUS", "2"))
-    period = (
-        args.cpu_period_us
-        if args.cpu_period_us is not None
-        else int(os.environ.get("BASELINE_CPU_PERIOD_US", "10000"))
-    )
-    quota = (
-        args.cpu_quota_us
-        if args.cpu_quota_us is not None
-        else int(os.environ.get("BASELINE_CPU_QUOTA_US", str(period * cpus)))
-    )
-    memory = args.memory or os.environ.get("BASELINE_MEMORY", "2g")
+    cpus = _arg_or_env(args.cpus, "BASELINE_CPUS", 2, int)
+    period = _arg_or_env(args.cpu_period_us, "BASELINE_CPU_PERIOD_US", 10000, int)
+    quota = _arg_or_env(args.cpu_quota_us, "BASELINE_CPU_QUOTA_US", period * cpus, int)
+    memory = _arg_or_env(args.memory or None, "BASELINE_MEMORY", "2g", str)
     arch = args.arch or container_uname_m(run_image)
     build_pin = args.build_image_pin or docker_image_pin(build_image)
     run_pin = args.run_image_pin or docker_image_pin(run_image)
