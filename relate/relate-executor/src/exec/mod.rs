@@ -460,7 +460,11 @@ fn finish_statement(
     attempted: bool,
 ) -> Result<QueryResult> {
     result.effect = StatementEffect::from_facts(attempted, graph.applied_ops() > 0);
-    finish_tokens(result)
+    let result = finish_tokens(result)?;
+    // ADR-0691: last, so the effect stamp and the token poll stay the
+    // boundary's exactly-once steps and a refusal is only ever the cap's.
+    graph.check_result_expansion(&result.rows)?;
+    Ok(result)
 }
 
 fn finish_tokens(result: QueryResult) -> Result<QueryResult> {

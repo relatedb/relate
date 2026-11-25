@@ -2119,6 +2119,10 @@ with no answer — a pipe with no `COLUMNS` — keeps the natural width, so its
 output stays stable. `markdown` ignores it — a GFM table has no wrapped
 cells.
 
+A `table` or `markdown` cell longer than 4096 characters is cut to its head
+and a trailing `…` (ADR-0691); `json`, `jsonl` and the other data formats
+keep the whole value.
+
 `--max-rows N` limits the rows printed per statement (ADR-0196); `0` is
 unlimited. Without the flag or `RELATE_MAX_ROWS`, the cap is **100 rows
 when an agent harness is detected and stdout is not a terminal**, and unlimited

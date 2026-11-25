@@ -95,12 +95,91 @@ pub fn logical_bytes_within<'a>(
     values: impl IntoIterator<Item = &'a Value>,
     limit: u64,
 ) -> Option<u64> {
+    logical_bytes_within_memo(values, limit, &mut ExpansionMemo::off())
+}
+
+/// [`logical_bytes_within`] with the container payloads it measures
+/// remembered in `memo` (ADR-0691): a payload met again, under another row
+/// or wrapped by a fresh container, costs one lookup instead of a re-walk,
+/// so the work is linear in the *distinct* payloads. The sizes are keyed by
+/// allocation address: every value passed must stay alive while `memo`
+/// does (a freed allocation's address may be reused), so a caller scopes
+/// one memo to values it holds for the call.
+pub fn logical_bytes_within_memo<'a>(
+    values: impl IntoIterator<Item = &'a Value>,
+    limit: u64,
+    memo: &mut ExpansionMemo,
+) -> Option<u64> {
     let mut total = 0;
     let over = values
         .into_iter()
-        .try_for_each(|v| v.add_logical_bytes(&mut total, limit, 0))
+        .try_for_each(|v| v.add_logical_bytes(&mut total, limit, 0, memo))
         .is_break();
     (!over).then_some(total)
+}
+
+/// The logical size of each container payload a [`logical_bytes_within_memo`]
+/// walk finished measuring, keyed by [`depth::payload_key`] (the identity
+/// ADR-0462's depth memo uses). A payload's size is its own contents',
+/// independent of where it sits, so a hit adds the stored size; the depth
+/// guard is unreachable behind the checked constructors, so the memo
+/// ignores the level a payload was first met at. `Default` is the
+/// remembering memo, like [`ExpansionMemo::new`]; the memo-free form is
+/// private.
+pub struct ExpansionMemo {
+    /// `None` is the memo-free walk [`logical_bytes_within`] runs.
+    sizes: Option<std::collections::HashMap<depth::PayloadKey, u64>>,
+}
+
+impl Default for ExpansionMemo {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ExpansionMemo {
+    /// A memo that remembers.
+    pub fn new() -> Self {
+        Self {
+            sizes: Some(Default::default()),
+        }
+    }
+
+    /// The memo [`logical_bytes_within`] walks with: remembers nothing.
+    fn off() -> Self {
+        Self { sizes: None }
+    }
+
+    /// Open the container `payload` met `enclosing` levels deep — the one
+    /// place the ADR-0462 depth guard and the memo wrap meet — and add what
+    /// it holds to `acc`: its remembered size when known, otherwise what
+    /// `body` adds at the next level (remembered once `body` completes; a
+    /// walk that broke at the budget measured nothing complete).
+    fn open<T>(
+        &mut self,
+        enclosing: u32,
+        payload: &Arc<T>,
+        acc: &mut u64,
+        budget: u64,
+        body: impl FnOnce(&mut Self, &mut u64, u32) -> ControlFlow<()>,
+    ) -> ControlFlow<()> {
+        let Some(next) = next_depth(enclosing) else {
+            return ControlFlow::Break(());
+        };
+        let Some(sizes) = self.sizes.as_mut() else {
+            return body(self, acc, next);
+        };
+        let key = depth::payload_key(payload);
+        if let Some(size) = sizes.get(&key) {
+            return add_bytes(acc, *size, budget);
+        }
+        let before = *acc;
+        body(self, acc, next)?;
+        if let Some(sizes) = self.sizes.as_mut() {
+            sizes.insert(key, *acc - before);
+        }
+        ControlFlow::Continue(())
+    }
 }
 
 /// Adds `bytes` to `acc` (saturating) and breaks once `acc` exceeds `budget`.
@@ -131,23 +210,36 @@ fn add_property_bytes<'a>(
     acc: &mut u64,
     budget: u64,
     depth: u32,
+    memo: &mut ExpansionMemo,
 ) -> ControlFlow<()> {
     props.into_iter().try_for_each(|(k, v)| {
         add_str_bytes(k, acc, budget)?;
-        v.add_logical_bytes(acc, budget, depth)
+        v.add_logical_bytes(acc, budget, depth, memo)
     })
 }
 
-fn add_node_bytes(n: &Node, acc: &mut u64, budget: u64, depth: u32) -> ControlFlow<()> {
+fn add_node_bytes(
+    n: &Node,
+    acc: &mut u64,
+    budget: u64,
+    depth: u32,
+    memo: &mut ExpansionMemo,
+) -> ControlFlow<()> {
     n.labels
         .iter()
         .try_for_each(|l| add_str_bytes(l, acc, budget))?;
-    add_property_bytes(n.properties.iter(), acc, budget, depth)
+    add_property_bytes(n.properties.iter(), acc, budget, depth, memo)
 }
 
-fn add_rel_bytes(r: &Relationship, acc: &mut u64, budget: u64, depth: u32) -> ControlFlow<()> {
+fn add_rel_bytes(
+    r: &Relationship,
+    acc: &mut u64,
+    budget: u64,
+    depth: u32,
+    memo: &mut ExpansionMemo,
+) -> ControlFlow<()> {
     add_str_bytes(&r.rel_type, acc, budget)?;
-    add_property_bytes(r.properties.iter(), acc, budget, depth)
+    add_property_bytes(r.properties.iter(), acc, budget, depth, memo)
 }
 
 /// A string's documented logical size (ADR-0042): the 16-byte header
@@ -188,7 +280,7 @@ impl Value {
     /// strings.
     pub fn logical_bytes(&self) -> u64 {
         let mut total = 0;
-        let flow = self.add_logical_bytes(&mut total, u64::MAX, 0);
+        let flow = self.add_logical_bytes(&mut total, u64::MAX, 0, &mut ExpansionMemo::off());
         // The byte budget is `u64::MAX`, so the only reachable `Break` is
         // the ADR-0462 depth guard: were it to fire (unreachable behind the
         // checked constructors) the result would be the partial sum counted
@@ -210,50 +302,43 @@ impl Value {
     /// added; past [`MAX_VALUE_DEPTH`] the walk breaks (ADR-0462). The
     /// guard is unreachable behind the checked constructors and only keeps
     /// an over-deep value from recursing without a byte budget to stop it.
-    fn add_logical_bytes(&self, acc: &mut u64, budget: u64, depth: u32) -> ControlFlow<()> {
+    fn add_logical_bytes(
+        &self,
+        acc: &mut u64,
+        budget: u64,
+        depth: u32,
+        memo: &mut ExpansionMemo,
+    ) -> ControlFlow<()> {
         match self {
             Value::Null | Value::Bool(_) => add_bytes(acc, 1, budget),
             Value::Int(_) | Value::Float(_) => add_bytes(acc, 8, budget),
             Value::String(s) => add_str_bytes(s, acc, budget),
             Value::Bytes(b) => add_payload_bytes(b, acc, budget),
             Value::List(xs) | Value::Vector { values: xs, .. } => {
-                let Some(next) = next_depth(depth) else {
-                    return ControlFlow::Break(());
-                };
+                memo.open(depth, xs, acc, budget, |memo, acc, next| {
+                    add_bytes(acc, 16, budget)?;
+                    xs.iter()
+                        .try_for_each(|x| x.add_logical_bytes(acc, budget, next, memo))
+                })
+            }
+            Value::Map(m) => memo.open(depth, m, acc, budget, |memo, acc, next| {
                 add_bytes(acc, 16, budget)?;
-                xs.iter()
-                    .try_for_each(|x| x.add_logical_bytes(acc, budget, next))
-            }
-            Value::Map(m) => {
-                let Some(next) = next_depth(depth) else {
-                    return ControlFlow::Break(());
-                };
-                add_bytes(acc, 16, budget)?;
-                add_property_bytes(m.iter(), acc, budget, next)
-            }
-            Value::Node(n) => {
-                let Some(next) = next_depth(depth) else {
-                    return ControlFlow::Break(());
-                };
-                add_node_bytes(n, acc, budget, next)
-            }
-            Value::Relationship(r) => {
-                let Some(next) = next_depth(depth) else {
-                    return ControlFlow::Break(());
-                };
-                add_rel_bytes(r, acc, budget, next)
-            }
-            Value::Path(p) => {
-                let Some(next) = next_depth(depth) else {
-                    return ControlFlow::Break(());
-                };
+                add_property_bytes(m.iter(), acc, budget, next, memo)
+            }),
+            Value::Node(n) => memo.open(depth, n, acc, budget, |memo, acc, next| {
+                add_node_bytes(n, acc, budget, next, memo)
+            }),
+            Value::Relationship(r) => memo.open(depth, r, acc, budget, |memo, acc, next| {
+                add_rel_bytes(r, acc, budget, next, memo)
+            }),
+            Value::Path(p) => memo.open(depth, p, acc, budget, |memo, acc, next| {
                 p.nodes
                     .iter()
-                    .try_for_each(|n| add_node_bytes(n, acc, budget, next))?;
+                    .try_for_each(|n| add_node_bytes(n, acc, budget, next, memo))?;
                 p.rels
                     .iter()
-                    .try_for_each(|r| add_rel_bytes(r, acc, budget, next))
-            }
+                    .try_for_each(|r| add_rel_bytes(r, acc, budget, next, memo))
+            }),
             Value::Temporal(_) => add_bytes(acc, 24, budget),
             Value::Point(_) => add_bytes(acc, 32, budget),
             Value::Uuid(_) => add_bytes(acc, 16, budget),
@@ -734,6 +819,8 @@ pub fn uuid_parse(s: &str) -> Option<u128> {
 
 #[cfg(test)]
 mod depth_tests;
+#[cfg(test)]
+mod expansion_tests;
 #[cfg(test)]
 mod point_tests;
 #[cfg(test)]
