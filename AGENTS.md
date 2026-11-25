@@ -41,6 +41,12 @@ and for reading one file's full prose once a query has named it.
 
 - **ADRs are public records**: no internal ticket or tracker references,
   no person names, no credentials or unreleased plans
+- **No CIP references in PR titles, PR bodies, or code comments**: CIPs
+  are internal proposal records, not public references — a PR title,
+  PR description, commit message, or code comment never carries a
+  `CIP-NNN` number or a CIP-document link. Cite `ADR-NNNN` or describe
+  the behavior instead. The `adr-numbers` CI check already enforces the
+  added-`docs/adr/` share of this rule
 - Status lives in the frontmatter `status:` key; accepted ADRs are
   immutable — a later change is a new ADR plus a **Later references**
   note on the old one

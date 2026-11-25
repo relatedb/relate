@@ -254,13 +254,25 @@ pub(crate) fn walk_clause_list_tree(
     descend: SubqueryDescent,
     visit_expr: &mut ExprVisit,
 ) -> Result<(), EngineError> {
+    walk_clause_list_tree_with_clauses(clauses, descend, visit_expr, &mut |_: &Clause| Ok(()))
+}
+
+/// [`walk_clause_list_tree`] with the clause visitor the walk reserves:
+/// the visitor fires once per clause of the list — the same single
+/// traversal the expression visitor below it walks — for the checks
+/// decided per clause shape rather than per expression.
+pub(crate) fn walk_clause_list_tree_with_clauses(
+    clauses: &[Clause],
+    descend: SubqueryDescent,
+    visit_expr: &mut ExprVisit,
+    visit_clause: &mut ClauseVisit,
+) -> Result<(), EngineError> {
     let mut skip_stmt = |_: StmtRef<'_>| Ok(());
-    let mut skip_clause = |_: &Clause| Ok(());
     let mut skip_operand = |_: &Expr, _: DynamicNameToken| Ok(());
     let enter_all = |_: &Expr, _: &Expr| true;
     let mut walk = TreeWalk {
         stmt: &mut skip_stmt,
-        clause: &mut skip_clause,
+        clause: visit_clause,
         expr: visit_expr,
         operand: &mut skip_operand,
         descend,

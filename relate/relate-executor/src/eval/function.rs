@@ -197,24 +197,25 @@ fn render_scalar(v: &Value) -> Option<Arc<str>> {
         // A STRING passes through as the same shared payload (no copy).
         Value::String(_)
         // Every other accepted scalar renders through the one display
-        // policy (temporals at full precision, ADR-0448).
+        // policy (temporals at full precision, ADR-0448) — a VECTOR
+        // included: its display form is the same one rendering, not a
+        // per-caller special case.
         | Value::Bool(_)
         | Value::Int(_)
         | Value::Float(_)
         | Value::Temporal(_)
         | Value::Point(_)
-        | Value::Uuid(_) => Some(render_accepted_scalar(v)),
+        | Value::Uuid(_)
+        | Value::Vector { .. } => Some(render_accepted_scalar(v)),
         // The declined vocabulary, spelled: the containers and graph
-        // values each caller routes on its own, and the Vector the two
-        // toString paths render differently.
+        // values, each caller routing them on its own.
         Value::Null
         | Value::Bytes(_)
         | Value::List(_)
         | Value::Map(_)
         | Value::Node(_)
         | Value::Relationship(_)
-        | Value::Path(_)
-        | Value::Vector { .. } => None,
+        | Value::Path(_) => None,
     }
 }
 

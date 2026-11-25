@@ -473,3 +473,77 @@ fn parse_radix_literal(negative: bool, digits: &str, radix: u32) -> Option<i64> 
     let value = magnitude as i128;
     Some(if negative { -value } else { value } as i64)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ADR-0168: the exact-decimal grammar `toInteger()` applies to a trimmed
+    // string. The decimal string rows ('2.9' → 2, '1.7' → 1) and
+    // every form Rust's f64 parser accepted keep converting; the
+    // non-decimal forms stay non-numeric. ADR-0175: an exponent beyond the
+    // i32 range makes the BigDecimal-equivalent path report `None` (the
+    // string diverts to the Cypher25-literal fallback, whose float parse
+    // still yields 0 for `0e…`/`5e-…` and saturates to i64::MAX for
+    // `5e…` — pinned end-to-end by probes' '1e3000000000' rows).
+    #[test]
+    fn decimal_integer_parse_is_exact_and_rejects_non_decimals() {
+        use DecimalInteger::{InRange, OutOfRange};
+        // One table: the accepted forms, every rejection class, and the
+        // gate's boundary.
+        for (input, want) in [
+            ("2.9", Some(InRange(2))),
+            ("1.7", Some(InRange(1))),
+            ("-2.9", Some(InRange(-2))),
+            ("+42", Some(InRange(42))),
+            ("007", Some(InRange(7))),
+            ("7.", Some(InRange(7))),
+            (".5", Some(InRange(0))),
+            ("-.5", Some(InRange(0))),
+            ("1E3", Some(InRange(1000))),
+            ("1e+3", Some(InRange(1000))),
+            ("1234e-2", Some(InRange(12))),
+            ("0.000123e7", Some(InRange(1230))),
+            ("10000000000000000000", Some(OutOfRange)),
+            ("-9223372036854775808e0", Some(InRange(i64::MIN))),
+            ("922337203685477580.75e1", Some(OutOfRange)),
+            ("922337203685477580.70e1", Some(InRange(i64::MAX))),
+            // Malformed and non-decimal forms.
+            ("", None),
+            ("+", None),
+            ("-", None),
+            (".", None),
+            ("e5", None),
+            ("1e", None),
+            ("1e+", None),
+            ("1.2.3", None),
+            ("1e5e3", None),
+            ("--1", None),
+            ("+-1", None),
+            ("0x10", None),
+            ("1_000", None),
+            ("1.5d", None),
+            (" 1", None),
+            ("NaN", None),
+            ("Infinity", None),
+            ("inf", None),
+            ("nan", None),
+            // An exponent's digits are checked even where its value overflows.
+            ("1e99999999999999999999x", None),
+            ("1e-99999999999999999999x", None),
+            // ADR-0175's int32-exponent gate: beyond it, BigDecimal throws
+            // and the string is the literal fallback's, not this function's.
+            ("1e3000000000", None),
+            ("-1e3000000000", None),
+            ("1e-3000000000", None),
+            ("1e2147483648", None),
+            ("0e99999999999999999999999", None),
+            ("5e-99999999999999999999999", None),
+            ("5e99999999999999999999999", None),
+            // The gate's boundary: i32::MAX stays on the exact-decimal path.
+            ("1e2147483647", Some(OutOfRange)),
+        ] {
+            assert_eq!(parse_decimal_integer(input), want, "{input:?}");
+        }
+    }
+}
