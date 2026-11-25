@@ -18,7 +18,7 @@ use crate::expr_text::graph_call_text;
 use crate::names::query_output_names_with_seed;
 use crate::names::query_with_persistent_imports;
 use crate::pattern::{check_path_exprs, check_pattern_pred_vars};
-use crate::validate::validate_part_with_env;
+use crate::validate::chain::validate_nested_body;
 
 mod function_meta;
 pub(crate) mod shadowing;
@@ -224,7 +224,7 @@ fn check_subquery_expression(
             "InvalidClauseComposition: FINISH is not allowed in a subquery expression",
         ));
     }
-    if crate::validate::query_contains_write(&scoped_query, is_write_procedure) {
+    if crate::validate::write::query_contains_write(&scoped_query, is_write_procedure) {
         return Err(Error::syntax(
             "InvalidClauseComposition: writes are not allowed in subquery expressions",
         ));
@@ -240,8 +240,8 @@ fn check_subquery_expression(
     // name — per-row constants the body may reference without grouping by
     // them, ADR-0453) and the shadowable non-entity subset from `env`.
     for part in &scoped_query.parts {
-        validate_part_with_env(
-            part,
+        validate_nested_body(
+            &part.clauses,
             crate::validate::Scope::expression_body(env.clone()),
             is_write_procedure,
         )?;

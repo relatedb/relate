@@ -86,19 +86,44 @@ pub use crate::validate::check_union_joiners;
 
 /// Test helper: parse `cypher` and plan it with no write procedures
 /// registered. Shared by the `namespaces`, `query_type` and `inline` test
-/// modules.
+/// modules, and the composition pins' acceptance loop; both unwraps carry
+/// the statement so a failure names it.
 #[cfg(test)]
 pub(crate) fn plan_of(cypher: &str) -> LogicalPlan {
-    let ast = relate_front::parse_cypher(cypher).unwrap();
-    plan(ast, &mut |_| false).unwrap()
+    let ast =
+        relate_front::parse_cypher(cypher).unwrap_or_else(|error| panic!("{cypher}: {error}"));
+    plan(ast, &mut |_| false).unwrap_or_else(|error| panic!("{cypher}: {error}"))
+}
+
+/// Test helper: the part-scoped sibling of [`rejection`] — run the
+/// semantic clause validation on an already-lowered single-part
+/// statement's one part, returning the rejection's text. The pins whose
+/// planner arm is a backstop (a rule the front end answers first for
+/// every admitted statement) ride this — the parse-and-delegate spelling
+/// or the already-lowered form a mutation pin holds; whole-statement
+/// pins ride [`rejection`]/[`plan_of`].
+#[cfg(test)]
+pub(crate) fn part_error(query: &relate_ir::Query) -> String {
+    let [part] = query.parts.as_slice() else {
+        panic!("expected one part");
+    };
+    validate::validate_clauses_with_env(
+        &part.clauses,
+        validate::Scope::stage(binding::Env::new()),
+        validate::write::WriteHistory::empty(),
+        &mut |_| false,
+    )
+    .expect_err("the composition rule rejects this statement")
+    .to_string()
 }
 
 /// Test helper: parse and lower `cypher` to the [`relate_ir::Query`] the
 /// cache carries beside its plan — the inline suite's composer pins read
-/// it as the entry's carried AST.
+/// it as the entry's carried AST; the unwrap carries the statement so a
+/// failure names it.
 #[cfg(test)]
 pub(crate) fn query_of(cypher: &str) -> relate_ir::Query {
-    relate_front::parse_and_lower(cypher).unwrap()
+    relate_front::parse_and_lower(cypher).unwrap_or_else(|error| panic!("{cypher}: {error}"))
 }
 
 /// Test helper: the error text of a statement the product parser or the

@@ -8,9 +8,6 @@ use relate_front::parse_and_lower;
 use relate_ir::{Clause, Expr, OrderItem};
 use relate_names::{SmallName, Token};
 
-use crate::binding::Env;
-use crate::validate::{validate_part_with_env, Scope};
-
 use super::*;
 
 #[test]
@@ -462,9 +459,7 @@ fn distinct_order_by_key_outside_the_projection_is_the_planners_rejection() {
         },
         ascending: false,
     });
-    let error = validate_part_with_env(part, Scope::stage(Env::new()), &mut |_| false)
-        .expect_err("the narrowed env rejects the unmentioned variable")
-        .to_string();
+    let error = crate::part_error(&query);
     assert!(
         error.contains("UndefinedVariable"),
         "unexpected error: {error}"

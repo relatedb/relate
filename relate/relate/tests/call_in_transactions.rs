@@ -49,6 +49,36 @@ fn with_import_reexport_is_still_rejected() {
     );
 }
 
+/// A `CALL { … } IN TRANSACTIONS` in a `NEXT` part that follows a writing
+/// part is refused (REL8-2180, 42I25): the chained statement's parts are
+/// one statement, so the writing part precedes the batched part exactly
+/// like a write clause does. The engine ran the statement before; both
+/// the `ON ERROR CONTINUE` spelling and the bare one are refused, and the
+/// refusal is compile-time — the writing part never executes.
+#[test]
+fn a_writing_part_refuses_call_in_transactions_in_a_next_part() {
+    let mut c = connection();
+    for cypher in [
+        "CREATE (n:Start) WITH n RETURN n \
+         NEXT CALL (n) { CREATE (:Made) } IN TRANSACTIONS ON ERROR CONTINUE \
+         RETURN count(*) AS c",
+        "CREATE (n:Start) RETURN n \
+         NEXT CALL (n) { CREATE (:Made) } IN TRANSACTIONS \
+         RETURN count(*) AS c",
+    ] {
+        let error = err_text(c.query(cypher));
+        assert!(
+            error.contains("WriteBeforeCallInTransactions"),
+            "{cypher}: unexpected error: {error}"
+        );
+    }
+    assert_eq!(
+        scalar(&mut c, "MATCH (n) RETURN count(n)"),
+        Value::Int(0),
+        "the refused statement's writing part never ran"
+    );
+}
+
 /// A concluding `CALL { … } IN TRANSACTIONS` whose body has a terminal
 /// RETURN projects the body's exported rows (LABS-264 probe returned an
 /// empty result).
