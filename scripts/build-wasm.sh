@@ -162,12 +162,16 @@ wasm-opt "$WASM_OPT_LEVEL" \
   "$BG" -o "$BG.opt"
 mv "$BG.opt" "$BG"
 
-# The trap classifier every host shares (isWasmTrap) and the OPFS helper
-# (ADR-0145) ship with the bundle. wasm-bindgen also copies opfs.js into
+# The hand-maintained JS the bundle ships (the trap classifier every host
+# shares, the OPFS helper — ADR-0145) is the whole js/ directory, not a
+# per-file list here: js/ is the one inventory, npm/package.json.template's
+# `files` array mirrors it, and `cargo xtask check-boundaries` (the
+# wasm-package guard, REL8-1234) fails the build when the two drift — so
+# a helper added to js/ ships without a second list to edit, and a
+# template entry nothing produces is caught instead of publishing an
+# unresolvable subpath export. wasm-bindgen also copies opfs.js into
 # snippets/ because the glue imports it.
-cp "$CRATE_DIR/js/trap.js" "$CRATE_DIR/js/trap.d.ts" \
-   "$CRATE_DIR/js/opfs.js" "$CRATE_DIR/js/opfs.d.ts" \
-   "$OUT_DIR/"
+cp -R "$CRATE_DIR/js/." "$OUT_DIR/"
 
 # Stamp the npm package manifest from the template with the workspace
 # version and ship the package README, so pkg/ is publishable as

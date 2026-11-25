@@ -49,18 +49,22 @@ workspace member by its directory (`relate/<pkg>`, `surfaces/<pkg>`,
 | R4 | `testing/*` may depend on any workspace package |
 | R5 | Every workspace member lives directly under `relate/`, `surfaces/` or `testing/` |
 
-On success it prints one summary line to stdout:
+Each check reports one line: its opening, then the outcome — `: clean` on
+stdout when it found nothing, or the violations and `: <n> violations` on
+stderr when it did. The dependency-edge check's opening carries the counts
+it read; every guard's opening names the guard. On success:
 
 ```text
-check-boundaries: 27 packages, 76 edges checked, 0 violations
+check-boundaries: 27 packages, 76 edges checked: clean
+check-boundaries: executor Vec<Row> guard: clean
 ```
 
-On failure it prints each violation to stderr, followed by the summary line:
+On failure:
 
 ```text
 relate-storage -> relate-formatter (normal): R1
 relate-old (legacy/relate-old): R5
-check-boundaries: 28 packages, 77 edges checked, 2 violations
+check-boundaries: 28 packages, 77 edges checked: 2 violations
 ```
 
 | Exit status | Meaning |
@@ -76,6 +80,28 @@ check-boundaries: 28 packages, 77 edges checked, 2 violations
 not listed in [`row_vec_allowlist.txt`](row_vec_allowlist.txt) (one
 `<file>::<fn> # <reason>` per line), or when a listed fn no longer exists, so
 the list only shrinks. Violations print as `<file>::<fn>: <reason>`, exit 1.
+
+### Fixture copy guard (LABS-1414)
+
+`check-boundaries` also fails when the facade crate's fixture copy at
+`relate/relate/tests/fixtures/pre_adr0084_default_wal/` is not byte-identical,
+file for file, to the tree `relate-storage` owns at
+`relate/relate-storage/tests/fixtures/pre_adr0084_default_wal/`. A file
+missing, extra, or drifted on either side prints as
+`<tree>/<rel-path>: <reason>`, exit 1; an unreadable tree exits 2.
+
+### WASM package guard (REL8-1234)
+
+`check-boundaries` also fails when the wasm bundle's npm manifest and the
+files its build produces disagree — in either direction. Every file the
+build emits (the `js/` directory the build script copies wholesale into
+`pkg/`, the wasm-bindgen output, `snippets/`, and the package README stamped
+from `npm/README.md`) must be listed in
+`surfaces/relate-wasm/npm/package.json.template`'s `files` array, and every
+`files` entry must name something the build produces. Every `exports`
+subpath must point at a `files` entry too. A disagreement prints as
+`<path>: <reason>`, exit 1; an unreadable or unparsable template or `js/`
+tree, or a missing `npm/README.md` the build copies, exits 2.
 
 ## `check-package`
 

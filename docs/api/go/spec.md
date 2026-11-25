@@ -291,6 +291,16 @@ go build ./...
 # run: LD_LIBRARY_PATH=/opt/relate-ffi (DYLD_LIBRARY_PATH on macOS)
 ```
 
+`CGO_LDFLAGS` carries only the `-L` directory: the module's own cgo
+directives add `-lrelate_ffi` and the include path for its header copy,
+so no `CGO_CFLAGS` is needed (the run-time loader path above is the
+other half of the recipe). This recipe is proven in CI
+(`scripts/check-go-standalone.sh`, run by `make test-go`): the module
+copied outside the repository — the module-cache situation, where the
+directives' `-L${SRCDIR}/../../target` paths resolve nothing — builds
+and runs the documented create_match example against the staged library
+with `CGO_LDFLAGS="-L<dir>"` alone.
+
 **Building inside the repository.** Build the library with
 `cargo build --release -p relate-ffi` from the repository root; the cgo
 directives search `target/debug` and `target/release`. On macOS the linker

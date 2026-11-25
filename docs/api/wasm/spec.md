@@ -71,8 +71,17 @@ wasm32-unknown-unknown` on `surfaces/relate-wasm`, then
 to `surfaces/relate-wasm/pkg/`. In `--mode dev` it uses the workspace
 `release` profile and `wasm-opt -O2`. A host that serves the bundle
 itself copies `relate.js`, `relate.d.ts`, `relate_bg.wasm`,
-`relate_bg.wasm.d.ts`, `trap.js`, `opfs.js`, and the `snippets/`
-directory the glue imports from `pkg/`.
+`relate_bg.wasm.d.ts`, every file in `js/` (`trap.js`, `trap.d.ts`,
+`opfs.js`, `opfs.d.ts` — the pair of `.d.ts` files is what keeps the
+`@relate/relate-wasm/trap.js` and `/opfs.js` subpath exports typed for
+TypeScript consumers), and the `snippets/` directory the glue imports
+into `pkg/`, plus the stamped `package.json` and the package README.
+The npm manifest's `files` list, its `exports` map and the files the
+build emits cannot drift: `cargo xtask check-boundaries` runs a
+wasm-package guard (REL8-1234) that fails when a file the build emits
+is missing from the template's `files` array, a `files` entry names no
+file the build produces, or an `exports` subpath points at a file
+outside `files`.
 
 Local prerequisites (CI installs these automatically):
 

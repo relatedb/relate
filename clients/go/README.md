@@ -1,4 +1,4 @@
-# Relate Go client (spike)
+# Relate Go client
 
 A Go client over Relate's typed C ABI v2 (ADR-0502) via cgo.
 API contract: [`docs/api/go/spec.md`](../../docs/api/go/spec.md).
@@ -73,11 +73,22 @@ dlltool --dllname relate_ffi.dll --def relate_ffi.def --output-lib librelate_ffi
 ## Use the client from a standalone Go project
 
 The `#cgo LDFLAGS` directives above resolve inside this repository's
-checkout. A Go project outside the tree needs the module pinned and the
-library staged:
+checkout. A Go project outside the tree needs the module and the library
+staged. At link time the module already carries the header and
+`-lrelate_ffi`, so exactly **one** variable is yours to set —
+`CGO_LDFLAGS`, holding only the `-L` directory (step 3); at run time the
+same directory goes on the loader path (step 4):
 
-1. **Module** — until the first tagged release there is no Go-proxy
-   version; pin the client with a `replace`:
+1. **Module** — every release pushes a `clients/go/vX.Y.Z` tag on the
+   release commit (ADR-0592), so the Go proxy serves the versioned
+   module:
+
+   ```sh
+   go get github.com/relatedb/relate/clients/go@vX.Y.Z
+   ```
+
+   To work against a checkout instead of a tagged version, pin it with a
+   `replace`:
 
    ```
    require github.com/relatedb/relate/clients/go v0.0.0
@@ -91,10 +102,12 @@ library staged:
    and extract it somewhere stable.
 
 3. **Link** — the checkout's `target/` paths do not exist for your
-   project, so point cgo at the staged library:
+   project, so point cgo at the staged library. The `-L` directory is
+   all you need: the module's own directives add `-lrelate_ffi` and the
+   include path for its header copy:
 
    ```sh
-   CGO_LDFLAGS="-L<dir-holding-the-lib> -lrelate_ffi" go build ./...
+   CGO_LDFLAGS="-L<dir-holding-the-lib>" go build ./...
    ```
 
    To ship a self-contained binary, link the staticlib instead: put
@@ -117,7 +130,13 @@ A worked example of this setup — `go.mod` with the `replace`, the staged
 library, `CGO_LDFLAGS`, and a minimal `Open`/`Connect`/`Query` program —
 lives in [`docs/api/go/examples`](../../docs/api/go/examples) together
 with its module file; `scripts/check-go-examples.sh` runs every one of
-them.
+them. The out-of-tree half of the recipe — the module copied outside the
+repository (the module-cache situation, where the directives'
+`-L${SRCDIR}/../../target` paths resolve nothing), linked only through
+the staged library with `CGO_LDFLAGS="-L<dir>"`, and running the
+documented create_match example — is proven by
+`scripts/check-go-standalone.sh`, which `make test-go` runs beside the
+in-repo gate.
 
 ## Per-OS natives
 

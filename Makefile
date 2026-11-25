@@ -90,15 +90,19 @@ test-swift: build-xcframework test-stamp-swift-package
 		-scheme SNOTELExplorer -destination 'generic/platform=iOS Simulator' \
 		-derivedDataPath $(CURDIR)/target/apple/DerivedData CODE_SIGNING_ALLOWED=NO build
 
-## test-go: The Go client gate: the FFI library, the client's tests, every documented example
+## test-go: The Go client gate: the FFI library, the client's tests, every documented example, the standalone-consumer recipe
 # The debug profile, not build-ffi's release one: every clients/go cgo
 # directive searches target/debug FIRST, so building release would let the
 # gate link a stale debug library. This is also the profile the sonic
 # `clients` stage builds (its CGO_LDFLAGS names that directory).
+# `scripts/check-go-standalone.sh` proves the out-of-tree recipe
+# (REL8-1234): the module copied outside the repository, linked only
+# through the staged library.
 test-go:
 	cargo build -p relate-ffi
 	cd clients/go && go test -count=1 ./...
 	bash scripts/check-go-examples.sh
+	bash scripts/check-go-standalone.sh
 
 ## test: Run all Rust tests (excluding the Python crate)
 test:

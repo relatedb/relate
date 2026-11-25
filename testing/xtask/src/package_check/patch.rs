@@ -79,7 +79,7 @@ pub(super) fn write_patched_manifest(
 mod tests {
     use super::*;
     use crate::package_check::fixtures::pkg;
-    use crate::package_check::scratch_dir;
+    use crate::scratch_dir;
 
     #[test]
     fn patch_manifest_maps_every_closure_member_to_its_workspace_path() {
