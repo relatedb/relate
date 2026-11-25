@@ -16,27 +16,15 @@ ROOT=$(CDPATH= cd -- "$(dirname "$0")/../.." && pwd)
 GATE="$ROOT/scripts/check-linux-isa.sh"
 
 . "$ROOT/scripts/tests/lib/tap.sh"
+. "$ROOT/scripts/tests/lib/gate_stubs.sh"
 
 tap_sandbox check-linux-isa
 
 stubbin="$sandbox/bin"
-mkdir -p "$stubbin"
-cat >"$stubbin/readelf" <<'STUB'
-#!/bin/sh
-# Fake readelf: the fixture beside the named binary holds its report.
-for last; do :; done
-case "$1" in
-  -n) cat "$last.notes" ;;
-  *) exit 1 ;;
-esac
-STUB
-chmod +x "$stubbin/readelf"
+tap_stub_readelf "$stubbin" -n notes
 
-run_gate() { # $1 = description; rest = gate arguments
-  tap_desc=$1
-  shift
-  PATH="$stubbin:$PATH" bash "$GATE" "$@" >"$sandbox/out" 2>"$sandbox/err"
-  tap_status=$?
+run_gate() { # gate arguments
+  PATH="$stubbin:$PATH" tap_run_capture "$sandbox/out" "$sandbox/err" -- bash "$GATE" "$@"
 }
 
 # One fixture writer: every property-note case shares this readelf -n
@@ -64,7 +52,7 @@ gate_case() { # $1 = description, $2 = pass|refusal, $3 = expected line (empty =
 	gc_want=$2
 	gc_line=$3
 	shift 3
-	run_gate "$gc_desc" "$@"
+	run_gate "$@"
 	case "$gc_want" in
 		pass) gc_assert=tap_check; gc_stream=out ;;
 		refusal) gc_assert=tap_check_refusal; gc_stream=err ;;
@@ -150,17 +138,47 @@ gate_case "the gate refuses baseline mixed with an unknown level" refusal \
 	"check-linux-isa: $sandbox/mixed:       Properties: x86 ISA needed: x86-64-baseline, x86-64-future" \
 	"$sandbox/mixed"
 
+# Every level above baseline is named, comma-joined, in one refusal.
+notes_fixture multi 'x86 ISA needed: x86-64-baseline, x86-64-v2, x86-64-v3'
+gate_case "the gate names every higher ISA level in one refusal" refusal \
+	"check-linux-isa: $sandbox/multi: requires x86-64-v2,x86-64-v3; build at the x86-64 baseline ISA" \
+	"$sandbox/multi"
+
+# --- readelf preflight --------------------------------------------------
+
+# An empty PATH hides readelf; bash is invoked by absolute path so the
+# gate itself still starts.
+bash_bin=$(command -v bash)
+mkdir -p "$sandbox/empty"
+# A subshell: a PATH prefix on a function call can persist in sh.
+(
+	PATH="$sandbox/empty"
+	tap_run_capture "$sandbox/out" "$sandbox/err" -- "$bash_bin" "$GATE" "$sandbox/baseline"
+	exit "$tap_status"
+)
+tap_status=$?
+assert_same "the gate exits 2 when readelf is not installed" "$tap_status" 2
+assert_same "the refusal names the missing readelf" \
+	"$(cat "$sandbox/err")" "check-linux-isa: readelf not found (install binutils)"
+
+# The stub fails when the binary has no report beside it.
+: >"$sandbox/not-elf"
+run_gate "$sandbox/not-elf"
+assert_same "the gate exits 1 when readelf fails on the file" "$tap_status" 1
+assert_same "the refusal names the readelf failure" \
+	"$(cat "$sandbox/err")" "check-linux-isa: $sandbox/not-elf: readelf failed (not an ELF file?)"
+
 # --- usage --------------------------------------------------------------
 
-run_gate "no binary"
+run_gate
 assert_same "the gate refuses to run without a binary (exit 2)" "$tap_status" 2
 assert_same "the usage line names the flag and the argument" \
 	"$(cat "$sandbox/err")" "usage: $GATE [--pinned-toolchain] BINARY"
 
-run_gate "a second argument" "$sandbox/baseline" extra
+run_gate "$sandbox/baseline" extra
 assert_same "the gate refuses a second argument (exit 2)" "$tap_status" 2
 
-run_gate "an unknown flag" --nope "$sandbox/baseline"
+run_gate --nope "$sandbox/baseline"
 assert_same "the gate refuses an unknown flag (exit 2)" "$tap_status" 2
 assert_same "the refusal names the unknown flag" \
 	"$(cat "$sandbox/err")" "check-linux-isa: unknown flag: --nope"
