@@ -126,6 +126,14 @@ pub fn workspace_capped(limit: u64) -> relate::Connection {
     })
 }
 
+/// The per-allocation cap the streaming suites share: generous for a small
+/// answer, impossible for the two-million-row input they generate.
+pub const EXPRESSION_CAP: u64 = 1 << 20;
+
+/// The large generated input those suites answer under the same cap — an
+/// order of magnitude past the cap's answer.
+pub const LARGE_INPUT: i64 = 2_000_000;
+
 /// A fresh connection on an expression-budget-capped in-memory store —
 /// the expression-cap twin of [`workspace_capped`], the one construction
 /// the per-allocation memory-shape tests share, each filling only its own
@@ -592,6 +600,17 @@ pub fn string(value: &str) -> relate::Value {
 /// `labels` and `schema_procedures`' `strings`; F-1-53).
 pub fn strings(values: &[&str]) -> relate::Value {
     list(values.iter().map(|value| string(value)).collect())
+}
+
+/// A `Value::List` of `Value::Int` — the list-of-integers twin of
+/// [`strings`].
+pub fn ints(values: &[i64]) -> relate::Value {
+    list(
+        values
+            .iter()
+            .map(|value| relate::Value::Int(*value))
+            .collect(),
+    )
 }
 
 /// The A/B/C `p1`-valued store the comprehension pipe suites share —

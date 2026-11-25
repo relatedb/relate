@@ -44,12 +44,10 @@ pub(crate) fn predicate_holds(
 
 /// Whether a post-merge WHERE holds on one already-projected `row` — the
 /// row-level half of the projection's plain-WHERE policy, read by
-/// [`filter_rows_where`], so the batch filter and any one-row-at-a-time
-/// reader share one spelling of the policy. The ordered window is the
-/// second reader: a `WHERE` written after the page stays in the clause that
-/// carries `order`/`skip`/`limit`, so the window applies it per row as each
-/// row arrives (see `OutputContainer::Window`).
-pub(crate) fn where_holds(
+/// [`filter_rows_where`] and [`plain_where_holds`], so the batch filter,
+/// the optional gate and any one-row-at-a-time reader share one spelling of
+/// the policy.
+fn where_holds(
     graph: &ExecGraph<'_>,
     params: &BTreeMap<String, Value>,
     row: &Row,
@@ -106,34 +104,43 @@ pub(crate) fn where_clause_holds(
     where_clause: Option<&Expr>,
     params: &BTreeMap<String, Value>,
 ) -> Result<bool> {
-    match where_clause {
-        Some(predicate) => predicate_holds(graph, row, predicate, params),
-        None => Ok(true),
-    }
+    optional_gate(where_clause, |predicate| {
+        predicate_holds(graph, row, predicate, params)
+    })
 }
 
-/// The comprehension WHERE gate — the optional-WHERE spelling both
-/// comprehension loops read (the list and pattern comprehensions' shared
-/// retaining-projection loop and the map comprehension's own), the
-/// comprehension twin of [`where_clause_holds`]. It deliberately
-/// skips the horizontal-aggregate rewrite [`predicate_holds`] applies
-/// first: that rewrite folds an aggregate over the row's row-bound list
-/// variables once per row — a per-row device of the MATCH-predicate
-/// family — while a comprehension's WHERE is evaluated once per bound
-/// element, where the row's list variable is the source being iterated,
-/// not a row of an aggregation; and the front end rejects an aggregate
-/// in these positions outright (`validate/aggregation/non_aggregating`),
-/// so there is nothing here to fold. The present clause is read through
-/// [`where_holds`], the one spelling of a bare-evaluated predicate's
-/// truthiness; this function only adds the optional gate around it.
-pub(crate) fn comprehension_where_holds(
+/// The bare-evaluated optional-WHERE gate — [`where_clause_holds`]'s twin
+/// for the sites whose predicate must not take the horizontal-aggregate
+/// rewrite [`predicate_holds`] applies. Two families read it: the
+/// comprehension loops (the list and pattern comprehensions' shared
+/// retaining-projection loop and the map comprehension's own, where the
+/// WHERE is evaluated once per bound element — the row's list variable is
+/// the source being iterated, not a row of an aggregation, and the front
+/// end rejects an aggregate there outright,
+/// `validate/aggregation/non_aggregating`), and the page container's
+/// trailing plain `WHERE` (an aggregate-carrying projection WHERE is the
+/// aggregating shape's HAVING, a different mode). `None` holds; `Some`
+/// holds iff [`where_holds`] does.
+pub(crate) fn plain_where_holds(
     graph: &ExecGraph<'_>,
     row: &Row,
     where_clause: Option<&Expr>,
     params: &BTreeMap<String, Value>,
 ) -> Result<bool> {
+    optional_gate(where_clause, |predicate| {
+        where_holds(graph, params, row, predicate)
+    })
+}
+
+/// The optional gate both WHERE gates above share: `None` holds, `Some`
+/// defers to the caller's predicate reading — one spelling of "an absent
+/// clause imposes no constraint".
+fn optional_gate(
+    where_clause: Option<&Expr>,
+    holds: impl FnOnce(&Expr) -> Result<bool>,
+) -> Result<bool> {
     match where_clause {
-        Some(predicate) => where_holds(graph, params, row, predicate),
+        Some(predicate) => holds(predicate),
         None => Ok(true),
     }
 }

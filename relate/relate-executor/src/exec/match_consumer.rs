@@ -1,12 +1,12 @@
 //! The bounded sinks a `MATCH`'s rows fold into as they are emitted
 //! (ADR-0555 §3, ADR-0660): the ordered top-k window of a following
 //! `ORDER BY … LIMIT`, the pass-through page of a following named
-//! `DISTINCT` (filter, first-seen gate and page applied per row), or the
-//! count-only sink of a provably empty page. One type over the projection's
-//! one landing container policy — the container owns the selection, the
-//! seen-set keying, the per-row plain `WHERE` filter, the page and the
-//! charge; the sink supplies the sink projection and the charge for a rung's
-//! finished container.
+//! `DISTINCT` (first-seen gate, page, then the trailing plain `WHERE` on the
+//! answered page), or the count-only sink of a provably empty page. One type
+//! over the projection's one landing container policy — the container owns
+//! the selection, the seen-set keying, the page and the charge; the sink
+//! supplies the sink projection and the charge for a rung's finished
+//! container.
 //!
 //! The admission ([`open_sink`]) reads the clause's fields, shape and
 //! bounds once, claims the part's classification slot only on the accepting
@@ -33,12 +33,6 @@ use super::project::RowSource;
 use super::scope::ProjectionFields;
 use super::sink::{finish_match_row, SinkProjection};
 
-/// Which bounded container the admission selected.
-enum ContainerKind {
-    Window,
-    Page,
-}
-
 /// A `MATCH`'s emitted rows folded straight into the projection's bounded
 /// landing container. `projection` evaluates the following clause's items
 /// per row when the walk hands over raw bindings; it is `None` when the
@@ -53,47 +47,22 @@ pub(crate) struct BoundedSink<'a> {
 }
 
 impl<'a> BoundedSink<'a> {
+    /// The sink over the admission's own container — the constructor the
+    /// admission calls, never a kind it re-derives. The tail is the
+    /// container's own answer ([`OutputContainer::tail`]).
     fn open(
-        graph: &ExecGraph<'_>,
-        class: &'a ProjectionClass<'a>,
-        bounds: super::order::PageBounds,
-        kind: ContainerKind,
+        container: OutputContainer<'a, 'a>,
         projection: Option<SinkProjection<'a>>,
         params: &'a BTreeMap<String, Value>,
-    ) -> Result<Self> {
-        let (container, tail) = match kind {
-            ContainerKind::Window => {
-                let container = OutputContainer::open(graph, class, bounds)?;
-                if !container.is_window() {
-                    return Err(relate_core::Error::internal(
-                        "the match window sink opened a container the shape never takes",
-                    ));
-                }
-                (
-                    container,
-                    LandedTail {
-                        windowed: true,
-                        ..Default::default()
-                    },
-                )
-            }
-            ContainerKind::Page => (
-                OutputContainer::page(graph, class, bounds)?,
-                LandedTail {
-                    windowed: false,
-                    streamed_distinct: class.streams_distinct(),
-                    funnel_filtered_where: class.plain_where().is_some(),
-                    streamed_page: true,
-                },
-            ),
-        };
-        Ok(Self {
+    ) -> Self {
+        let tail = container.tail();
+        Self {
             container: RefCell::new(container),
             projection,
             params,
             offered: Cell::new(0),
             tail,
-        })
+        }
     }
 
     /// The sink's landing — the container's rows and the tail facts it ran,
@@ -164,7 +133,7 @@ impl EmptySink {
             kind: LandingKind::Rows {
                 rows: Vec::new(),
                 // Nothing ran on zero rows: the type's own untouched tail.
-                source: RowSource::SinkLanded(LandedTail::default()),
+                source: RowSource::SinkLanded(LandedTail::untouched()),
             },
         }
     }
@@ -257,17 +226,32 @@ pub(crate) fn open_sink<'a>(
     if bounds.answers_nothing() {
         return Ok(Some(Sink::Empty(EmptySink::new())));
     }
-    let kind = if class.window_keep(bounds).is_some() {
-        ContainerKind::Window
-    } else if class.streams_distinct() {
-        ContainerKind::Page
-    } else {
-        return Ok(None);
+    // The admission decides the container before it claims the part's one
+    // classification slot — a declined candidate must leave that slot free
+    // for a later `MATCH`'s fold. It then hands the sink the container it
+    // chose, so no second reading of the window decision re-checks the
+    // variant. The page here is the named-`DISTINCT` form alone: the plain
+    // page's rows are the projection path's.
+    let landing = match class.window_keep(bounds) {
+        Some(keep) => SinkLanding::Window(keep),
+        None if class.streams_distinct() => SinkLanding::Page,
+        None => return Ok(None),
     };
     let class = class_slot.get_or_init(|| class);
+    let container = match landing {
+        SinkLanding::Window(keep) => OutputContainer::window(class, keep),
+        SinkLanding::Page => OutputContainer::page(graph, class, bounds)?,
+    };
     Ok(Some(Sink::Bounded(BoundedSink::open(
-        graph, class, bounds, kind, projection, params,
-    )?)))
+        container, projection, params,
+    ))))
+}
+
+/// The container the sink admission chose — the closed vocabulary the
+/// decision settles into before the part's classification slot is claimed.
+enum SinkLanding {
+    Window(std::num::NonZeroUsize),
+    Page,
 }
 
 /// Whether the clause's page bounds resolve to one value: a literal or

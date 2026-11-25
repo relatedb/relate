@@ -177,7 +177,7 @@ fn a_match_fed_window_limit_zero_answers_nothing_without_collecting() {
 /// container is the only thing that can cross the cap.
 #[test]
 fn a_large_ordered_window_is_refused_without_a_workspace_ledger() {
-    let mut c = common::expression_capped(1 << 20);
+    let mut c = common::expression_capped(common::EXPRESSION_CAP);
     // Each projected row carries one ~128 KB list — every single
     // allocation stays under the cap, so the only quantity that can cross
     // it is the window's live total over fifty entries.
@@ -250,10 +250,10 @@ fn a_limit_zero_costs_nothing_whatever_the_input() {
 
 /// A projection-level `WHERE` written *before* the page: the plan for that
 /// spelling is not the window — `WITH … WHERE … ORDER BY … LIMIT` splits
-/// into a `WHERE` projection and a keyed `LIMIT` one, so the filter is
-/// applied by the collected path's tail and the page is the filtered
-/// sort's. This pins that answer. The fused spelling below is the one that
-/// reaches the window's own per-row predicate.
+/// into a `WHERE` projection and a keyed `LIMIT` one, so the filter runs
+/// before the page and the page is the filtered sort's. The fused spelling
+/// (`WITH … ORDER BY … LIMIT … WHERE`, which pages first) lives in
+/// `with_where_after_page.rs`.
 #[test]
 fn an_ordered_window_filters_before_it_selects() {
     let mut c = common::connection();
@@ -279,30 +279,4 @@ fn an_ordered_window_filters_before_it_selects() {
     let mut expected = common::rows(&mut c, oracle);
     expected.truncate(5);
     assert_eq!(common::rows(&mut c, bounded), expected);
-}
-
-/// The fused spelling — a `WHERE` written *after* the page. It stays in the
-/// clause that carries `order`/`skip`/`limit`, so the window itself is
-/// handed the predicate and must apply it as each row arrives; that is what
-/// makes this test the predicate arm's own coverage, which the split
-/// spelling above never reaches. Relate filters before it pages, so the
-/// answer is the *filtered* sort's page: reading it as page-then-filter
-/// would answer nothing here, and refusing the pairing (which this branch
-/// did for one round) answers an error. The differential pins the fused
-/// spelling against the split one, which is the same semantics written the
-/// other way round.
-#[test]
-fn a_post_page_where_filters_before_the_window_selects() {
-    let mut c = common::connection();
-    common::run(&mut c, "UNWIND range(1, 10) AS i CREATE (:N {a: i})");
-
-    let fused = "MATCH (n:N) WITH n.a AS a ORDER BY a LIMIT 3 WHERE a >= 4 RETURN a";
-    let split = "MATCH (n:N) WITH n.a AS a WHERE a >= 4 ORDER BY a LIMIT 3 RETURN a";
-    let values: Vec<Value> = common::first_column(&common::run(&mut c, fused));
-    assert_eq!(
-        values,
-        vec![Value::Int(4), Value::Int(5), Value::Int(6)],
-        "the window must select from the filtered stream, not filter its own page"
-    );
-    assert_eq!(common::rows(&mut c, fused), common::rows(&mut c, split));
 }
