@@ -7,42 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed
-
-- `UNWIND` of a list comprehension (`[x IN range(…) WHERE … | …]`) streams
-  its elements: each element is bound, filtered and projected as the
-  consumer pulls it, so the projected list is never built and an
-  aggregating query's memory no longer scales with the list length
-  (ADR-0555, REL8-1372). A pattern-comprehension source still materializes
-  — the eval walk is not resumable; tracked on the same ticket.
-
-### Fixed
-
-- List and map literals are charged to the per-allocation expression
-  budget: a query-sized literal (bounded by the query-text cap, so up to
-  hundreds of MB of allocation) now refuses under a small expression
-  memory limit instead of allocating silently.
-- `randomUUID()` no longer panics in the WASM build: the UUID's timestamp
-  now comes from the same JavaScript-backed clock as `datetime()` and
-  `timestamp()` instead of Rust's unimplemented `std::time` on
-  `wasm32-unknown-unknown` (REL8-2001).
-
-### Notes
-
-- Release tooling: the Windows signing leg preflights its DigiCert
-  credentials with `smctl healthcheck` before signing and classifies the
-  report (`scripts/check-smctl-healthcheck.sh`), so a failed client
-  certificate surfaces as the secret to fix instead of DigiCert's bare
-  sign-time 403; the echoed report redacts the API-key and
-  client-certificate-password lines.
-- Release tooling fix: the x86-64 baseline ISA gate accepts the pinned
-  build container's note-less baseline link under an explicit
-  `--pinned-toolchain` vouch — the container's rustc+gcc link emits no
-  "x86 ISA needed" ELF property note at baseline, so the gate's
-  note-must-exist arm had refused every release build — and the lane also
-  pins `-C target-cpu=x86-64` explicitly. A note listing
-  x86-64-v2/v3/v4 still fails the release.
-
 ## [1.3.0] — 2026-11-25
 
 ### Added
