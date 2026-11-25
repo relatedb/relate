@@ -3,7 +3,7 @@
 use std::env::VarError;
 use std::time::{Duration, Instant};
 
-use super::{Database, OpenMode, OpenOptions, Value};
+use super::{Database, DurabilityMode, OpenMode, OpenOptions, Value};
 
 /// Assert the process does not opt into any preview feature: the closed-gate
 /// fixture precondition (ADR-0371). `RELATE_PREVIEW` must be unset or
@@ -39,6 +39,16 @@ pub fn writable() -> OpenOptions {
     OpenOptions {
         checkpoint_interval: Some(Duration::ZERO),
         ..OpenOptions::default()
+    }
+}
+
+/// [`writable`] with `DurabilityMode::EverySecond`: a commit is acknowledged
+/// once it is applied, and the WAL becomes durable on the one-second timer.
+#[doc(hidden)]
+pub fn every_second() -> OpenOptions {
+    OpenOptions {
+        durability_mode: Some(DurabilityMode::EverySecond),
+        ..writable()
     }
 }
 
@@ -98,6 +108,34 @@ pub fn wait_count(db: &Database, label: &str, expect: i64) {
         }
         std::thread::sleep(Duration::from_millis(20));
     }
+}
+
+/// A store's published image, stamped for the skip tests: the bytes and the
+/// modification time of `path` (a manifest or sidecar). A rewrite, even of
+/// identical bytes through the tmp/rename publication, stamps a fresh mtime,
+/// so equality of two images proves nothing was published between them.
+#[doc(hidden)]
+pub fn published_image(path: &std::path::Path) -> (Vec<u8>, std::time::SystemTime) {
+    const PUBLISHED: &str = "the store published this image before it was measured";
+    let bytes = std::fs::read(path).expect(PUBLISHED);
+    let mtime = std::fs::metadata(path)
+        .and_then(|meta| meta.modified())
+        .expect(PUBLISHED);
+    (bytes, mtime)
+}
+
+/// The WAL segment files of the native database at `root`, oldest first.
+/// The `wal/` directory also holds the lease lock files, which are not
+/// segments.
+#[doc(hidden)]
+pub fn wal_segments(root: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut segments: Vec<_> = std::fs::read_dir(root.join("wal"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("log"))
+        .collect();
+    segments.sort();
+    segments
 }
 
 /// The store's current WAL LSN: the count of committed records, each commit

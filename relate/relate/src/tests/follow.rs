@@ -5,7 +5,7 @@ use std::io::Read;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::test_opts::{count, following, wait_count, writable};
+use crate::test_opts::{count, following, wait_count, wal_segments, writable};
 use crate::{Database, Error, FollowGapPolicy, OpenOptions, Value};
 
 #[test]
@@ -486,13 +486,7 @@ fn follow_transient_poll_error_clears_on_the_next_apply() {
 }
 
 fn wal_segment(root: &std::path::Path) -> std::path::PathBuf {
-    let mut logs: Vec<_> = fs::read_dir(root.join("wal"))
-        .unwrap()
-        .map(|ent| ent.unwrap().path())
-        .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("log"))
-        .collect();
-    logs.sort();
-    logs.pop().unwrap()
+    wal_segments(root).pop().unwrap()
 }
 
 #[test]

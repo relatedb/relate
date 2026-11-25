@@ -6,8 +6,10 @@ use std::sync::atomic::Ordering;
 use std::sync::mpsc;
 use std::time::Duration;
 
-use crate::test_opts::{count, following, read_only, wait_count, writable};
-use crate::{Database, DurabilityMode, Error, FollowGapPolicy, OpenOptions};
+use crate::test_opts::{
+    count, every_second, following, published_image, read_only, wait_count, wal_segments, writable,
+};
+use crate::{Database, Error, FollowGapPolicy, OpenOptions};
 
 #[test]
 fn promote_refuses_a_handle_not_opened_in_follow_mode() {
@@ -424,38 +426,22 @@ fn ensure_writable_refuses_retryably_only_while_draining() {
     assert!(crate::ensure_writable(&shared).is_ok());
 }
 
-/// The published image a detach is measured against: the manifest's bytes and
-/// its modification time. A second checkpoint rewrites the manifest through
-/// the tmp/rename publication, so even identical bytes stamp a fresh mtime.
-fn published_image(uri: &std::path::Path) -> (Vec<u8>, std::time::SystemTime) {
-    let manifest = uri.join("manifest.json");
-    let bytes = std::fs::read(&manifest).unwrap();
-    let mtime = std::fs::metadata(&manifest).unwrap().modified().unwrap();
-    (bytes, mtime)
-}
-
-fn every_second() -> OpenOptions {
-    OpenOptions {
-        durability_mode: Some(DurabilityMode::EverySecond),
-        ..writable()
-    }
-}
-
 #[test]
 fn a_writer_detach_writes_one_checkpoint_and_frees_the_lease_before_the_drop() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("db");
+    let manifest = path.join("manifest.json");
     let uri = path.to_str().unwrap();
     let writer = Database::open_with(uri, writable()).unwrap();
     writer.connect().unwrap().execute("CREATE (:Seed)").unwrap();
     writer.checkpoint().unwrap();
-    let before = published_image(&path);
+    let before = published_image(&manifest);
     for _ in 0..3 {
         writer.connect().unwrap().execute("CREATE (:Tail)").unwrap();
     }
 
     writer.demote().unwrap();
-    let detached = published_image(&path);
+    let detached = published_image(&manifest);
     assert_ne!(detached, before, "the detach publishes the dirty tail");
 
     // The lease is free the moment `demote` returns, while the detaching
@@ -466,7 +452,7 @@ fn a_writer_detach_writes_one_checkpoint_and_frees_the_lease_before_the_drop() {
 
     drop(writer);
     assert_eq!(
-        published_image(&path),
+        published_image(&manifest),
         detached,
         "the drop after `demote` writes no second checkpoint"
     );
@@ -488,22 +474,19 @@ fn a_writer_detach_under_every_second_leaves_every_acknowledged_commit_in_the_ch
             .execute("CREATE (:Acked)")
             .unwrap();
     }
-    let wal_files = path.join("wal");
-
     writer.demote().unwrap();
     drop(writer);
 
     // Delete every WAL segment: whatever is left must come from the checkpoint
     // alone, so no acknowledged commit depends on a WAL tail the detach left.
-    let mut removed = 0;
-    for entry in std::fs::read_dir(&wal_files).unwrap() {
-        let entry = entry.unwrap();
-        if entry.path().extension().is_some_and(|ext| ext == "log") {
-            std::fs::remove_file(entry.path()).unwrap();
-            removed += 1;
-        }
+    let segments = wal_segments(&path);
+    assert!(
+        !segments.is_empty(),
+        "the WAL segments were found and deleted"
+    );
+    for segment in segments {
+        std::fs::remove_file(segment).unwrap();
     }
-    assert!(removed > 0, "the WAL segments were found and deleted");
     let reopened = Database::open_with(uri, writable()).unwrap();
     assert_eq!(count(&reopened, "Acked"), 20);
     assert_eq!(count(&reopened, "Seed"), 1);
@@ -514,6 +497,7 @@ fn a_follower_detach_is_a_drop_that_writes_nothing() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("db");
     let uri = path.to_str().unwrap();
+    let manifest = path.join("manifest.json");
     let writer = Database::open_with(uri, every_second()).unwrap();
     writer.connect().unwrap().execute("CREATE (:Seed)").unwrap();
     writer.checkpoint().unwrap();
@@ -521,11 +505,11 @@ fn a_follower_detach_is_a_drop_that_writes_nothing() {
 
     let follower = Database::open_with(uri, following()).unwrap();
     wait_count(&follower, "Tail", 1);
-    let before = published_image(&path);
+    let before = published_image(&manifest);
     follower.checkpoint_if_writable().unwrap();
     drop(follower);
     assert_eq!(
-        published_image(&path),
+        published_image(&manifest),
         before,
         "a follower owns no snapshot to publish"
     );
