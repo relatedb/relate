@@ -73,7 +73,8 @@ pub use namespace::{
 pub use output_safety::is_unsafe_output_char;
 pub use presence_bits::PresenceBits;
 pub use preview::{
-    preview_feature_disabled_text, GateSite, PreviewFeature, PreviewFeatures, PREVIEW_FEATURES,
+    preview_feature_disabled_text, DetectorKind, GateSite, ParseOption, PreviewFeature,
+    PreviewFeatures, PREVIEW_FEATURES,
 };
 pub use temporal::{QueryClockGuard, Temporal, TransactionClock};
 pub use tokens::{ExecutionReceipt, TokenEstimate, TokenOutcome};
