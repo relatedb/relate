@@ -7,42 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed
-
-- `UNWIND` of a list comprehension (`[x IN range(…) WHERE … | …]`) streams
-  its elements: each element is bound, filtered and projected as the
-  consumer pulls it, so the projected list is never built and an
-  aggregating query's memory no longer scales with the list length
-  (ADR-0555, REL8-1372). A pattern-comprehension source still materializes
-  — the eval walk is not resumable; tracked on the same ticket.
-
-### Fixed
-
-- List and map literals are charged to the per-allocation expression
-  budget: a query-sized literal (bounded by the query-text cap, so up to
-  hundreds of MB of allocation) now refuses under a small expression
-  memory limit instead of allocating silently.
-- `randomUUID()` no longer panics in the WASM build: the UUID's timestamp
-  now comes from the same JavaScript-backed clock as `datetime()` and
-  `timestamp()` instead of Rust's unimplemented `std::time` on
-  `wasm32-unknown-unknown` (REL8-2001).
-
-### Notes
-
-- Release tooling: the Windows signing leg preflights its DigiCert
-  credentials with `smctl healthcheck` before signing and classifies the
-  report (`scripts/check-smctl-healthcheck.sh`), so a failed client
-  certificate surfaces as the secret to fix instead of DigiCert's bare
-  sign-time 403; the echoed report redacts the API-key and
-  client-certificate-password lines.
-- Release tooling fix: the x86-64 baseline ISA gate accepts the pinned
-  build container's note-less baseline link under an explicit
-  `--pinned-toolchain` vouch — the container's rustc+gcc link emits no
-  "x86 ISA needed" ELF property note at baseline, so the gate's
-  note-must-exist arm had refused every release build — and the lane also
-  pins `-C target-cpu=x86-64` explicitly. A note listing
-  x86-64-v2/v3/v4 still fails the release.
-
 ## [1.3.0] — 2026-11-25
 
 ### Added
@@ -299,6 +263,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and the retained corpus bytes are counted into the statement's joint
   memo budget and folded into PROFILE's memo group at the clause's end
   (ADR-0680)
+- `UNWIND` of a list comprehension (`[x IN range(…) WHERE … | …]`) streams
+  its elements: each element is bound, filtered and projected as the
+  consumer pulls it, so the projected list is never built and an
+  aggregating query's memory no longer scales with the list length
+  (ADR-0555, REL8-1372). A pattern-comprehension source still materializes
+  — the eval walk is not resumable; tracked on the same ticket.
 
 ### Fixed
 
@@ -697,6 +667,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   only Error values are classified — a non-Error value never came from the
   bundle and is never a trap (previously a raw string whose text matched a
   trap wording classified as a trap).
+- List and map literals are charged to the per-allocation expression
+  budget: a query-sized literal (bounded by the query-text cap, so up to
+  hundreds of MB of allocation) now refuses under a small expression
+  memory limit instead of allocating silently.
+- `randomUUID()` no longer panics in the WASM build: the UUID's timestamp
+  now comes from the same JavaScript-backed clock as `datetime()` and
+  `timestamp()` instead of Rust's unimplemented `std::time` on
+  `wasm32-unknown-unknown` (REL8-2001).
 
 ### Notes
 
@@ -764,6 +742,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The pin grammar (`repo:tag@sha256:<64 hex>`) gets one home
   (`scripts/baseline-pin.sh`), shared by the drift check, its test and the
   pins guard.
+- Release tooling: the Windows signing leg preflights its DigiCert
+  credentials with `smctl healthcheck` before signing and classifies the
+  report (`scripts/check-smctl-healthcheck.sh`), so a failed client
+  certificate surfaces as the secret to fix instead of DigiCert's bare
+  sign-time 403; the echoed report redacts the API-key and
+  client-certificate-password lines.
+- Release tooling fix: the x86-64 baseline ISA gate accepts the pinned
+  build container's note-less baseline link under an explicit
+  `--pinned-toolchain` vouch — the container's rustc+gcc link emits no
+  "x86 ISA needed" ELF property note at baseline, so the gate's
+  note-must-exist arm had refused every release build — and the lane also
+  pins `-C target-cpu=x86-64` explicitly. A note listing
+  x86-64-v2/v3/v4 still fails the release.
+- Release tooling fix: the Windows signing preflight's smctl digest
+  check no longer refuses a matching digest on Git-Bash runners —
+  MSYS-mangled `sha256sum` output carried a leading backslash, so the
+  v1.3.0 release run's windows leg failed before the credentials
+  healthcheck could run. The digest is now read as the first 64 hex
+  characters of the stream.
+- Release infrastructure: the repository signing keypair was rotated —
+  the first key's private half was never stored, so the APT/RPM
+  repository lanes failed closed on their first real run. The new
+  public half is committed; the private half lives as the
+  `REPO_GPG_KEY` secret with an owner custody copy.
+- Release tooling fix: a tagless re-cut no longer wedges the changelog.
+  The fragment collector merges a pool section into an `[Unreleased]`
+  heading a prior cut already parked entries under (idempotently — an
+  entry the section already carries verbatim is skipped), and the
+  rotation merges a populated `[Unreleased]` into the existing version
+  section instead of skipping — the state that refused the v1.3.0
+  re-dispatch ("contributes a 'Notes' section [Unreleased] already
+  carries") now completes: all six pending entries landed in the
+  v1.3.0 section with `[Unreleased]` emptied.
 
 ## [1.2.0] — 2026-11-20
 
