@@ -202,6 +202,34 @@ impl<'a> ExecGraph<'a> {
         Ok(())
     }
 
+    /// Refuse a result cell whose *expanded* size is over the view's cap
+    /// (ADR-0691, beside ADR-0463's per-allocation check). Shared payloads
+    /// (ADR-0170) make a value tiny in memory yet exponential once a surface
+    /// walks it (`reduce(acc = [1], x IN range(1, 60) | [acc, acc])`), and
+    /// no per-allocation charge sees that: every step allocates two slots.
+    /// The walk counts each reference and stops at the cap, and remembers
+    /// each payload it measured ([`relate_core::ExpansionMemo`]), so the
+    /// work is linear in the distinct payloads whatever wraps them and the
+    /// check costs at most the cap per distinct cell. The memo lives for
+    /// this call over rows the caller holds, so its address keys cannot
+    /// outlive their payloads. `None` is the explicit opt-out.
+    pub(crate) fn check_result_expansion(&self, rows: &[Vec<Value>]) -> Result<()> {
+        let Some(limit) = self.expression_limit else {
+            return Ok(());
+        };
+        let mut memo = relate_core::ExpansionMemo::new();
+        for cell in rows.iter().flatten() {
+            if relate_core::logical_bytes_within_memo(std::iter::once(cell), limit, &mut memo)
+                .is_none()
+            {
+                // The walk stops once the total passes the cap, so the cap
+                // plus one is the lower bound it proved.
+                return Err(Error::capacity_expression(limit.saturating_add(1), limit));
+            }
+        }
+        Ok(())
+    }
+
     /// Refuse the allocation, then record it as construction-work telemetry
     /// (the PROFILE `Expression Built (Bytes)` figure, never enforcement).
     #[inline]

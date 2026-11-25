@@ -157,6 +157,22 @@ fn format_cell(val: &CypherValue) -> String {
     }
 }
 
+/// The longest cell, in characters, a table or markdown grid renders
+/// (ADR-0691). A shared-payload value can expand to megabytes of text
+/// inside one cell; a grid cell that wraps over thousands of lines reads
+/// as noise, so the grid shows the head and an ellipsis. Presentation
+/// only: the JSON, CSV and wire formats carry the whole value.
+pub(crate) const MAX_CELL_CHARS: usize = 4096;
+
+/// `cell`, cut to [`MAX_CELL_CHARS`] characters with a trailing `…` when it
+/// is longer; the cell unchanged otherwise.
+fn elide_cell(cell: &str) -> std::borrow::Cow<'_, str> {
+    match cell.char_indices().nth(MAX_CELL_CHARS) {
+        Some((end, _)) => format!("{}…", &cell[..end]).into(),
+        None => cell.into(),
+    }
+}
+
 /// Escape every header and cell for a table/markdown grid **once**.
 ///
 /// Returns the escaped header strings and, for each row, the escaped cell
@@ -177,7 +193,10 @@ fn materialize_cells(
         .map(|row| {
             columns
                 .iter()
-                .map(|col| escape_control(&format_cell(crate::cell(row, col)), escape_pipe))
+                .map(|col| {
+                    let cell = format_cell(crate::cell(row, col));
+                    escape_control(&elide_cell(&cell), escape_pipe)
+                })
                 .collect()
         })
         .collect();

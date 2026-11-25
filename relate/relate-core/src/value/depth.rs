@@ -72,7 +72,13 @@ const MAX_DEPTH_WALK_STEPS: u64 = 10_000_000;
 /// so a key can never alias a freed allocation. The variant kind is
 /// redundant: the address already identifies the container, and the memo
 /// stores a depth derived from that payload's own contents.
-type PayloadKey = usize;
+pub(super) type PayloadKey = usize;
+
+/// The one derivation of a payload's identity from its `Arc` (ADR-0462's
+/// depth memo and ADR-0691's expansion memo both key through it).
+pub(super) fn payload_key<T: ?Sized>(payload: &Arc<T>) -> PayloadKey {
+    Arc::as_ptr(payload) as *const () as usize
+}
 
 /// One container's lazily enumerated children. Every variant is O(1) to
 /// build, so a memo hit drops it without touching the children — the walk
@@ -141,19 +147,19 @@ impl<'a> Iterator for Children<'a> {
 fn container(value: &Value) -> Option<(PayloadKey, Children<'_>)> {
     match value {
         Value::List(xs) | Value::Vector { values: xs, .. } => {
-            Some((Arc::as_ptr(xs) as usize, Children::Values(xs.iter())))
+            Some((payload_key(xs), Children::Values(xs.iter())))
         }
-        Value::Map(map) => Some((Arc::as_ptr(map) as usize, Children::MapValues(map.values()))),
+        Value::Map(map) => Some((payload_key(map), Children::MapValues(map.values()))),
         Value::Node(node) => Some((
-            Arc::as_ptr(node) as usize,
+            payload_key(node),
             Children::PropValues(prop_values(&node.properties)),
         )),
         Value::Relationship(rel) => Some((
-            Arc::as_ptr(rel) as usize,
+            payload_key(rel),
             Children::PropValues(prop_values(&rel.properties)),
         )),
         Value::Path(path) => Some((
-            Arc::as_ptr(path) as usize,
+            payload_key(path),
             Children::Path {
                 nodes: path.nodes.iter(),
                 rels: path.rels.iter(),

@@ -424,9 +424,15 @@ mod tests {
     /// distinct payloads; the query returns promptly with the exact depth.
     #[test]
     fn shared_fan_out_reduce_does_not_expand_exponentially() {
-        let value = single_value(
+        // The value is deliberately over the ADR-0691 result cap (this test
+        // measures the depth walk, not the boundary), so the cap is opted out.
+        let mut g = Graph::default();
+        g.configure_expression_memory_limit(None);
+        let rows = exec_cypher(
+            &g,
             "RETURN reduce(acc = range(1, 10000), x IN range(1, 40) | [acc, acc]) AS v",
-        );
-        assert_eq!(value.depth(), 41);
+        )
+        .rows;
+        assert_eq!(rows[0][0].depth(), 41);
     }
 }

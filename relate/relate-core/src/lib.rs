@@ -84,9 +84,10 @@ pub use traversal::{
 };
 pub use typename::{bare_type_name, expected_value_type_detail, value_type_name};
 pub use value::{
-    bytes_logical_bytes, logical_bytes_within, next_depth, point_component, str_logical_bytes,
-    tagged_str, uuid_hyphenated, uuid_parse, value_depth_exceeded, Node, Path, PointValue,
-    PropertyMap, Relationship, TaggedStr, Value, VectorCoordKind, MAX_VALUE_DEPTH,
+    bytes_logical_bytes, logical_bytes_within, logical_bytes_within_memo, next_depth,
+    point_component, str_logical_bytes, tagged_str, uuid_hyphenated, uuid_parse,
+    value_depth_exceeded, ExpansionMemo, Node, Path, PointValue, PropertyMap, Relationship,
+    TaggedStr, Value, VectorCoordKind, MAX_VALUE_DEPTH,
 };
 
 pub type NodeId = i64;

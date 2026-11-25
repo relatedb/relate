@@ -160,3 +160,37 @@ fn writes_explain_and_catalog_commands_replay_through_the_consumer() {
     assert_eq!(columns, expected.header.columns);
     assert_eq!(rows, expected.rows);
 }
+
+/// ADR-0691: a streamed cell whose expanded size is over the expression cap
+/// is refused before its batch reaches the consumer, like the materialized
+/// result — shared payloads are small in memory and exponential once walked.
+#[test]
+fn a_streamed_cell_over_the_expansion_cap_is_refused_before_delivery() {
+    let mut c = common::workspace_capped(BUDGET);
+    let mut batches = 0usize;
+    let err = c
+        .query_streaming(
+            "UNWIND range(1, 3) AS i \
+             RETURN reduce(acc = [1], x IN range(1, 60) | [acc, acc]) AS v",
+            Default::default(),
+            CancelToken::new(),
+            |event| {
+                if let StreamEvent::Batch(_) = event {
+                    batches += 1;
+                }
+                Ok(BatchFlow::Continue)
+            },
+        )
+        .expect_err("a 2^60-leaf cell must be refused");
+    assert!(
+        matches!(
+            err,
+            relate::Error::Capacity {
+                kind: relate::CapacityKind::Expression,
+                ..
+            }
+        ),
+        "typed expression-capacity refusal, got {err:?}"
+    );
+    assert_eq!(batches, 0, "no batch may carry the refused cell");
+}

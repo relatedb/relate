@@ -69,3 +69,36 @@ fn test_budget_wrap_never_splits_a_wide_char() {
         "the grid stays within the budget: {s}"
     );
 }
+
+#[test]
+fn test_an_over_long_cell_is_elided_in_table_and_markdown_only() {
+    // ADR-0691: a grid cell past MAX_CELL_CHARS shows its head and an
+    // ellipsis; a cell exactly at the limit is untouched, and JSON keeps
+    // the whole value. A string renders quoted, so its display is two
+    // characters longer than its content.
+    let max = crate::table::MAX_CELL_CHARS;
+    let cols = vec!["v".to_string()];
+    let long = "a".repeat(max + 10);
+    let exact = "b".repeat(max - 2);
+    for mode in [Mode::Table, Mode::Markdown] {
+        let s = render(
+            mode.clone(),
+            &cols,
+            &[
+                vec![CypherValue::Str(long.clone())],
+                vec![CypherValue::Str(exact.clone())],
+            ],
+        );
+        assert!(
+            s.contains(&format!("{}\u{2026}", "a".repeat(max - 1))),
+            "{mode:?}"
+        );
+        assert!(!s.contains(&"a".repeat(max)), "{mode:?}");
+        assert!(
+            s.contains(&exact) && !s.contains(&format!("{exact}\"\u{2026}")),
+            "{mode:?}"
+        );
+    }
+    let json = render(Mode::Json, &cols, &[vec![CypherValue::Str(long.clone())]]);
+    assert!(json.contains(&long));
+}

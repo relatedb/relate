@@ -611,13 +611,17 @@ size ({ops} note operations for 1M rows over a 1000-string parameter)"
 /// distinct allocations plus edges, never depth x edges.
 #[test]
 fn a_deep_fan_out_row_walk_is_linear() {
-    let g = Graph::default();
+    let mut g = Graph::default();
+    // The value's expanded size is astronomically over any result cap
+    // (`check_result_expansion` refuses it, see below); this test measures
+    // the ownership walk, so the boundary cap is opted out.
+    g.configure_expression_memory_limit(None);
     crate::workspace::reset_note_ops();
     let result = crate::exec::test_support::try_exec_cypher(
         &g,
         "RETURN reduce(acc = [0], x IN range(1, 300) | [y IN range(1, 1000) | acc]) AS v",
     )
-    .expect("the deep fan-out value is row-owned and under the cap");
+    .expect("the deep fan-out value is row-owned (the boundary cap is opted out above)");
     assert_eq!(result.rows.len(), 1);
     let ops = crate::workspace::note_ops();
     // ~600k note operations (one per list plus one per edge
@@ -658,5 +662,71 @@ fn a_borrowed_map_parameters_keys_are_never_summed() {
         ops < 2_000_000,
         "the walk must stay linear in the rows ({ops} operations — the \
 borrowed map's thousand keys are never summed)"
+    );
+}
+
+/// The expression cap the boundary tests below run under: 1 MiB.
+const RESULT_CAP: u64 = 1 << 20;
+
+/// A shared-payload value is tiny in memory and exponential once a surface
+/// expands it: `[acc, acc]` allocates two slots per step, so no
+/// per-allocation charge trips, yet the 60-step value is 2^60 leaves. The
+/// statement boundary counts each reference and refuses the result with the
+/// typed expression-capacity error before any surface walks it.
+#[test]
+fn a_result_cell_whose_expansion_exceeds_the_cap_is_refused() {
+    let mut g = Graph::default();
+    g.configure_expression_memory_limit(Some(RESULT_CAP));
+    let Err(err) = crate::exec::test_support::try_exec_cypher(
+        &g,
+        "RETURN reduce(acc = [1], x IN range(1, 60) | [acc, acc]) AS v",
+    ) else {
+        panic!("a 2^60-leaf expansion must be refused at the boundary");
+    };
+    assert!(
+        matches!(
+            err,
+            relate_core::Error::Capacity {
+                kind: relate_core::CapacityKind::Expression,
+                limit: RESULT_CAP,
+                ..
+            }
+        ),
+        "typed expression-capacity refusal, got {err:?}"
+    );
+}
+
+/// The same shape under the cap still returns: 2^10 leaves is well inside
+/// 1 MiB, so the boundary check refuses by expanded size, never by shape.
+#[test]
+fn a_shared_value_whose_expansion_fits_the_cap_is_returned() {
+    let mut g = Graph::default();
+    g.configure_expression_memory_limit(Some(RESULT_CAP));
+    let result = crate::exec::test_support::try_exec_cypher(
+        &g,
+        "RETURN reduce(acc = [1], x IN range(1, 10) | [acc, acc]) AS v",
+    )
+    .expect("a small expansion is within the cap");
+    assert_eq!(result.rows.len(), 1);
+}
+
+/// Rows holding one shared payload are walked once, not once per row: 20,000
+/// rows of the same 100,000-element list (~16 GB expanded across the rows,
+/// ~1.6 MB per cell) clear the boundary check in well under a second. A
+/// per-row walk would count ~2 billion elements.
+#[test]
+fn rows_sharing_one_payload_are_walked_once_at_the_boundary() {
+    let g = Graph::default();
+    let started = std::time::Instant::now();
+    let result = crate::exec::test_support::try_exec_cypher(
+        &g,
+        "WITH range(1, 100000) AS v UNWIND range(1, 20000) AS i RETURN v",
+    )
+    .expect("every cell is within the cap");
+    assert_eq!(result.rows.len(), 20_000);
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(5),
+        "the boundary check must be linear in distinct payloads: {:?}",
+        started.elapsed()
     );
 }

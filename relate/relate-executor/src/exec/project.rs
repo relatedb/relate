@@ -119,6 +119,10 @@ pub(crate) fn stream_terminal_return(
         };
         let cells = materialize_rows_strict(&mut rows, &announced)?;
         columns = Some(announced);
+        // ADR-0691: the streamed cells cross the same expansion check the
+        // materialized result does, one batch at a time (a batch's memo
+        // lives only while the batch does).
+        graph.check_result_expansion(&cells)?;
         if matches!(sink.batch(cells)?, BatchFlow::Stop) {
             // The consumer's early exit is the stream's: stop the walk
             // (a completing source still runs out its own work), then
