@@ -124,18 +124,31 @@ pub fn published_image(path: &std::path::Path) -> (Vec<u8>, std::time::SystemTim
     (bytes, mtime)
 }
 
-/// The WAL segment files of the native database at `root`, oldest first.
-/// The `wal/` directory also holds the lease lock files, which are not
-/// segments.
+/// The WAL segment files of the native database at `root`. The `wal/`
+/// directory also holds the lease lock files, which are not segments.
+///
+/// This reads the directory itself and re-spells the `*.log` naming that
+/// `relate-storage` owns, on purpose: the tests that use it are oracles for
+/// what storage left on disk, so they must not ask the code under test which
+/// files it wrote. `tests/common/store.rs::active_segment` is the same
+/// reading through a `Vfs`, for tests that also cover bundles.
 #[doc(hidden)]
 pub fn wal_segments(root: &std::path::Path) -> Vec<std::path::PathBuf> {
-    let mut segments: Vec<_> = std::fs::read_dir(root.join("wal"))
-        .unwrap()
+    std::fs::read_dir(root.join("wal"))
+        .expect("a native store has a wal/ directory")
         .map(|entry| entry.unwrap().path())
         .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("log"))
-        .collect();
-    segments.sort();
-    segments
+        .collect()
+}
+
+/// The newest (highest-numbered) WAL segment of the native database at
+/// `root`: the one a writer appends to and a follower tails.
+#[doc(hidden)]
+pub fn latest_wal_segment(root: &std::path::Path) -> std::path::PathBuf {
+    wal_segments(root)
+        .into_iter()
+        .max()
+        .expect("the store wrote a WAL segment")
 }
 
 /// The store's current WAL LSN: the count of committed records, each commit

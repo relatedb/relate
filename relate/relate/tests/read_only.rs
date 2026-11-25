@@ -3,7 +3,7 @@
 use std::fs;
 use std::path::Path;
 
-use relate::test_opts::{count, read_only, wal_segments, writable};
+use relate::test_opts::{count, latest_wal_segment, read_only, writable};
 use relate::{Database, Error, OpenOptions, SnapshotCodecKind};
 use relate_storage::reset_uri;
 use relate_test_support::{uri, walk_tree};
@@ -113,7 +113,7 @@ fn read_only_does_not_trim_a_torn_wal_tail() {
     writer.connect().unwrap().execute("CREATE (:Seed)").unwrap();
     drop(writer);
 
-    let segment = wal_segments(&path).pop().unwrap();
+    let segment = latest_wal_segment(&path);
     let original = fs::read(&segment).unwrap();
     let mut torn = original.clone();
     torn.extend_from_slice(&[1, 2, 3, 4]);
