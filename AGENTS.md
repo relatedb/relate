@@ -150,6 +150,12 @@ No behavior without tests.
 | Client contract | each client's tests against C ABI |
 | Persistence | WAL + snapshot roundtrip, Native + Memory VFS |
 
+- `relate/relate` and `surfaces/relate-cli` build their shareable test files
+  as one `tests/integration/` binary per crate (one link of the engine, not
+  one per file); the rules for when a file must stay its own binary, and for
+  adding one, are in
+  [`docs/testing/test-binaries.md`](docs/testing/test-binaries.md)
+
 - Language contract lives in the spec harness (ADR-0482, ADR-0661): it
   runs Neo4j's Cypher spec suites against the PR's Python wheel, reports
   coverage per ready PR, and the ADR-0661 gate — a required status check —
@@ -317,7 +323,7 @@ rate.
   follower with no projection consumes the generated stream directly. A
   path that collects a generated `UNWIND` feed for a folding consumer is a
   regression:
-  `relate/relate/tests/order_by_top_k_bounds.rs::
+  `relate/relate/tests/integration/order_by_top_k_bounds.rs::
   an_unwind_feed_streams_into_the_window_whatever_the_input_count` fails on
   it (a 2M-row windowed answer refuses under a 16 MiB pool the moment the
   input is held)

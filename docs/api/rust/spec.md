@@ -1618,7 +1618,7 @@ The plan representation is the `PlanNode` tree:
   (`plan` vs `profile` on Bolt, `queryPlan` vs `profiledQueryPlan` on the
   HTTP Query API), pinned by the engine test
   `is_profiled_classifies_explain_from_profile`
-  (`relate/relate/tests/explain_profile.rs`).
+  (`relate/relate/tests/integration/explain_profile.rs`).
 
 See the [plan-tree example](examples/plan_tree.md) and the
 [PROFILE memo-counters example](examples/profile_memo.md).

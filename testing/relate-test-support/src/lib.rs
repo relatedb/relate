@@ -35,6 +35,8 @@ pub mod read_log;
 pub mod recording_engine;
 pub mod rng;
 pub mod stacks;
+/// The merged-test-binary guard (`assert_every_file_is_declared`).
+pub mod test_binaries;
 
 /// Authored CE error texts more than one crate's tests pin, held once.
 pub mod ce_text;

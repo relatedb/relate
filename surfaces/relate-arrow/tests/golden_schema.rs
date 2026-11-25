@@ -3,7 +3,7 @@
 //! This pins the `CypherValue -> Arrow` schema mapping against the **shared**
 //! wire golden fixtures in `relate_model::wire::golden` — the exact same
 //! one-of-every-variant fixtures the CLI golden test
-//! (`surfaces/relate-cli/tests/wire_golden.rs`) and the FFI suite
+//! (`surfaces/relate-cli/tests/integration/wire_golden.rs`) and the FFI suite
 //! (`surfaces/relate-ffi/src/lib.rs`) assert against, alongside this Arrow
 //! test. If a new `CypherValue` variant is added,
 //! or the Arrow type chosen for an existing one drifts, this test fails, so the

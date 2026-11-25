@@ -340,7 +340,7 @@ fn parenthesized_parts_validate_like_their_bare_spellings() {
 // admitted here and left to the planner's leaf discipline. The list below
 // pins this front-end gate only — the end-to-end verdict of a shape can be
 // stricter, and for the star-carried property leaf it is:
-// `relate/relate/tests/aggregate_grouping_key_through_scalar_call.rs::
+// `relate/relate/tests/integration/aggregate_grouping_key_through_scalar_call.rs::
 // scalar_call_over_a_non_grouped_variable_stays_ambiguous` pins the same
 // statement as an end-to-end `AmbiguousAggregationExpression` rejection
 // (the planner's variables-only `*`, ADR-0198 ruling 1), while live Neo4j

@@ -599,6 +599,12 @@ test-adr-scripts:
 test-rename-residuals:
 	$(PYTHON) $(CURDIR)/scripts/tests/test_rename_residuals.py
 
+## test-merge-test-binaries: Unit-test the integration-test-binary merge and
+##   hold each committed tests/integration/main.rs equal to the generator's
+##   output (scripts/merge-test-binaries.py)
+test-merge-test-binaries:
+	$(PYTHON) $(CURDIR)/scripts/tests/test_merge_test_binaries.py
+
 ## test-bolt-compat-scripts: Unit-test the Bolt compat probe's framing,
 ##   masking, selectors, transcript rendering, manifest decode and findings
 ##   catalog (scripts/bolt_compat_probe.py and its modules)
@@ -731,7 +737,8 @@ test-scripts: test-compare-loadtest test-install-sh test-sign-repo-metadata \
 	test-baseline-scripts test-bolt-compat-scripts test-adr-scripts \
 	test-release-scripts test-front-bench-scripts test-opencode-review-post \
 	test-stamp-swift-package \
-	test-build-xcframework test-rename-residuals test-makefile-targets test-premerge-check \
+	test-build-xcframework test-rename-residuals test-merge-test-binaries \
+	test-makefile-targets test-premerge-check \
 	test-load-perf-scripts
 
 VERSION ?= $(shell sed -n 's/^version = "\([^"]*\)".*/\1/p' Cargo.toml | head -1)

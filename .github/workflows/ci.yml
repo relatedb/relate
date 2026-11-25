@@ -653,7 +653,7 @@ jobs:
           cargo test --no-run -p relate-mcp --test stdio_tools
           cargo test --no-run -p relate-bolt --lib
           cargo test --no-run -p relate-http --lib
-          cargo test --no-run -p relate-cli --test e2e_bundles
+          cargo test --no-run -p relate-cli --test integration
 
       - name: Install the Python package
         shell: bash
@@ -675,7 +675,7 @@ jobs:
           cargo test -p relate-mcp --test stdio_tools stdio_namespace_prefixes_tool_names -- --exact
           cargo test -p relate-bolt --lib server::tests::bolt_return_one -- --exact
           cargo test -p relate-http --lib query_api::tests::success_envelope_has_fields_values_and_empty_bookmarks -- --exact
-          cargo test -p relate-cli --test e2e_bundles test_one_shot_query_runs_in_every_bundle -- --exact
+          cargo test -p relate-cli --test integration e2e_bundles::test_one_shot_query_runs_in_every_bundle -- --exact
           python -m pytest surfaces/relate-python/python/tests/test_native.py::test_execute_returns_query_result
           (cd clients/javascript && npm install && node test.js)
           export RELATE_LIB="$PWD/target/debug/$(bash scripts/ffi-lib.sh --name)"
@@ -923,7 +923,7 @@ jobs:
           cargo test --no-run -p relate-mcp --test stdio_tools
           cargo test --no-run -p relate-bolt --lib
           cargo test --no-run -p relate-http --lib
-          cargo test --no-run -p relate-cli --test e2e_bundles --test e2e_skill --test e2e_upgrade
+          cargo test --no-run -p relate-cli --test integration
 
       # Windows subset of the macOS surface smokes (`os_surface_smokes`):
       # the four one-query surface smokes, the C compile example, and the
@@ -936,7 +936,7 @@ jobs:
           cargo test -p relate-mcp --test stdio_tools stdio_namespace_prefixes_tool_names -- --exact
           cargo test -p relate-bolt --lib server::tests::bolt_return_one -- --exact
           cargo test -p relate-http --lib query_api::tests::success_envelope_has_fields_values_and_empty_bookmarks -- --exact
-          cargo test -p relate-cli --test e2e_bundles test_one_shot_query_runs_in_every_bundle -- --exact
+          cargo test -p relate-cli --test integration e2e_bundles::test_one_shot_query_runs_in_every_bundle -- --exact
           target_dir="$PWD/target"
           if [[ -n "${CARGO_TARGET_DIR:-}" ]]; then
             target_dir="$(cygpath -u "$CARGO_TARGET_DIR")"
@@ -987,9 +987,9 @@ jobs:
           Remove-Item Env:HOME -ErrorAction SilentlyContinue
           cargo test -p relate-cli --bin relate -- home_dir::
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          cargo test -p relate-cli --test e2e_skill -- --exact test_skill_install_resolves_userprofile_without_home
+          cargo test -p relate-cli --test integration -- --exact e2e_skill::test_skill_install_resolves_userprofile_without_home
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          cargo test -p relate-cli --test e2e_upgrade -- --exact test_upgrade_check_on_windows_advises_the_powershell_installer test_upgrade_on_windows_refuses_with_the_powershell_installer
+          cargo test -p relate-cli --test integration -- --exact e2e_upgrade::test_upgrade_check_on_windows_advises_the_powershell_installer e2e_upgrade::test_upgrade_on_windows_refuses_with_the_powershell_installer
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Disk headroom (telemetry)

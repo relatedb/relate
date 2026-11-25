@@ -202,7 +202,7 @@ in the quantified set.
 **Not in-repo: the traverse-bench / pokec query list.** No file enumerates
 it. What exists is a synthetic pokec-*shaped* fixture
 (`testing/relate-test-support/src/pokec.rs:54-75`) and three representative
-query classes in `relate/relate/tests/pokec_fixture.rs:28-53`. The 11-shape
+query classes in `relate/relate/tests/integration/pokec_fixture.rs:28-53`. The 11-shape
 table in LABS-1119 is therefore the only record of the bench's shapes, and
 **its per-query frequencies do not exist in this repository** — the 75%
 denominator for that corpus cannot be computed today (candidate 6).

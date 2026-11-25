@@ -98,7 +98,7 @@ relate query --database ./graph "MATCH (n:N) RETURN count(n) AS n"
 The full walkthrough (every flag kind, a positional, the summary's
 starter queries, the discovery error) is
 `docs/api/extensions/examples/run.md`; the same fixture runs in CI as
-`surfaces/relate-cli/tests/e2e_run.rs`.
+`surfaces/relate-cli/tests/integration/e2e_run.rs`.
 
 ## The MCP wire
 

@@ -7,7 +7,7 @@ speak;
 the compiled fixture that CI drives through the real binary is
 [`surfaces/relate-cli/tests/fixtures/mcp-extension-fixture.rs`](../../../../surfaces/relate-cli/tests/fixtures/mcp-extension-fixture.rs)
 (Rust, links `relate_wire::mcp`), and the shell children of
-[`surfaces/relate-cli/tests/e2e_extension_mcp.rs`](../../../../surfaces/relate-cli/tests/e2e_extension_mcp.rs)
+[`surfaces/relate-cli/tests/integration/e2e_extension_mcp.rs`](../../../../surfaces/relate-cli/tests/integration/e2e_extension_mcp.rs)
 show the same lines hand-printed.
 
 ## The package

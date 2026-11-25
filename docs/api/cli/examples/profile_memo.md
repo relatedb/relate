@@ -30,4 +30,4 @@ cargo run -p relate-cli -- --database :memory: --mode json \
   "PROFILE UNWIND range(0, 1999) AS i WITH ['2024-05-05T10:00:00Z', '2023-01-01T09:00:00Z'][i % 2] AS s RETURN count(datetime(s)) AS n"
 ```
 
-Pinned by `surfaces/relate-cli/tests/e2e_profile_memo.rs`.
+Pinned by `surfaces/relate-cli/tests/integration/e2e_profile_memo.rs`.
