@@ -33,6 +33,10 @@ fn validate_persistable(value: &Value, path: &str) -> Result<()> {
         Value::Bytes(_) => Some("byte array is not a persistence property"),
         Value::Temporal(Temporal::CivilDate { .. }) => Some("unsupported CivilDate"),
         Value::Temporal(Temporal::CivilDateTime { .. }) => Some("unsupported CivilDateTime"),
+        // The far-year zoned twin (ADR-0683) joins the civil forms here:
+        // the JSON checkpoint bridge is chrono-bound (ADR-0087); the WAL
+        // carries it natively.
+        Value::Temporal(Temporal::CivilZoned(_)) => Some("unsupported CivilZoned"),
         Value::Temporal(Temporal::Duration { nanos, .. })
             if i64::try_from(nanos / 1_000_000_000).is_err() =>
         {

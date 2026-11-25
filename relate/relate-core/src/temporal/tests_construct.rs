@@ -381,12 +381,21 @@ fn non_datetime_kinds_reject_epoch_millis() {
     }
 }
 
-/// Epoch values outside chrono's timestamp range are the typed
-/// out-of-range rejection, not a panic.
+/// An epoch instant outside chrono's timestamp range but inside the
+/// civil family's (TCK ±999999999) constructs the far-year value
+/// (ADR-0683; live 2026.10.1 accepts it too); one past the civil range —
+/// reachable through `epochSeconds`, whose i64 seconds span ~292 billion
+/// years — is the typed out-of-range rejection, not a panic.
 #[test]
 fn epoch_fields_out_of_range_error() {
-    let ms = component_map(&[("epochMillis", Value::Int(i64::MAX))]);
-    let err = construct_datetime(Some(&ms)).expect_err("an out-of-range epoch must fail");
+    let far = construct_datetime(Some(&component_map(&[(
+        "epochMillis",
+        Value::Int(i64::MAX),
+    )])))
+    .expect("i64 millis stay inside the civil year range");
+    assert!(matches!(far, Temporal::CivilZoned(_)), "{far:?}");
+    let secs = component_map(&[("epochSeconds", Value::Int(i64::MAX))]);
+    let err = construct_datetime(Some(&secs)).expect_err("an epoch past the civil range must fail");
     assert!(matches!(err, Error::ArgumentError(_)), "{err}");
 }
 

@@ -50,6 +50,16 @@ pub(in crate::temporal) fn render(value: &Temporal, full_seconds: bool) -> Strin
                 format_zone_suffix(*offset, zone.as_deref())
             )
         }
+        // A far-year zoned datetime (ADR-0683) stores its wall clock, so
+        // rendering never runs the chrono offset arithmetic the `DateTime`
+        // arm needs — the civil date and time render beside the offset/zone
+        // suffix directly.
+        Temporal::CivilZoned(fields) => format!(
+            "{}T{}{}",
+            format_civil_date(fields.year, fields.month, fields.day),
+            format_time(fields.time, full_seconds),
+            format_zone_suffix(fields.offset, fields.zone.as_deref())
+        ),
         Temporal::Duration {
             months,
             days,

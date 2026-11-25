@@ -8,7 +8,7 @@
 //! `Err(Error::ty(..))` on out-of-range results. Nothing in this module may
 //! panic on query input.
 
-use chrono::{Datelike, Duration as ChronoDur, NaiveDate, NaiveDateTime, NaiveTime};
+use chrono::{Datelike, Duration as ChronoDur, NaiveDate, NaiveDateTime, NaiveTime, Timelike};
 
 use crate::{Error, Result};
 
@@ -52,6 +52,13 @@ pub fn civil_from_days(days: i128) -> (i64, u32, u32) {
     let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
     let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
     (if m <= 2 { y + 1 } else { y } as i64, m, d)
+}
+
+/// The civil wall clock's epoch seconds — [`civil_epoch_days`]'s day
+/// count plus the time of day — the one derivation the Bolt packers read
+/// for both civil forms (ADR-0683).
+pub fn civil_epoch_seconds(year: i64, month: u32, day: u32, time: NaiveTime) -> i128 {
+    civil_epoch_days(year, month, day) * 86_400 + i128::from(time.num_seconds_from_midnight())
 }
 
 /// `dt + d`, erroring instead of panicking when the result is out of chrono
@@ -200,7 +207,7 @@ pub fn add_duration(t: &Temporal, d: &Temporal) -> Result<Temporal> {
             time: shift_time_of_day(*time, nanos),
             offset: *offset,
         }),
-        Temporal::CivilDate { .. } | Temporal::CivilDateTime { .. } => {
+        Temporal::CivilDate { .. } | Temporal::CivilDateTime { .. } | Temporal::CivilZoned(_) => {
             Err(Error::ty("civil date arithmetic out of range"))
         }
     }

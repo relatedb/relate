@@ -9,37 +9,19 @@ use std::cmp::Ordering;
 use relate_core::{temporal, Value};
 use relate_ir::ChronoOp;
 
-/// The temporal families a chronological comparison can order within: the
+/// The value's temporal family — core's one variant grouping (the
+/// `TemporalKind` partition), `None` for every non-temporal value: the
 /// two `Date` spellings are one family (chrono range vs civil
 /// out-of-range years), as are the two `LocalDateTime` spellings; zoned
 /// `Time`, zoned `DateTime`, and the rest are families of one. Unlike
 /// families never compare (the operator's mixed-kind policy), and
 /// `Duration` is its own family so two durations reduce to the ordinary
 /// relations (`=` defined, ordering null).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ChronoKind {
-    Date,
-    LocalTime,
-    Time,
-    LocalDateTime,
-    DateTime,
-    Duration,
-}
-
-/// [`ChronoKind`] of a value: `None` for every non-temporal value.
-fn chrono_kind(value: &Value) -> Option<ChronoKind> {
-    match value.as_temporal()? {
-        temporal::Temporal::Date(_) | temporal::Temporal::CivilDate { .. } => {
-            Some(ChronoKind::Date)
-        }
-        temporal::Temporal::LocalTime(_) => Some(ChronoKind::LocalTime),
-        temporal::Temporal::Time { .. } => Some(ChronoKind::Time),
-        temporal::Temporal::LocalDateTime(_) | temporal::Temporal::CivilDateTime { .. } => {
-            Some(ChronoKind::LocalDateTime)
-        }
-        temporal::Temporal::DateTime { .. } => Some(ChronoKind::DateTime),
-        temporal::Temporal::Duration { .. } => Some(ChronoKind::Duration),
-    }
+///
+/// The executor keeps no second copy of the partition: a new temporal
+/// variant changes core's `kind` match and this alias follows.
+fn chrono_kind(value: &Value) -> Option<temporal::TemporalKind> {
+    value.as_temporal().map(temporal::Temporal::kind)
 }
 
 /// Cypher 25 chronological comparison:

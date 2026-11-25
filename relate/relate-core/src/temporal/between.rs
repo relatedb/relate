@@ -39,9 +39,10 @@ fn as_utc_instant(t: &Temporal, ctx: &Temporal, zone: &str) -> Option<NaiveDateT
             // `temporal_arith_out_of_range_errors_not_panics`).
             add_offset(local, offset.checked_neg()?).ok()
         }
-        Temporal::Duration { .. } | Temporal::CivilDate { .. } | Temporal::CivilDateTime { .. } => {
-            None
-        }
+        Temporal::Duration { .. }
+        | Temporal::CivilDate { .. }
+        | Temporal::CivilDateTime { .. }
+        | Temporal::CivilZoned(_) => None,
     }
 }
 
@@ -49,9 +50,14 @@ fn wall_dt(t: &Temporal) -> Option<NaiveDateTime> {
     match t {
         Temporal::Date(d) => Some(d.and_time(NaiveTime::MIN)),
         Temporal::LocalDateTime(dt) => Some(*dt),
-        Temporal::CivilDate { .. } | Temporal::CivilDateTime { .. } => None,
         Temporal::DateTime { utc, offset, .. } => add_offset(*utc, *offset).ok(),
-        _ => None,
+        // The civil forms carry no chrono wall clock for the stepper.
+        Temporal::LocalTime(_)
+        | Temporal::Time { .. }
+        | Temporal::CivilDate { .. }
+        | Temporal::CivilDateTime { .. }
+        | Temporal::CivilZoned(_)
+        | Temporal::Duration { .. } => None,
     }
 }
 
@@ -83,6 +89,14 @@ fn time_nanos_of(t: &Temporal, as_utc: bool) -> Option<i64> {
         Temporal::Duration { .. } => None,
         Temporal::CivilDate { .. } => Some(0),
         Temporal::CivilDateTime { time, .. } => Some(time_to_nanos(*time)),
+        // A far-year zoned datetime carries no chrono wall clock to read
+        // the nanos from (ADR-0683); the between stepper treats it as the
+        // no-reading the other civil forms give the zoned conversions.
+        // The far-year zoned form has no reading for the between stepper:
+        // its zoned conversions are chrono-bound (ADR-0683), so it declines
+        // whole, the same no-reading the other civil forms give the zoned
+        // paths.
+        Temporal::CivilZoned(_) => None,
     }
 }
 
@@ -339,6 +353,7 @@ fn operand_shape(t: &Temporal) -> OperandShape<'_> {
         | Temporal::CivilDate { .. }
         | Temporal::LocalDateTime(_)
         | Temporal::CivilDateTime { .. }
+        | Temporal::CivilZoned(_)
         | Temporal::Duration { .. } => OperandShape::Other,
     }
 }
