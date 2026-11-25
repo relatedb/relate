@@ -37,6 +37,10 @@ tap_check() { # $1 = description, $2 = status (0 = pass, like $?)
 	fi
 }
 
+tap_check_refusal() { # $1 = description, $2 = status (non-zero = pass, like $? from a refusal) — tap_check over the inverted status, so the one ok/not-ok fork stays in tap_check
+	tap_check "$1" "$(( ! $2 ))"
+}
+
 tap_run_status() { # $1 = description, $2 = expected outcome (success|failure); rest = the command
 	tap_desc="$1"
 	tap_expect="$2"
@@ -70,11 +74,10 @@ assert_failed_empty() { # $1 = description; rest = the command that must print n
 	shift
 	tap_out=$("$@" 2>/dev/null)
 	tap_status=$?
-	if [ -n "$tap_out" ] || [ "$tap_status" -eq 0 ]; then
-		tap_not_ok "$tap_desc"
-	else
-		tap_ok "$tap_desc"
-	fi
+	# The house status spelling: the test succeeds when the output was
+	# empty AND the command failed — the one ok/not-ok fork stays in
+	# tap_check.
+	[ -z "$tap_out" ] && [ "$tap_status" -ne 0 ]; tap_check "$tap_desc" $?
 }
 
 assert_same() { # $1 = description, $2.. = values that must all be non-empty and equal

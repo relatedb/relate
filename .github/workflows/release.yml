@@ -431,7 +431,11 @@ jobs:
         run: bash scripts/install-cargo-auditable.sh "$RUNNER_TEMP/cargo-auditable" >> "$GITHUB_PATH"
 
       # Build from the stamped release commit (ADR-0572) — the one tree
-      # every artifact and the tag share.
+      # every artifact and the tag share. The x86-64 baseline target-CPU
+      # pin is committed in .cargo/config.toml (reviewed beside the
+      # ISA gate's --pinned-toolchain vouch that relies on it); this
+      # lane sets no RUSTFLAGS env, because an env would replace the
+      # config table.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.swift-stamp.outputs.sha }}
@@ -442,8 +446,13 @@ jobs:
       - name: Rename binary
         run: cp target/x86_64-unknown-linux-gnu/release/relate relate-linux-amd64
 
+      # The lane's vouch: the pinned container's rustc+gcc link emits no
+      # "x86 ISA needed" GNU property note at baseline, so the gate runs
+      # with --pinned-toolchain — the one caller that may pass a
+      # note-less binary. A note listing x86-64-v2/v3/v4 fails the
+      # release with or without the vouch.
       - name: Check the x86-64 baseline ISA
-        run: bash scripts/check-linux-isa.sh relate-linux-amd64
+        run: bash scripts/check-linux-isa.sh --pinned-toolchain relate-linux-amd64
 
       - name: Check the glibc floor
         id: glibc_floor

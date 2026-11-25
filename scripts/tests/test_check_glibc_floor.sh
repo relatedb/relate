@@ -68,11 +68,7 @@ Version symbols section '.gnu.version' entry 0 offset 0x0000000000003a44:
   000:   0 (*local*)       2 (GLIBC_2.2.5)   3 (GLIBC_2.38)
 REPORT
 run_gate "a binary above the documented floor" "$above"
-if [ "$tap_status" -ne 0 ]; then
-	tap_ok "the gate fails a binary above the documented floor"
-else
-	tap_not_ok "the gate fails a binary above the documented floor"
-fi
+tap_check_refusal "the gate fails a binary above the documented floor" "$tap_status"
 assert_same "the refusal names the required version" \
 	"$(cat "$sandbox/err")" \
 	"check-glibc-floor: $above: requires GLIBC_2.38, above the documented floor GLIBC_2.35"
@@ -90,11 +86,7 @@ Version definition section '.gnu.version_d' contains 1 entry:
   000000: Rev: 1  Flags: BASE  Index: 1  Cnt: 1  Name: relate
 REPORT
 run_gate "a binary with no GLIBC_ symbol versions" "$nosyms"
-if [ "$tap_status" -ne 0 ]; then
-	tap_ok "the gate fails a binary without GLIBC_ symbol versions"
-else
-	tap_not_ok "the gate fails a binary without GLIBC_ symbol versions"
-fi
+tap_check_refusal "the gate fails a binary without GLIBC_ symbol versions" "$tap_status"
 assert_same "the refusal names the missing symbol versions" \
 	"$(cat "$sandbox/err")" \
 	"check-glibc-floor: $nosyms: no GLIBC_ symbol versions (not a glibc dynamic binary?)"
