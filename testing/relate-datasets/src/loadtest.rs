@@ -50,6 +50,23 @@ pub fn validate_write_fraction(write_fraction: f64) -> Result<f64> {
     Ok(write_fraction)
 }
 
+/// An attach hook is valid only on a read-only workload: a write after the
+/// attach makes an attached store decline every read, so the pair is
+/// rejected before any graph is generated — a harness/setup error, not a
+/// run whose every read silently fails.
+fn validate_attach(
+    write_fraction: f64,
+    attach: Option<relate_test_support::AttachHook>,
+) -> Result<()> {
+    if attach.is_some() && write_fraction != 0.0 {
+        return Err(Error::semantic(format!(
+            "the attach hook requires write_fraction: 0.0 (got {write_fraction}): \
+             a write after the attach makes an attached store decline every read"
+        )));
+    }
+    Ok(())
+}
+
 /// Dataset-specific generator knobs carried by [`LoadtestConfig`].
 ///
 /// Serializes untagged: `{"fanout_k":…,"cycle_len":…}` or
@@ -93,6 +110,12 @@ pub struct LoadtestConfig {
     pub logical_graph_size_limit: Option<u64>,
     /// WAL durability policy. Ignored for `:memory:`.
     pub durability_mode: DurabilityMode,
+    /// An experimental property-store attach hook (ADR-0665), run once on
+    /// the loaded graph before the worker phase — the same seam
+    /// `relate-query-latency` carries. Requires `write_fraction: 0.0`
+    /// (enforced by `validate_attach`): a write after the attach makes an
+    /// attached store decline every read. `None` runs the default store.
+    pub attach: Option<relate_test_support::AttachHook>,
 }
 
 impl Default for LoadtestConfig {
@@ -112,6 +135,7 @@ impl Default for LoadtestConfig {
             write_fraction: 0.5,
             logical_graph_size_limit: None,
             durability_mode: DurabilityMode::Full,
+            attach: None,
         }
     }
 }
@@ -258,6 +282,7 @@ impl PlannedStatement {
 pub fn run<D: LoadtestDataset>(dataset: D, cfg: &LoadtestConfig) -> Result<LoadtestReport> {
     crate::memory::require_sampling_available()?;
     let write_fraction = validate_write_fraction(cfg.write_fraction)?;
+    validate_attach(cfg.write_fraction, cfg.attach)?;
     let started = Utc::now();
     let started_ms = unix_ms();
     let wall = Instant::now();
@@ -288,6 +313,15 @@ pub fn run<D: LoadtestDataset>(dataset: D, cfg: &LoadtestConfig) -> Result<Loadt
     drop(conn);
     db.clear_commit_timing();
     let load_duration_ms = load_wall.elapsed().as_millis() as u64;
+
+    // The attach point: the graph is quiescent (load done, no worker
+    // connected yet), which is the hook's precondition. A hook failure is
+    // an internal/setup error, the class the pokec A/B consumer uses for
+    // the same seam — never `semantic`, which the engine reserves for bad
+    // Cypher.
+    if let Some(attach) = cfg.attach {
+        attach(&db).map_err(relate::Error::internal)?;
+    }
 
     let db = Arc::new(db);
     let work = dataset.workload(&graph, cfg.workload_seed, write_fraction);

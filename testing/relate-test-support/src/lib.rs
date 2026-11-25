@@ -5,6 +5,16 @@
 //! graph-examples) consume it as a regular dependency because they are
 //! themselves test tooling. Nothing here ships in a released artifact.
 
+/// The A/B property-store attach hook (ADR-0665): a caller-supplied
+/// function that attaches an experimental property store to a freshly
+/// opened, quiescent database — run once before anything connects to it.
+/// `None` at a call site runs the default store. One definition for every
+/// harness that injects a store (the graph-examples sandbox suite and its
+/// A/B driver, the datasets loadtest runner), so the seam's signature
+/// cannot drift between them.
+#[cfg(feature = "attach")]
+pub type AttachHook = fn(&relate::Database) -> Result<(), String>;
+
 #[cfg(feature = "bolt")]
 pub mod bolt;
 pub mod deep_plan;

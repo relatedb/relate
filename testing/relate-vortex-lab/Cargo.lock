@@ -2598,12 +2598,42 @@ dependencies = [
 ]
 
 [[package]]
+name = "relate-graph-examples"
+version = "1.3.1"
+dependencies = [
+ "relate",
+ "relate-load",
+ "relate-model",
+ "relate-splitter",
+ "relate-test-support",
+ "serde_json",
+ "sha2",
+ "ureq",
+]
+
+[[package]]
 name = "relate-ir"
 version = "1.3.1"
 dependencies = [
  "relate-core",
  "relate-names",
  "relate-parser",
+]
+
+[[package]]
+name = "relate-load"
+version = "1.3.1"
+dependencies = [
+ "base64",
+ "relate",
+ "relate-core",
+ "relate-formatter",
+ "relate-model",
+ "relate-parser",
+ "relate-splitter",
+ "serde_json",
+ "thiserror",
+ "ureq",
 ]
 
 [[package]]
@@ -2745,8 +2775,10 @@ dependencies = [
  "memmap2",
  "relate",
  "relate-core",
+ "relate-datasets",
  "relate-engine-api",
  "relate-executor",
+ "relate-graph-examples",
  "relate-query-latency",
  "relate-storage",
  "relate-test-support",

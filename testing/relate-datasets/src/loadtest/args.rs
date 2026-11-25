@@ -81,6 +81,7 @@ impl CommonArgs {
             write_fraction: self.write_fraction,
             logical_graph_size_limit: self.storage.logical_graph_size_limit,
             durability_mode: self.storage.durability_mode,
+            attach: None,
         }
     }
 }

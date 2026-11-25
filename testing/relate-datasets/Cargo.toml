@@ -13,7 +13,7 @@ relate-core = { workspace = true }
 relate-storage = { workspace = true, features = ["parquet"] }
 # The canonical platform samplers and harness helpers (R4:
 # testing/* may depend on any workspace package).
-relate-test-support = { workspace = true, features = ["bolt"] }
+relate-test-support = { workspace = true, features = ["attach", "bolt"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 clap = { workspace = true }

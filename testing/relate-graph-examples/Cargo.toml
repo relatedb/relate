@@ -11,10 +11,11 @@ relate = { workspace = true, features = ["parquet"] }
 relate-load = { workspace = true }
 relate-model = { workspace = true }
 relate-splitter = { workspace = true }
-# The workspace's one `hex` rendering (artifact sha256 checks) and the
+# The workspace's one `hex` rendering (artifact sha256 checks), the
 # nearest-rank percentile the differential report's per-dataset stats index
-# through — one pin for both policies.
-relate-test-support = { workspace = true }
+# through, and the one A/B attach hook type (ADR-0665) — one pin for all
+# three policies.
+relate-test-support = { workspace = true, features = ["attach"] }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
 ureq = { workspace = true }

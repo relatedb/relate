@@ -21,6 +21,9 @@
 //! - [`setup`] (internal) — the pull/setup plumbing of a dataset run's
 //!   artifact, pull and open phases (artifacts, CLI pull, opening the
 //!   pulled copy; registration is one call made in the suite)
+//! - [`sandbox`] — one whole sandbox run (dataset selection, dumps,
+//!   reference boot, the bounded per-dataset runs, records out), shared by
+//!   the docker-gated integration test and its A/B driver
 //! - [`timings`] (internal) — engine-side query timing statistics
 //!   (per-dataset p50/p95/max, slowest, the >100 ms outlier itemization)
 //! - [`suite`] — one dataset's end-to-end differential run
@@ -45,6 +48,7 @@ pub mod pull;
 pub mod record;
 pub mod reference;
 pub mod report;
+pub mod sandbox;
 mod setup;
 pub mod suite;
 pub mod timebox;

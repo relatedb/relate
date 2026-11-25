@@ -20,6 +20,24 @@ fn write_fraction_must_be_unit_interval() {
     assert!(validate_write_fraction(f64::NAN).is_err());
 }
 
+/// F-1-5: the attach hook and a writing workload are rejected together
+/// before any graph is generated — a write after the attach makes the
+/// attached store decline every read, so the pair is never valid.
+#[test]
+fn attach_requires_a_read_only_workload() {
+    fn noop(_: &relate::Database) -> std::result::Result<(), String> {
+        Ok(())
+    }
+    assert!(validate_attach(0.0, None).is_ok());
+    assert!(validate_attach(0.0, Some(noop)).is_ok());
+    assert!(validate_attach(0.5, None).is_ok());
+    let error = validate_attach(0.5, Some(noop)).unwrap_err();
+    assert!(
+        error.to_string().contains("write_fraction: 0.0"),
+        "the error names the precondition: {error}"
+    );
+}
+
 #[test]
 fn parse_cli_durability_mode_values() {
     assert_eq!(

@@ -100,12 +100,13 @@ fn with_one_transient_retry<T>(
     }
 }
 
-/// Phase 4 — open the pulled copy.
-pub(crate) fn open_pulled_copy(destination: &Path) -> Result<relate::Connection, String> {
-    let db = relate::Database::open(destination.to_string_lossy().as_ref())
-        .map_err(|e| format!("opening pulled {}: {e}", destination.display()))?;
-    db.connect()
-        .map_err(|e| format!("connecting to pulled {}: {e}", destination.display()))
+/// Phase 4 — open the pulled copy and hand the opened database back. No
+/// store injection here: the attach hook is a suite-level concern
+/// (ADR-0665), applied to this handle while it is quiescent — the
+/// precondition the hook documents.
+pub(crate) fn open_pulled_copy(destination: &Path) -> Result<relate::Database, String> {
+    relate::Database::open(destination.to_string_lossy().as_ref())
+        .map_err(|e| format!("opening pulled {}: {e}", destination.display()))
 }
 
 #[cfg(test)]

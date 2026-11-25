@@ -33,6 +33,10 @@ pub struct RunOptions {
     /// The on-demand apoc flag (ADR-0144): with it, apoc statements also
     /// run; without it they are skipped with the reason.
     pub apoc_enabled: bool,
+    /// An experimental property-store attach hook (ADR-0665), run once on
+    /// the pulled database before it is connected — the same seam
+    /// `relate-query-latency` carries. `None` runs the default store.
+    pub attach: Option<relate_test_support::AttachHook>,
 }
 
 /// Run one dataset end-to-end. Requires the reference booted with this
@@ -54,7 +58,15 @@ pub fn run_dataset(
     // volume was loaded before the server booted, so there is no quarantine).
     reference.ensure_database(dataset.name)?;
     let destination = setup::pull_fresh_copy(reference, dataset, workdir)?;
-    let mut conn = setup::open_pulled_copy(&destination)?;
+    // Phase 4 — open the pulled copy, then apply the caller's store hook
+    // (ADR-0665) while it is quiescent, before anything connects.
+    let db = setup::open_pulled_copy(&destination)?;
+    if let Some(attach) = options.attach {
+        attach(&db).map_err(|e| format!("attaching the property store to pulled copy: {e}"))?;
+    }
+    let mut conn = db
+        .connect()
+        .map_err(|e| format!("connecting to pulled {}: {e}", destination.display()))?;
     let mut results = verify_pull(reference, dataset, &mut conn);
     results.extend(run_statements(
         reference,
