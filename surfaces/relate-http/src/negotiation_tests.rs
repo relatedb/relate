@@ -5,6 +5,14 @@ use super::tests::*;
 use super::*;
 use crate::v2_envelope::tests::body_json;
 
+/// POST `body` to `neo4j` with the given `Accept` and dispatch it — the one
+/// scaffold every negotiation test reads its reply through.
+fn dispatch_accepting(db: &Database, accept: &str, body: &str) -> Reply {
+    let mut req = post("neo4j", body);
+    req.headers.push(("accept".into(), accept.into()));
+    dispatch(db, &req, OPEN, &txs())
+}
+
 #[test]
 fn accept_negotiates_the_content_type_and_never_406s_the_browser() {
     let db = db();
@@ -52,9 +60,7 @@ fn typed_and_plain_value_encoding_follow_the_neo4j_contract() {
     conn.query("CREATE (:City {name: 'Oslo', founded: 1048})-[:FOUNDED_IN]->(:Era {y: 1048})")
         .unwrap();
     let read = |accept: &str| {
-        let mut req = post("neo4j", r#"{"statement": "MATCH (c:City) RETURN c"}"#);
-        req.headers.push(("accept".into(), accept.into()));
-        dispatch(&db, &req, OPEN, &txs())
+        dispatch_accepting(&db, accept, r#"{"statement": "MATCH (c:City) RETURN c"}"#)
     };
     // Plain (application/json): the entity is a plain object.
     let reply = read("application/json");
@@ -344,9 +350,7 @@ fn entity_element_ids_are_the_element_id_form_and_round_trip() {
     let mut conn = db.connect().unwrap();
     conn.query("CREATE (:City {name: 'Oslo'})").unwrap();
     let read = |accept: &str, statement: serde_json::Value| {
-        let mut req = post("neo4j", &statement.to_string());
-        req.headers.push(("accept".into(), accept.into()));
-        body_json(&dispatch(&db, &req, OPEN, &txs()))
+        body_json(&dispatch_accepting(&db, accept, &statement.to_string()))
     };
     // The entity's id and elementId() agree, and carry the dash clients
     // sniff for.
@@ -413,11 +417,7 @@ fn points_and_non_finite_floats_follow_the_neo4j_encoding() {
                       point({longitude: 12.5, latitude: 55.7, height: 10}) AS p3, \
                       1.0/0.0 AS inf, -1.0/0.0 AS ninf",
     });
-    let read = |accept: &str| {
-        let mut req = post("neo4j", &statement.to_string());
-        req.headers.push(("accept".into(), accept.into()));
-        body_json(&dispatch(&db, &req, OPEN, &txs()))
-    };
+    let read = |accept: &str| body_json(&dispatch_accepting(&db, accept, &statement.to_string()));
     assert_eq!(
         read("application/json")["data"]["values"],
         json!([[

@@ -335,25 +335,6 @@ fn srid_must_match_dimension_and_family() {
         .unwrap(),
     );
     assert_eq!((srid, x, y, z), (4326, 1.0, 2.0, None));
-    // The stored domain follows the SRID, not the key family: a geographic
-    // srid wraps the longitude and enforces the latitude range even when the
-    // map was written with cartesian keys — the same point its EWKT text
-    // names, so `point()` and the wire decoders cannot disagree.
-    let (_, x, y, _) = srid_xyz(
-        &point(&[
-            ("x", Value::Int(200)),
-            ("y", Value::Int(60)),
-            ("srid", Value::Int(4326)),
-        ])
-        .unwrap(),
-    );
-    assert_eq!((x, y), (-160.0, 60.0));
-    assert!(point(&[
-        ("x", Value::Int(1)),
-        ("y", Value::Int(91)),
-        ("srid", Value::Int(4326)),
-    ])
-    .is_err());
     let (srid, ..) = srid_xyz(
         &point(&[
             ("x", Value::Int(1)),
@@ -374,6 +355,29 @@ fn srid_must_match_dimension_and_family() {
         .unwrap(),
     );
     assert_eq!(srid, 4326);
+}
+
+#[test]
+fn a_geographic_srid_applies_the_geographic_domain_to_cartesian_keys() {
+    // The stored domain follows the SRID, not the key family: a geographic
+    // srid wraps the longitude and enforces the latitude range even when the
+    // map was written with cartesian keys — the same point its EWKT text
+    // names, so `point()` and the wire decoders cannot disagree.
+    let (_, x, y, _) = srid_xyz(
+        &point(&[
+            ("x", Value::Int(200)),
+            ("y", Value::Int(60)),
+            ("srid", Value::Int(4326)),
+        ])
+        .unwrap(),
+    );
+    assert_eq!((x, y), (-160.0, 60.0));
+    assert!(point(&[
+        ("x", Value::Int(1)),
+        ("y", Value::Int(91)),
+        ("srid", Value::Int(4326)),
+    ])
+    .is_err());
 }
 
 #[test]

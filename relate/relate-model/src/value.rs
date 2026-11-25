@@ -153,6 +153,23 @@ impl PointValue {
     }
 }
 
+impl fmt::Display for PointValue {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.z {
+            Some(z) => write!(
+                f,
+                "point({{srid: {}, x: {}, y: {}, z: {}}})",
+                self.srid, self.x, self.y, z
+            ),
+            None => write!(
+                f,
+                "point({{srid: {}, x: {}, y: {}}})",
+                self.srid, self.x, self.y
+            ),
+        }
+    }
+}
+
 /// The engine's one float rendering policy: `NaN`, `Infinity`, `-Infinity`,
 /// otherwise Rust's shortest round-tripping decimal with a `.0` appended when
 /// `Display` emits no fractional part (so `1.0` never reads as the integer
@@ -176,23 +193,6 @@ pub fn float_text(f: f64) -> String {
         rendered.push_str(".0");
     }
     rendered
-}
-
-impl fmt::Display for PointValue {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.z {
-            Some(z) => write!(
-                f,
-                "point({{srid: {}, x: {}, y: {}, z: {}}})",
-                self.srid, self.x, self.y, z
-            ),
-            None => write!(
-                f,
-                "point({{srid: {}, x: {}, y: {}}})",
-                self.srid, self.x, self.y
-            ),
-        }
-    }
 }
 
 /// A vector coordinate type (CIP-216/CIP-200): the numeric types valid

@@ -75,8 +75,8 @@ pub fn plan_field(tree: &PlanNode, form: Form) -> relate::Result<(&'static str, 
 ///
 /// Returns `queryPlan` for an `EXPLAIN` tree and `profiledQueryPlan` for a
 /// `PROFILE` tree, with the node in the same shape [`plan_field`] writes when
-/// `typed` is false. The HTTP server's negotiated `{"$type","_value"}` form
-/// stays inside that server; embedders that speak plain JSON call this
+/// the form is plain JSON (`ResponseMediaType::Json`). The HTTP server's
+/// negotiated `{"$type","_value"}` form stays inside that server; embedders that speak plain JSON call this
 /// instead of copying the walk. Fails with ADR-0628's typed plan-wire
 /// budget refusal for a plan past `relate::MAX_PLAN_WIRE_DEPTH` — the
 /// statement itself executed; only its plan document is refused.
