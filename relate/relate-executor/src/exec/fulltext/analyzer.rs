@@ -257,6 +257,29 @@ fn is_katakana(c: char) -> bool {
     )
 }
 
+/// A combining kana sound mark (U+3099 voiced, U+309A semi-voiced): it stays
+/// with the kana before it, so decomposed `か` + U+3099 reads as `が`.
+fn is_kana_mark(c: char) -> bool {
+    matches!(c as u32, 0x3099 | 0x309A)
+}
+
+/// The characters of an Ideographic or Katakana run, each with any trailing
+/// combining kana sound marks attached.
+fn clusters(run: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut start = 0;
+    for (at, c) in run.char_indices() {
+        if at > start && !is_kana_mark(c) {
+            out.push(&run[start..at]);
+            start = at;
+        }
+    }
+    if start < run.len() {
+        out.push(&run[start..]);
+    }
+    out
+}
+
 /// Walk `text`, lowercased, as its tokenizer segments: the runs of word
 /// characters, Katakana, and Han/Hiragana; every other character separates.
 fn for_each_segment(text: &str, mut each: impl FnMut(Kind, &str)) {
@@ -265,7 +288,10 @@ fn for_each_segment(text: &str, mut each: impl FnMut(Kind, &str)) {
     let mut start = 0;
     for (at, c) in lower.char_indices() {
         let kind = Kind::of(c);
-        if kind == open {
+        let continues_kana = kind.is_none()
+            && is_kana_mark(c)
+            && matches!(open, Some(Kind::Ideographic | Kind::Katakana));
+        if kind == open || continues_kana {
             continue;
         }
         if let Some(previous) = open {
@@ -292,7 +318,7 @@ pub(super) fn tokenize(text: &str) -> Vec<String> {
     let mut tokens = Vec::new();
     for_each_segment(text, |kind, run| match kind {
         Kind::Word | Kind::Katakana => tokens.push(run.to_string()),
-        Kind::Ideographic => tokens.extend(run.chars().map(String::from)),
+        Kind::Ideographic => tokens.extend(clusters(run).into_iter().map(String::from)),
     });
     tokens
 }
@@ -315,8 +341,7 @@ fn cjk_bigrams(text: &str) -> Vec<String> {
     for_each_segment(text, |kind, run| match kind {
         Kind::Word => tokens.push(run.to_string()),
         Kind::Katakana | Kind::Ideographic => {
-            let chars: Vec<char> = run.chars().collect();
-            tokens.extend(chars.windows(2).map(|pair| pair.iter().collect()));
+            tokens.extend(clusters(run).windows(2).map(|pair| pair.concat()));
         }
     });
     tokens
@@ -425,6 +450,22 @@ mod tests {
         // Live 2026.10.1: `foo_bar` is one token, and `foo` alone does not
         // match a document holding it.
         assert_eq!(tokenize("foo_bar baz"), ["foo_bar", "baz"]);
+    }
+
+    #[test]
+    fn decomposed_kana_tokenizes_like_composed() {
+        // か + U+3099 is が; the mark is not a separator and not a term.
+        let decomposed = "か\u{3099}き\u{309A}";
+        assert_eq!(tokenize(decomposed), ["か\u{3099}", "き\u{309A}"]);
+        assert_eq!(tokenize("ハ\u{309A}ン"), ["ハ\u{309A}ン"]);
+        assert_eq!(
+            cjk_bigrams("あか\u{3099}い"),
+            ["あか\u{3099}", "か\u{3099}い"]
+        );
+        // Same term count as the composed form.
+        assert_eq!(tokenize(decomposed).len(), tokenize("がぎ").len());
+        // A mark after a non-kana character is still a separator.
+        assert_eq!(tokenize("a\u{3099}b"), ["a", "b"]);
     }
 
     #[test]
