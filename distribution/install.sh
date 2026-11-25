@@ -40,6 +40,17 @@ SUMS_VERSION_PREFIX='# relate-release-version: '
 # existed (ADR-0457). A headerless manifest is accepted only at or below it.
 LEGACY_MANIFEST_CEILING=0.14.0
 
+# The Linux glibc floor the release promises (docs/api/cli/spec.md,
+# "Platform requirements"), the same value scripts/check-glibc-floor.sh
+# enforces per release artifact and the APT/RPM builders declare. The
+# harness's section-0 guard holds the three copies together.
+GLIBC_FLOOR=2.35
+
+# What both glibc refusals offer: the distro floor the promise names and
+# the two ways around an unsupported system. One string, so a change to
+# either lands in both messages.
+GLIBC_ADVICE='(Debian 12+, Ubuntu 22.04+, Fedora 36+). Build from source (https://github.com/relatedb/relate) or use the Python wheel: pip install relate-db'
+
 # The release-metadata URL (ADR-0250 §1): the static releases.json on the
 # project file host, the same document the CLI's upgrade reads.
 # RELATE_RELEASES_JSON_URL overrides it at install time (the same dev/test
@@ -123,19 +134,43 @@ refuse_package_managed() {
 	die "relate was installed by $pm_manager; upgrade it with: $pm_upgrade"
 }
 
-# True when the X.Y.Z version $1 is greater than $2. Unparseable input counts
-# as greater, so the caller takes the fail-closed branch.
-version_gt() {
+# The one dotted-version comparison: components of any count (glibc
+# reports X.Y, release tags X.Y.Z), compared component-wise over the
+# longer operand, a missing component counting as 0. The verdict is the
+# caller's to map. Its statuses are clear of awk's own (1 = usage,
+# 2 = fatal) and of latest_tag_of's (10/11/12, which that function owns
+# for null/no-tag/bad-shape): 0 = the operands are equal, 20 = $1 is
+# below $2, 21 = $1 is above $2, 22 = either operand is not
+# digits-and-dots.
+version_cmp() {
 	awk -v a="$1" -v b="$2" 'BEGIN {
 		na = split(a, A, "."); nb = split(b, B, ".");
-		if (na != 3 || nb != 3) exit 0;
-		for (i = 1; i <= 3; i++) {
-			if (A[i] !~ /^[0-9]+$/ || B[i] !~ /^[0-9]+$/) exit 0;
-			if (A[i] + 0 > B[i] + 0) exit 0;
-			if (A[i] + 0 < B[i] + 0) exit 1;
+		if (na < 1 || nb < 1) exit 22;
+		for (i = 1; i <= na || i <= nb; i++) {
+			x = (i <= na) ? A[i] : "0";
+			y = (i <= nb) ? B[i] : "0";
+			if (x !~ /^[0-9]+$/ || y !~ /^[0-9]+$/) exit 22;
+			if (x + 0 > y + 0) exit 21;
+			if (x + 0 < y + 0) exit 20;
 		}
-		exit 1;
+		exit 0;
 	}'
+}
+
+# The one decoder of version_cmp's statuses: sets $verdict to the named
+# outcome — equal, below, above or invalid — and dies on any status the
+# comparator does not define, so the numeric protocol and that guard exist
+# once and every call site states only which named outcomes it accepts.
+version_verdict() { # $1, $2 = the operands
+	verdict=0
+	version_cmp "$1" "$2" || verdict=$?
+	case "$verdict" in
+	0) verdict=equal ;;
+	20) verdict=below ;;
+	21) verdict=above ;;
+	22) verdict=invalid ;;
+	*) die "internal error: version_cmp exited with unexpected status $verdict" ;;
+	esac
 }
 
 # Piped (`curl ... | bash`), this script runs before anyone has read it, and
@@ -170,6 +205,38 @@ arm64 | aarch64) arch=arm64 ;;
 	die "unsupported architecture: $(uname -m). Supported: amd64, arm64."
 	;;
 esac
+
+# Raw binaries, no archive concatenation: relate publishes
+# relate-<os>-<arch>. Named here, above the preflight, because both glibc
+# refusals name the artifact they refuse to install.
+asset="${ASSET_PREFIX}-${os}-${arch}"
+
+# The Linux preflight gate: the binary is a glibc build with the
+# $GLIBC_FLOOR symbol floor, so a musl or older-glibc system cannot run it
+# (the dynamic loader refuses at exec — the failure REL8-1841 reported).
+# getconf names the running glibc directly; ldd's first --version line is
+# the fallback for systems without getconf. An invalid verdict — empty, or
+# a foreign token like musl's first line — is its own refusal, never
+# compared against the floor.
+refuse_unsupported_glibc() {
+	glibc=$(getconf GNU_LIBC_VERSION 2>/dev/null | awk 'NR==1 {print $2}') || glibc=''
+	[ -n "$glibc" ] ||
+		glibc=$(ldd --version 2>/dev/null | awk 'NR==1 {print $NF}') || glibc=''
+	version_verdict "$glibc" "$GLIBC_FLOOR"
+	case "$verdict" in
+	equal | above) ;;
+	below)
+		die "glibc $glibc is older than the $GLIBC_FLOOR $asset requires $GLIBC_ADVICE"
+		;;
+	invalid)
+		die "this Linux is not glibc-based (glibc version not determined), but $asset needs glibc $GLIBC_FLOOR or newer $GLIBC_ADVICE"
+		;;
+	esac
+}
+
+if [ "$os" = linux ]; then
+	refuse_unsupported_glibc
+fi
 
 command -v curl >/dev/null 2>&1 ||
 	die "curl is required. Install it and retry."
@@ -231,10 +298,6 @@ require_https() { # $1 = seam name, $2 = value
 	*) die "$1 must be an https:// URL (got: $2)" ;;
 	esac
 }
-
-# Raw binaries, no archive concatenation: relate publishes
-# relate-<os>-<arch>.
-asset="${ASSET_PREFIX}-${os}-${arch}"
 
 # Dependency-free parse of the releases.json document (ADR-0250 §2),
 # reduced to the one field the installer consumes: the latest release's
@@ -363,11 +426,17 @@ case "$first_line" in
 		die "SHA256SUMS is for $sums_version, not the requested release $tag; installing nothing"
 	;;
 *)
-	if version_gt "${tag#v}" "$LEGACY_MANIFEST_CEILING"; then
-		die "SHA256SUMS from $tag has no signed version header; refusing to install a manifest whose version is not authenticated (legacy manifests are accepted only at or below v$LEGACY_MANIFEST_CEILING); installing nothing"
-	else
+	version_verdict "${tag#v}" "$LEGACY_MANIFEST_CEILING"
+	case "$verdict" in
+	equal | below)
 		echo "install.sh: warning: SHA256SUMS from $tag has no signed version header (legacy manifest, accepted only at or below v$LEGACY_MANIFEST_CEILING)" >&2
-	fi
+		;;
+	above | invalid)
+		# Above the ceiling, or not a version at all (which the tag
+		# grammar upstream already rejects) — both refuse, fail-closed.
+		die "SHA256SUMS from $tag has no signed version header; refusing to install a manifest whose version is not authenticated (legacy manifests are accepted only at or below v$LEGACY_MANIFEST_CEILING); installing nothing"
+		;;
+	esac
 	;;
 esac
 

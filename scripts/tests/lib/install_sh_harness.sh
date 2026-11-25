@@ -353,7 +353,39 @@ case "${1:-}" in
 esac
 EOF
 
-	chmod +x "$stubbin/curl" "$stubbin/uname"
+	# The installer's Linux glibc preflight (REL8-1841) reads
+	# `getconf GNU_LIBC_VERSION` first and `ldd --version` as its fallback.
+	# Both stubs share one failure spelling: an unset or empty knob is the
+	# probe failing (a non-glibc getconf, a system without ldd). A set
+	# STUB_GLIBC_VERSION prints "glibc $value"; STUB_LDD_LINE is the
+	# first line ldd prints verbatim.
+	cat >"$stubbin/getconf" <<'EOF'
+#!/bin/sh
+# Stub getconf: answers GNU_LIBC_VERSION only, and only when
+# STUB_GLIBC_VERSION is set to a non-empty value. Anything else fails
+# loudly rather than fabricating a version.
+if [ "${1:-}" = GNU_LIBC_VERSION ] && [ -n "${STUB_GLIBC_VERSION:-}" ]; then
+	printf 'glibc %s\n' "$STUB_GLIBC_VERSION"
+	exit 0
+fi
+echo "stub getconf: not answering ${1:-} (STUB_GLIBC_VERSION=${STUB_GLIBC_VERSION:-})" >&2
+exit 1
+EOF
+
+	cat >"$stubbin/ldd" <<'EOF'
+#!/bin/sh
+# Stub ldd: answers --version only, and only when STUB_LDD_LINE is set —
+# the exact first line a real ldd prints, so no value doubles as a mode
+# selector (musl's version-less line, an Ubuntu-style line, a malformed
+# one: all are just lines). Unset fails loudly, the same failure spelling
+# as the getconf stub.
+if [ "${1:-}" = --version ] && [ -n "${STUB_LDD_LINE:-}" ]; then
+	printf '%s\n' "$STUB_LDD_LINE"
+	exit 0
+fi
+echo "stub ldd: not answering ${1:-} (STUB_LDD_LINE=${STUB_LDD_LINE:-})" >&2
+exit 1
+EOF
 
 	{
 		cat <<'EOF'
@@ -372,7 +404,9 @@ esac
 EOF
 	} >"$stubbin/ssh-keygen"
 
-	chmod +x "$stubbin/ssh-keygen"
+	# Every stub in the bin, derived — a stub added above is never left
+	# unexecutable the way a hand-kept chmod list would leave it.
+	chmod +x "$stubbin"/*
 
 	# Same stubs minus ssh-keygen, for the "openssh-client absent" case. The
 	# sandbox cannot rely on deleting it from $stubbin (other cases need it),
@@ -403,20 +437,31 @@ EOF
 }
 
 # Reset the per-case knobs to their defaults. The case sets STUB_MODE,
-# STUB_UNAME_S/_M, GITHUB_TOKEN (unset by default: the installer must
-# ignore it, ADR-0585), RELATE_RELEASES_JSON_URL,
-# RELATE_RELEASE_DOWNLOAD_URL, RUN_PATH or RUN_INSTALLER after calling
-# it.
+# STUB_UNAME_S/_M, STUB_GLIBC_VERSION / STUB_LDD_LINE (unset or empty = the
+# probe fails; reset_case_linux fixes the platform only, so a Linux case
+# states its own probe answers), GITHUB_TOKEN (unset by default: the
+# installer must ignore it, ADR-0585), RELATE_RELEASES_JSON_URL,
+# RELATE_RELEASE_DOWNLOAD_URL, RUN_PATH or RUN_INSTALLER after calling it.
 reset_case() {
 	STUB_MODE=ok
 	STUB_UNAME_S=Darwin
 	STUB_UNAME_M=arm64
+	unset STUB_GLIBC_VERSION STUB_LDD_LINE
 	unset GITHUB_TOKEN RELATE_RELEASES_JSON_URL RELATE_RELEASE_DOWNLOAD_URL
 	STUB_FIXTURES=$fixtures
 	RUN_PATH="$stubbin:/usr/bin:/bin"
 	RUN_INSTALLER=$INSTALLER
 	RUN_VIA_PIPE=
 	unset RUN_HOME_ENV
+}
+
+# reset_case with the Linux/x86_64 platform fixed — the uname pair every
+# Linux case re-spelled inline. The platform only: each case states its own
+# probe answers (both knobs unset or empty mean the probe fails).
+reset_case_linux() {
+	reset_case
+	STUB_UNAME_S=Linux
+	STUB_UNAME_M=x86_64
 }
 
 # Run the installer fully sandboxed. Populates RUN_STATUS, RUN_HOME, RUN_LOG
@@ -458,6 +503,8 @@ install_run() { # $1 = case name
 		STUB_MODE="$STUB_MODE" \
 		STUB_UNAME_S="$STUB_UNAME_S" \
 		STUB_UNAME_M="$STUB_UNAME_M" \
+		${STUB_GLIBC_VERSION+STUB_GLIBC_VERSION="$STUB_GLIBC_VERSION"} \
+		${STUB_LDD_LINE+STUB_LDD_LINE="$STUB_LDD_LINE"} \
 		${GITHUB_TOKEN+GITHUB_TOKEN="$GITHUB_TOKEN"} \
 		${RELATE_RELEASES_JSON_URL+RELATE_RELEASES_JSON_URL="$RELATE_RELEASES_JSON_URL"} \
 		${RELATE_RELEASE_DOWNLOAD_URL+RELATE_RELEASE_DOWNLOAD_URL="$RELATE_RELEASE_DOWNLOAD_URL"} \

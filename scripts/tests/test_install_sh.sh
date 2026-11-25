@@ -51,6 +51,14 @@ quoted_literal() { # $1 = name pattern, $2 = file
 	sed -n "s/^$1 *= *'\\(.*\\)'\$/\\1/p" "$2"
 }
 
+# The one extraction idiom for a shell script's bare constants — install.sh's
+# and the release gate's alike: the unquoted value on the `NAME=value` line
+# of file $2, empty when the constant is absent (an empty operand fails
+# assert_same, so absence cannot pass a guard vacuously).
+sh_bare_const() { # $1 = constant name, $2 = file
+	sed -n "s/^$1=//p" "$2"
+}
+
 # The one extraction idiom for a Rust `const NAME: &str = "VALUE";`
 # declaration (an optional `pub(crate) ` visibility prefix): the value
 # with its escaped quotes unescaped, empty when the constant is absent.
@@ -71,6 +79,18 @@ installer_override_env() { # $1 = install.sh variable, $2 = its default constant
 	sed -n "s/^$1=\${\([A-Z_]*\):-\$$2}\$/\1/p" "$INSTALLER"
 }
 
+# The one extraction idiom for the glibc promise's distro list: the
+# parenthesized, comma-separated `Debian …` list that follows the floor.
+# The spec states it on its own line, install.sh's advice mid-sentence, so
+# the match is unanchored and both homes share this one filter; the comma
+# is what tells the list apart from the spec's other parenthetical Debian
+# mention. Reads a text stream on stdin and collapses repeats by value;
+# empty when absent (an empty operand fails assert_same, so absence cannot
+# pass a guard vacuously).
+glibc_distro_list() {
+	sed -n 's/.*(\(Debian[^)]*,[^)]*\)).*$/\1/p' | sort -u
+}
+
 # The pinned SIGNING_KEY in install.sh must match the canonical public key
 # committed at distribution/release-signing-key.pub; a release that rotates one
 # without the other breaks verification for every user.
@@ -86,7 +106,7 @@ assert_same "drift guard: install.sh's pinned SIGNING_KEY matches distribution/r
 # is load-bearing), so all four must carry the identical literal; the ceiling
 # must agree too, or the two parsers accept different legacy windows.
 manifest_rs="$ROOT/surfaces/relate-cli/src/upgrade_cmd/manifest.rs"
-installer_ceiling=$(sed -n 's/^LEGACY_MANIFEST_CEILING=//p' "$INSTALLER")
+installer_ceiling=$(sh_bare_const LEGACY_MANIFEST_CEILING "$INSTALLER")
 rust_ceiling=$(sed -n 's/^const LEGACY_MANIFEST_CEILING: (u64, u64, u64) = (\([0-9][0-9]*\), \([0-9][0-9]*\), \([0-9][0-9]*\));$/\1.\2.\3/p' \
 	"$manifest_rs")
 assert_same "drift guard: install.sh's LEGACY_MANIFEST_CEILING matches manifest.rs (ADR-0457)" \
@@ -165,20 +185,6 @@ assert_same "drift guard: install.sh's override env var matches download_route.r
 # held to install.sh's and the CLI's here, on every host, so a rotation or a
 # URL move cannot leave the Windows installer behind.
 PS_INSTALLER="$ROOT/distribution/install.ps1"
-assert_same "drift guard: install.ps1's pinned signing key matches distribution/release-signing-key.pub" \
-	"$(quoted_literal '\$RelateSigningKey' "$PS_INSTALLER")" "$pub_key"
-assert_same "drift guard: install.ps1's sums header prefix matches manifest.rs (ADR-0457)" \
-	"$(quoted_literal '\$RelateSumsVersionPrefix' "$PS_INSTALLER")" \
-		"$rust_prefix"
-assert_same "drift guard: install.ps1's legacy ceiling matches manifest.rs (ADR-0457)" \
-	"$(quoted_literal '\$RelateLegacyManifestCeiling' "$PS_INSTALLER")" \
-		"$rust_ceiling"
-assert_same "drift guard: install.ps1's releases.json URL matches releases_json.rs (ADR-0571)" \
-	"$(quoted_literal '\$RelateReleasesJsonUrl' "$PS_INSTALLER")" \
-		"$rust_releases_url"
-assert_same "drift guard: install.ps1's download base matches install.sh's (ADR-0585)" \
-	"$(quoted_literal '\$RelateDownloadBase' "$PS_INSTALLER")" \
-		"$installer_download_base"
 grep -qF "Get-RelateHttpsSeam -Name '$rust_releases_env'" "$PS_INSTALLER" &&
 	grep -qF "Get-RelateHttpsSeam -Name '$rust_download_env'" "$PS_INSTALLER"
 tap_check "drift guard: install.ps1 reads the two override seams install.sh and the CLI read, through its https gate" $?
@@ -192,11 +198,9 @@ tap_check "drift guard: install.ps1 consults no GitHub API endpoint (ADR-0585)" 
 tap_check "drift guard: install.ps1 is pure ASCII (Windows PowerShell 5.1 reads it as ANSI)" $?
 
 # The signer identity and namespace is one value per installer: install.sh's
-# SIGNER, which the real-roundtrip machinery signs under, and install.ps1's
-# $RelateSigner, held equal here.
+# SIGNER, which the real-roundtrip machinery signs under; its PowerShell
+# copies are held to it by the Windows constants table below.
 INSTALLER_SIGNER=$(quoted_literal SIGNER "$INSTALLER")
-assert_same "drift guard: install.sh's SIGNER matches install.ps1's \$RelateSigner (ADR-0115)" \
-	"$INSTALLER_SIGNER" "$(quoted_literal '\$RelateSigner' "$PS_INSTALLER")"
 
 # The Chocolatey template (ADR-0659) carries the release URL and the Windows
 # asset the installers use, and the shared package-managed marker. Its own
@@ -204,34 +208,55 @@ assert_same "drift guard: install.sh's SIGNER matches install.ps1's \$RelateSign
 # are held to install.sh's and the shared vocabulary here, on every host, so
 # a URL move or an asset rename cannot strand the channel.
 CHOCO_TEMPLATE="$ROOT/distribution/chocolatey/tools/chocolateyinstall.ps1"
-installer_asset_prefix=$(sed -n 's/^ASSET_PREFIX=//p' "$INSTALLER")
-assert_same "drift guard: the Chocolatey template's release base matches install.sh's DOWNLOAD_BASE" \
-	"$(quoted_literal '\$RelateReleaseUrl' "$CHOCO_TEMPLATE")" "$installer_download_base"
-assert_same "drift guard: the Chocolatey template's Windows asset is the shared relate-windows-amd64.exe" \
-	"$(quoted_literal '\$RelateAsset' "$CHOCO_TEMPLATE")" "$installer_asset_prefix-windows-amd64.exe"
-assert_same "drift guard: the Chocolatey template's package-managed marker matches install.sh's and install.ps1's" \
-	"$(quoted_literal '\$RelatePackageMarker' "$CHOCO_TEMPLATE")" \
-	"$(sed -n 's/^MARKER_NAME=//p' "$INSTALLER")" \
-	"$(quoted_literal '\$RelatePackageMarker' "$PS_INSTALLER")"
-# Its copy of the pinned signing key and the signer identity are held to the
-# canonical values install.sh and install.ps1 carry: a rotation that misses
-# this copy breaks every Chocolatey install.
-assert_same "drift guard: the Chocolatey template's pinned signing key matches distribution/release-signing-key.pub" \
-	"$(quoted_literal '\$RelateSigningKey' "$CHOCO_TEMPLATE")" "$pub_key"
-assert_same "drift guard: the Chocolatey template's signer matches install.sh's SIGNER" \
-	"$(quoted_literal '\$RelateSigner' "$CHOCO_TEMPLATE")" "$INSTALLER_SIGNER"
-# The signed version header's prefix and legacy ceiling are the ADR-0457
-# literals manifest.rs owns: the template's binding reads them, so its copies
-# are held to the same source as install.ps1's.
-assert_same "drift guard: the Chocolatey template's sums header prefix matches manifest.rs (ADR-0457)" \
-	"$(quoted_literal '\$RelateSumsVersionPrefix' "$CHOCO_TEMPLATE")" "$rust_prefix"
-assert_same "drift guard: the Chocolatey template's legacy ceiling matches manifest.rs (ADR-0457)" \
-	"$(quoted_literal '\$RelateLegacyManifestCeiling' "$CHOCO_TEMPLATE")" "$rust_ceiling"
-# The vX.Y.Z tag grammar is one literal in both PowerShell installers
-# (install.sh's awk spelling is a different dialect and carries its own).
-assert_same "drift guard: the vX.Y.Z tag grammar is one literal in install.ps1 and the Chocolatey template" \
-	"$(quoted_literal '\$RelateTagPattern' "$PS_INSTALLER")" \
-	"$(quoted_literal '\$RelateTagPattern' "$CHOCO_TEMPLATE")"
+installer_asset_prefix=$(sh_bare_const ASSET_PREFIX "$INSTALLER")
+
+# Every PowerShell constant the two Windows homes carry is one row: the
+# constant's name, the homes that carry it (p = install.ps1,
+# c = the Chocolatey template), the value it must equal — a variable or a
+# command substitution, expanded once when the table is read — and the
+# label, the only per-row text. The loop is this family's one guard shape:
+# what was one shape typed out once per (constant, file) pair is now one
+# model of "a constant with homes". The name pattern is built as a bracket
+# expression (`[$]Name`), the escape-free way to match a literal dollar in
+# a BRE. A row missing its property, homes or label, and a home letter that
+# names no file, red the suite instead of being skipped (`expected` needs no
+# check of its own: assert_same rejects an empty operand). What the table
+# asserts is counted, not what it reads: the counter ticks once per home
+# actually checked, so a row that reaches no home cannot inflate it, and a
+# lost table cannot run vacuously.
+windows_const_checks=0
+while IFS='|' read -r prop homes expected label; do
+	if [ -z "$prop" ] || [ -z "$homes" ] || [ -z "$label" ]; then
+		tap_check "Windows constants table: a row needs a property, a home and a label (got '$prop|$homes|$label')" 1
+		continue
+	fi
+	for home in $homes; do
+		case $home in
+		p) windows_home=$PS_INSTALLER; home_name=install.ps1 ;;
+		c) windows_home=$CHOCO_TEMPLATE; home_name='the Chocolatey template' ;;
+		*)
+			tap_check "Windows constants table: unknown home '$home' for \$$prop reds the suite" 1
+			continue
+			;;
+		esac
+		windows_const_checks=$((windows_const_checks + 1))
+		assert_same "drift guard: $label ($home_name)" \
+			"$(quoted_literal "[$]$prop" "$windows_home")" "$expected"
+	done
+done <<TABLE
+RelateSigningKey|p c|$pub_key|the pinned signing key matches distribution/release-signing-key.pub
+RelateSumsVersionPrefix|p c|$rust_prefix|the sums header prefix matches manifest.rs (ADR-0457)
+RelateLegacyManifestCeiling|p c|$rust_ceiling|the legacy ceiling matches manifest.rs (ADR-0457)
+RelateReleasesJsonUrl|p|$rust_releases_url|the releases.json URL matches releases_json.rs (ADR-0571)
+RelateDownloadBase|p|$installer_download_base|the download base matches install.sh's (ADR-0585)
+RelateSigner|p c|$INSTALLER_SIGNER|the signer matches install.sh's SIGNER (ADR-0115)
+RelateReleaseUrl|c|$installer_download_base|the release base matches install.sh's DOWNLOAD_BASE
+RelateAsset|c|$installer_asset_prefix-windows-amd64.exe|the Windows asset is the shared relate-windows-amd64.exe
+RelatePackageMarker|p c|$(sh_bare_const MARKER_NAME "$INSTALLER")|the package-managed marker matches install.sh's MARKER_NAME
+RelateTagPattern|c|$(quoted_literal '[$]RelateTagPattern' "$PS_INSTALLER")|the vX.Y.Z tag grammar is install.ps1's one literal
+TABLE
+[ "$windows_const_checks" -gt 0 ]
+tap_check "drift guard: the Windows constants table checked at least one home" $?
 
 # The one extraction idiom for a PowerShell function: the lines from
 # `function $1 {` through its column-0 closing brace, empty when the function
@@ -287,6 +312,49 @@ assert_same "drift guard: the Windows install one-liner is one string in install
 grep -qF "#   $installer_windows_one_liner" "$PS_INSTALLER"
 tap_check "drift guard: install.ps1's header documents the same one-liner" $?
 
+# The Linux glibc floor is one promise in three homes (REL8-1841):
+# install.sh's preflight constant, the release gate's documented floor
+# (scripts/check-glibc-floor.sh), and the CLI spec's Platform requirements.
+# A bump that moves one home and not the others makes the installer refuse
+# systems the release supports, or ship a promise the gate rejects.
+installer_glibc_floor=$(sh_bare_const GLIBC_FLOOR "$INSTALLER")
+gate_glibc_floor=$(sh_bare_const floor_version "$ROOT/scripts/check-glibc-floor.sh")
+# The installer's floor stated as a value the preflight tests: one above it,
+# for the cases and the table's above-floor row to share, so neither can
+# drift. Derived by bumping the floor's major component alone — it stays
+# above the floor whatever a bump makes it (a hand-picked ceiling like 9.9
+# would silently flip both rows to refusals the day the floor passed it) and
+# assumes nothing about the floor's component count.
+glibc_above_floor=$(($(printf '%s' "$installer_glibc_floor" | cut -d. -f1) + 1)).0
+# Every spelling of the floor in the spec, not the first of one grammar: the
+# promise sentence ("glibc X.Y or newer") and the `GLIBC_X.Y` symbol-version
+# token the cap and the gate sentences use are the same fact. Collapsing by
+# value means identical restatements pass and a divergent one fails the
+# guard, where a first-match pick would silently ignore it.
+spec_glibc_floors=$({
+	sed -n 's/^.*glibc \([0-9][0-9]*\.[0-9][0-9]*\) or newer.*$/\1/p' "$ROOT/docs/api/cli/spec.md"
+	grep -o 'GLIBC_[0-9][0-9]*\.[0-9][0-9]*' "$ROOT/docs/api/cli/spec.md" | sed 's/^GLIBC_//'
+} | sort -u)
+# All three homes in one call: assert_same is variadic by contract, and it
+# rejects an empty operand, so a home that lost its floor fails here rather
+# than needing a precondition of its own.
+assert_same "drift guard: the glibc floor is one value in install.sh, check-glibc-floor.sh and the CLI spec (REL8-1841)" \
+	"$installer_glibc_floor" "$gate_glibc_floor" "$spec_glibc_floors"
+# The floor's promise is a number AND the distro list beside it, and the
+# installer's advice repeats both: the number is guarded above, the list
+# here. Both homes go through the one distro-list extraction and are
+# compared by equality, so a distro added to one home and not the other
+# fails the guard in either direction — containment alone would pass an
+# extra entry in the installer. The subject is the GLIBC_ADVICE constant
+# both refusals emit, never the whole file, so a comment mention cannot
+# pass it; and a reworded list, or a home that lost its list, fails the
+# equality rather than passing vacuously.
+spec_distro_floor=$(glibc_distro_list < "$ROOT/docs/api/cli/spec.md")
+installer_glibc_advice=$(quoted_literal GLIBC_ADVICE "$INSTALLER")
+installer_distro_floor=$(printf '%s\n' "$installer_glibc_advice" | glibc_distro_list)
+assert_same "drift guard: the installer's glibc advice names the same distro floor as the spec" \
+	"$spec_distro_floor" "$installer_distro_floor"
+
 # The legacy-tag fixture (built below) derives from the ceiling the guard
 # just extracted, so a constant change cannot leave the fixture on a stale
 # hardcoded tag.
@@ -326,9 +394,12 @@ tap_check "Darwin/arm64: does not download the linux-amd64 asset" $?
 assert_installed "Darwin/arm64: installed content is the darwin-arm64 fixture" \
 	"$fixtures/relate-darwin-arm64"
 
-reset_case
-STUB_UNAME_S=Linux
-STUB_UNAME_M=x86_64
+reset_case_linux
+# A plain supported glibc, deliberately not the boundary: the exact-floor
+# arm is pinned once, in the preflight's verdict table below. The answer is
+# $glibc_above_floor, derived in section 0 beside the floor it follows and
+# shared with that table's above-floor row.
+STUB_GLIBC_VERSION=$glibc_above_floor
 install_run osarch-linux
 tap_check "Linux/x86_64: installer exits 0" "$RUN_STATUS"
 grep -qF "$installer_download_base/$TEST_TAG/relate-linux-amd64" "$RUN_LOG"
@@ -370,6 +441,77 @@ reset_case
 install_run from-file
 ! grep -qF "running from a pipe" "$RUN_ERR"
 tap_check "run from a file: no piped-execution note" $?
+
+# --- 1'. Linux glibc preflight (REL8-1841) --------------------------------------
+#
+# The Linux binary is a glibc build with the documented floor, so a
+# below-floor or non-glibc system is refused with the alternatives, before
+# any request — instead of installing a binary the dynamic loader refuses
+# at exec. The floor itself is one value across the installer, the release
+# gate and the spec (guarded in section 0), so every needle names it
+# through $installer_glibc_floor, never by its literal.
+#
+# One row per verdict arm of version_cmp and per probe-failure shape:
+# getconf's answer, ldd's first line (either empty = that probe fails), the
+# expected verdict (install or refuse — its own column, never inferred from
+# the needle), and on a refusal row the stderr needle. Both refusals carry
+# the alternatives, so the refusal arm greps the owned $installer_glibc_advice
+# rather than re-splitting its text. The table is
+# unquoted so $installer_glibc_floor expands in it. Two rows carry their
+# weight beyond the arm they cover: `malformed-token` (a leading dot) and
+# `bare-integer` are the shapes the first implementation's comparison read
+# as "at least the floor" — install instead of refuse — so they pin the
+# fix, not just the current behavior. A blank or malformed row is not
+# skipped: it reaches the `*)` arm below and fails with the row named, so
+# an authoring slip reds the suite instead of silently shrinking it. The
+# row count is asserted after the table for the same reason from the other
+# side: a lost table (a truncated heredoc, a botched terminator edit) runs
+# zero iterations, and the TAP plan being dynamic would hide it.
+glibc_rows=0
+while IFS='|' read -r glibc_case getconf_answer ldd_line verdict needle; do
+	# Row shape first, before the installer runs: the sibling Windows
+	# constants table validates every column up front for the same reason —
+	# a row missing its case name or verdict is an authoring slip, and it
+	# should red the suite without spending an installer pass on it. A
+	# verdict that is neither install nor refuse still falls to the `*)`
+	# arm below.
+	if [ -z "$glibc_case" ] || [ -z "$verdict" ]; then
+		tap_check "glibc preflight table: a row needs a case name and a verdict (got '$glibc_case|$verdict')" 1
+		continue
+	fi
+	glibc_rows=$((glibc_rows + 1))
+	reset_case_linux
+	STUB_GLIBC_VERSION=$getconf_answer
+	STUB_LDD_LINE="$ldd_line"
+	install_run "glibc-$glibc_case"
+	case "$verdict" in
+	install)
+		tap_check "Linux glibc $glibc_case: installer exits 0" "$RUN_STATUS"
+		assert_installed "Linux glibc $glibc_case: installs the linux-amd64 fixture" \
+			"$fixtures/relate-linux-amd64"
+		;;
+	refuse)
+		assert_preflight_failure "Linux glibc $glibc_case" "$needle"
+		grep -qF "$installer_glibc_advice" "$RUN_ERR"
+		tap_check "Linux glibc $glibc_case: the refusal names the alternatives" $?
+		;;
+	*)
+		tap_check "Linux glibc $glibc_case: the table's verdict column is install or refuse (got '$verdict')" 1
+		;;
+	esac
+done <<TABLE
+below-floor|2.31||refuse|older than the $installer_glibc_floor relate-linux-amd64 requires
+exact-floor|$installer_glibc_floor||install|
+above-floor|$glibc_above_floor||install|
+musl||musl libc (x86_64)|refuse|not glibc-based
+ldd-below-floor||ldd (Ubuntu GLIBC 2.31-0ubuntu3.1) 2.31|refuse|older than the $installer_glibc_floor
+ldd-at-floor||ldd (Ubuntu GLIBC $installer_glibc_floor-0ubuntu3.1) $installer_glibc_floor|install|
+undetermined|||refuse|not glibc-based
+malformed-token||ldd (Ubuntu GLIBC .35-0ubuntu3.1) .35|refuse|not glibc-based
+bare-integer||ldd (Ubuntu GLIBC 2-0ubuntu3.1) 2|refuse|older than the $installer_glibc_floor
+TABLE
+[ "$glibc_rows" -gt 0 ]
+tap_check "drift guard: the glibc preflight table has rows" $?
 
 # --- 2. The direct route and GITHUB_TOKEN --------------------------------------
 #
