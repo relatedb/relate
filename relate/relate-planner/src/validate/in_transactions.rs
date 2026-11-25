@@ -5,22 +5,25 @@
 
 use relate_core::integer_args;
 use relate_core::{Error, Result};
-use relate_ir::{Clause, Expr, InTransactions, UnaryOp};
+use relate_ir::{Expr, InTransactions, UnaryOp};
 
 use crate::binding::Env;
 use crate::expr_check::{check_expr, expr_non_static};
 use crate::literal::check_positive_int_arg;
 
+use super::write::ClausePosition;
+
 /// Validate one `IN TRANSACTIONS` modifier list. The `REPORT STATUS`
 /// variable's binding is the caller's: it joins the CALL body's export set
 /// in one post-CALL name-space check, so no half of the name space is
-/// inserted (or collision-checked) before the other.
+/// inserted (or collision-checked) before the other. The clause's
+/// [`ClausePosition`] is the one position value the battery reads (the
+/// `REPORT STATUS` terminality check's part and index).
 pub(super) fn check_in_transactions_modifiers(
     tx: &InTransactions,
     env: &mut Env,
     is_write_procedure: &mut impl FnMut(&str) -> bool,
-    clause_index: usize,
-    clauses: &[Clause],
+    position: ClausePosition<'_>,
 ) -> Result<()> {
     // One expression walk over the modifier slots: the enumeration is
     // `InTransactions::exprs`, shared with the IR walker, so no slot is
@@ -79,7 +82,7 @@ pub(super) fn check_in_transactions_modifiers(
                  BREAK, or RETRY with THEN CONTINUE or THEN BREAK",
             ));
         }
-        if clause_index + 1 == clauses.len() {
+        if position.is_terminal() {
             return Err(Error::syntax(
                 "InvalidClauseComposition: REPORT STATUS cannot terminate a query",
             ));

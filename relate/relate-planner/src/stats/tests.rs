@@ -9,7 +9,7 @@ use relate_names::{NamedToken, SmallName, Token};
 
 use super::memo::StatsMemo;
 use super::{ContainsCount, PatternStats};
-use crate::plan::{plan_with_env, SeedScope};
+use crate::plan::plan_checked;
 use crate::plan_with_stats;
 
 /// The statement every memo test plans: two disconnected patterns, so
@@ -49,7 +49,7 @@ struct Consult {
 /// from fixed tables while recording, per method, every typed
 /// `(label, property, operand)` that reached it. The once-each check
 /// reads the record; unmemoized planning through
-/// [`crate::plan::plan_with_env`] repeats entries in it, so the
+/// [`crate::plan::plan_checked`] repeats entries in it, so the
 /// once-each assertion fails if the memo is bypassed.
 struct Counting {
     consults: RefCell<Vec<Consult>>,
@@ -230,7 +230,7 @@ fn unmemoized_methods_forward_the_inner_answers() {
 
 /// ADR-0508's transparency check: the memoized plan is identical to
 /// the unmemoized one — same statement planned straight through
-/// [`plan_with_env`] against the same stats.
+/// [`plan_checked`] against the same stats.
 #[test]
 fn memoized_planning_matches_unmemoized() {
     let stats = Counting {
@@ -242,9 +242,8 @@ fn memoized_planning_matches_unmemoized() {
         &stats,
     )
     .unwrap();
-    let raw = plan_with_env(
+    let raw = plan_checked(
         relate_front::parse_and_lower(STMT).unwrap(),
-        SeedScope::default(),
         &mut |_| false,
         &stats,
     )

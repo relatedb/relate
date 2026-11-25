@@ -1,25 +1,34 @@
 //! Clause-level semantic validation: the per-clause scope and composition
 //! rules checked against the binding environment before a plan is built.
+//! The `NEXT`-chain driver and its seed live in [`chain`]; the 42I25
+//! write-classification family in [`write`].
 
 use relate_core::{Error, Result};
-use relate_ir::{Clause, Expr, Query, SingleQuery};
+use relate_ir::{Clause, Query, SingleQuery};
 use relate_names::SmallName;
 
 use crate::binding::{Binding, Env, EnvBridge};
 use crate::expr_check::check_expr;
 
+pub(crate) mod chain;
 mod clause;
 mod in_transactions;
 mod subquery;
+pub(crate) mod write;
 
 use clause::*;
 use subquery::*;
+use write::{ClausePosition, WriteHistory};
 
 /// The scope one validation pass runs over. The three parts travel
-/// together because every boundary derives them from *one* fact — what the
-/// body may see — and passing them as three parallel arguments let a call
-/// site pair the wrong import or shadowable set with an environment. Each
-/// boundary has a named constructor.
+/// together because every boundary derives them from *one* fact — what
+/// the body may see — and passing them as three parallel arguments let a
+/// call site pair the wrong import or shadowable set with an environment.
+/// Each boundary has a named constructor.
+///
+/// Walk state is not scope state: the 42I25 write history a validation
+/// walk accumulates is the walk's own ([`WriteHistory`], threaded by the
+/// clause and stage loops), never a field here.
 pub(crate) struct Scope {
     /// The bindings the body starts from.
     pub(crate) env: Env,
@@ -86,22 +95,17 @@ impl Scope {
     }
 }
 
-pub(crate) fn validate_part_with_env(
-    part: &SingleQuery,
-    scope: Scope,
-    is_write_procedure: &mut impl FnMut(&str) -> bool,
-) -> Result<()> {
-    validate_clauses_with_env(&part.clauses, scope, is_write_procedure)
-}
-
-/// The clause-slice core of [`validate_part_with_env`]: a FOREACH body
-/// validates its borrowed clauses through it without cloning them into an
-/// owned `SingleQuery`.
+/// The clause-slice core of the stage driver's part validation
+/// ([`chain::validate_part_with_env`]): a FOREACH body validates its
+/// borrowed clauses through it without cloning them into an owned
+/// `SingleQuery`. Returns the walk's 42I25 answer — the incoming
+/// history folded with this list's own unbatched writes.
 pub(crate) fn validate_clauses_with_env(
     clauses: &[Clause],
     scope: Scope,
+    mut write_history: WriteHistory,
     is_write_procedure: &mut impl FnMut(&str) -> bool,
-) -> Result<()> {
+) -> Result<WriteHistory> {
     let Scope {
         mut env,
         imports,
@@ -133,17 +137,22 @@ pub(crate) fn validate_clauses_with_env(
         ));
     }
     for (clause_index, c) in clauses.iter().enumerate() {
+        // The one position value the checks below read: this clause's
+        // index, its part, and the 42I25 history the walk has
+        // accumulated to this point.
+        let position = ClausePosition {
+            clauses,
+            index: clause_index,
+            write_history,
+        };
         // The terminal clauses are part-level composition facts, not
         // per-clause checks: a `RETURN` or `FINISH` must be its part's
-        // last *substantive* clause — trailing routing `USE`s do not
-        // count (the `USE` placement rule owns rejecting one there),
+        // last *substantive* clause — the one terminality fact
+        // ([`ClausePosition::is_terminal`]; trailing routing `USE`s do
+        // not count, the `USE` placement rule owns rejecting one there),
         // and anything else following is rejected here, once, for both
         // spellings.
-        if matches!(c, Clause::Return { .. } | Clause::Finish)
-            && clauses[clause_index + 1..]
-                .iter()
-                .any(|c| !crate::clause_kind::clause_is_routing(c))
-        {
+        if matches!(c, Clause::Return { .. } | Clause::Finish) && !position.is_terminal() {
             return Err(Error::syntax(format!(
                 "InvalidClauseComposition: {} must terminate its query",
                 crate::clause_kind::ir_clause_keyword(c)
@@ -201,8 +210,7 @@ pub(crate) fn validate_clauses_with_env(
             } => check_call_subquery_clause(
                 &mut env,
                 is_write_procedure,
-                clause_index,
-                clauses,
+                position,
                 query,
                 scope,
                 in_transactions.as_ref(),
@@ -216,11 +224,17 @@ pub(crate) fn validate_clauses_with_env(
                 clauses: body,
             } => check_foreach_clause(&mut env, is_write_procedure, variable, list, body)?,
             Clause::Use { graph } => {
-                check_use_clause(&mut env, is_write_procedure, clause_index, clauses, graph)?
+                check_use_clause(&mut env, is_write_procedure, position, graph)?
             }
         }
+        // The 42I25 history accumulates as the part is walked: this
+        // clause's unbatched writes join for every later clause's
+        // batched-subquery check (a `CALL { … } IN TRANSACTIONS` clause
+        // contributes nothing — its writes run in its batches' own
+        // transactions).
+        write_history = write_history.after(c, is_write_procedure);
     }
-    Ok(())
+    Ok(write_history)
 }
 
 /// The one spelling of the UNION joiner-uniformity rule: a query's part
@@ -236,198 +250,6 @@ pub fn check_union_joiners(union_all: &[bool]) -> Result<()> {
         )),
         _ => Ok(()),
     }
-}
-
-/// The stage-level validation driver: the structural composition rules one
-/// planned stage must satisfy, its per-part semantic checks, and its output
-/// columns (the UNION column-agreement check). `plan_with_env` calls it for
-/// each stage before assembling that stage's plan;
-/// [`validate_query_with_env`] chains it over a whole `NEXT` chain.
-pub(crate) fn validate_stage_with_env(
-    query: &Query,
-    seed_env: &Env,
-    seed_names: &[String],
-    excluded_imports: &std::collections::HashSet<String>,
-    is_write_procedure: &mut impl FnMut(&str) -> bool,
-) -> Result<Vec<String>> {
-    if query.parts.is_empty() {
-        return Err(Error::semantic("empty query"));
-    }
-    if !query.union_all.is_empty() {
-        check_union_joiners(&query.union_all)?;
-        if let Some(offender) = query
-            .parts
-            .iter()
-            .flat_map(|p| p.clauses.iter())
-            .find(|c| crate::clause_kind::clause_cannot_join_union(c))
-        {
-            return Err(Error::syntax(format!(
-                "InvalidClauseComposition: {} cannot be used with UNION",
-                crate::clause_kind::ir_clause_keyword(offender)
-            )));
-        }
-    }
-    for part in &query.parts {
-        validate_part_with_env(part, Scope::stage(seed_env.clone()), is_write_procedure)?;
-        if query.next.is_some() && last_return_has_unaliased_expression(part) {
-            return Err(Error::syntax(
-                "NoExpressionAlias: expression in RETURN followed by NEXT must use AS",
-            ));
-        }
-        if matches!(
-            part.clauses.last(),
-            Some(
-                Clause::Match { .. }
-                    | Clause::With { .. }
-                    | Clause::Unwind { .. }
-                    | Clause::Use { .. }
-            )
-        ) {
-            return Err(Error::syntax(
-                "InvalidClauseComposition: query must conclude with RETURN, FINISH, an update, or a unit subquery",
-            ));
-        }
-    }
-    // This stage's output columns, computed from the unrewritten parts. The
-    // stage's own incoming scope seeds the computation: a bare `RETURN *`
-    // stage projects exactly the variables passed through the previous
-    // `NEXT` (CIP-213), so an empty seed here would drop them. The
-    // exclusion set is the scope-clause import exclusion: a scope-clause
-    // body's imports are in scope but a star must not re-expand them
-    // (and every UNION arm must agree on that shape).
-    crate::names::parts_output_names(&query.parts, seed_names.to_vec(), excluded_imports)
-}
-
-/// [`validate_stage_with_env`] over a whole `NEXT` chain — each stage
-/// validated with the scope its predecessor exports (CIP-213), the same
-/// seeding the planner's stage recursion does. This is what a caller that
-/// holds a query it will not plan (today: a `CALL { … }` body during
-/// validation) uses, so validation never re-enters the planner. Returns the
-/// final stage's output columns — the query's export set.
-///
-/// The two name lists are different facts and stay separate parameters:
-/// `seed_names` is what the body's own scope sees, so it is what a
-/// body-level `RETURN *` expands (the whole outer scope for a naked
-/// `CALL { … }`); `excluded_imports` is the scope-clause import exclusion set
-/// (non-empty only for a scope clause, whose star must not re-expand the
-/// imports). They coincide for a scope clause and differ for a naked body.
-/// `call_body_names` derives the exclusion set once; this entry threads it
-/// through the `NEXT` chain, whose later stages still see the same imports.
-pub(crate) fn validate_query_with_env(
-    query: &Query,
-    seed_env: &Env,
-    seed_names: &[String],
-    excluded_imports: &std::collections::HashSet<String>,
-    is_write_procedure: &mut impl FnMut(&str) -> bool,
-) -> Result<Vec<String>> {
-    validate_query_chain(
-        query,
-        seed_env,
-        seed_names,
-        excluded_imports,
-        is_write_procedure,
-    )
-}
-
-/// The recursive half of [`validate_query_with_env`]: one stage, then the
-/// same exclusion set threaded into the `NEXT` stage's scope.
-fn validate_query_chain(
-    query: &Query,
-    seed_env: &Env,
-    seed_names: &[String],
-    excluded_imports: &std::collections::HashSet<String>,
-    is_write_procedure: &mut impl FnMut(&str) -> bool,
-) -> Result<Vec<String>> {
-    let output_names = validate_stage_with_env(
-        query,
-        seed_env,
-        seed_names,
-        excluded_imports,
-        is_write_procedure,
-    )?;
-    // The scope-clause star rule for this stage, folded into the one chain
-    // walk: a scope-clause body's star arm must expand at least one name the
-    // body itself introduces. Running it here (rather than in a second
-    // recursion over the same chain) walks each stage once and reuses the
-    // seed names this walk already carries.
-    if !excluded_imports.is_empty() {
-        validate_stage_star_rule(query, seed_names, excluded_imports)?;
-    }
-    match query.next.as_deref() {
-        Some(next) => {
-            let (env, names) =
-                crate::binding::next_stage_scope(seed_env, seed_names, &output_names);
-            validate_query_chain(next, &env, &names, excluded_imports, is_write_procedure)
-        }
-        None => Ok(output_names),
-    }
-}
-
-/// The scope-clause star rule for one stage: every UNION arm whose terminal
-/// `RETURN` carries a `*` must expand at least one name that is not an
-/// import, and no arm may re-list an import as a bare `WITH x`. The stage's
-/// seed names come from the enclosing chain walk (`validate_query_chain`),
-/// which also threads the `NEXT` stage's scope — so this is one pass, not a
-/// second recursion that recomputes each stage's output names.
-fn validate_stage_star_rule(
-    query: &Query,
-    seed_names: &[String],
-    excluded: &std::collections::HashSet<String>,
-) -> Result<()> {
-    for part in &query.parts {
-        let Some(Clause::Return { items, .. }) = part.clauses.last() else {
-            continue;
-        };
-        if !items.iter().any(|item| matches!(item.expr, Expr::Star)) {
-            continue;
-        }
-        check_bare_import_redeclaration(&part.clauses, excluded)?;
-        // The star expands through the output-name fold, so every clause
-        // kind a CALL-scope body can export (a `CALL … YIELD` included)
-        // counts, not a hand-spelled subset. The star exclusion wants one
-        // name that is
-        // not an import — an empty export set after the exclusion is that
-        // failure.
-        let expanded =
-            crate::names::part_output_names(&part.clauses, seed_names.to_vec(), excluded)?;
-        if expanded.is_empty() {
-            return Err(Error::syntax(
-                "NoVariablesInScope: RETURN * has no non-imported variables",
-            ));
-        }
-    }
-    Ok(())
-}
-
-/// Re-listing an imported variable as a bare `WITH x` — no other exported
-/// name beside it and no `*` sibling — is the import-only redeclaration the
-/// CALL-scope body rejects with `VariableAlreadyBound`. A `*` sibling brings
-/// the body's own bindings along (`WITH *, x`, SubqueryAcceptance "Return
-/// all should not return imported variable #1"), so it is not that shape.
-fn check_bare_import_redeclaration(
-    clauses: &[Clause],
-    imported: &std::collections::HashSet<String>,
-) -> Result<()> {
-    for clause in clauses {
-        let Clause::With { items, .. } = clause else {
-            continue;
-        };
-        let has_star = items.iter().any(|item| matches!(item.expr, Expr::Star));
-        let has_non_imported = items.iter().enumerate().any(|(index, item)| {
-            !matches!(item.expr, Expr::Star) && !imported.contains(&item.output_name(index))
-        });
-        for (index, item) in items.iter().enumerate() {
-            let name = item.output_name(index);
-            if imported.contains(&name)
-                && matches!(&item.expr, Expr::Variable(variable) if variable == name.as_str())
-                && !has_non_imported
-                && !has_star
-            {
-                return Err(Error::duplicate_variable(&name));
-            }
-        }
-    }
-    Ok(())
 }
 
 /// The one spelling of the projection alias rule the `NEXT` tail, a
@@ -449,13 +271,15 @@ fn last_return_has_unaliased_expression(part: &SingleQuery) -> bool {
     )
 }
 
-fn validate_conditional_returns(query: &Query) -> Result<()> {
-    for part in &query.parts {
-        if last_return_has_unaliased_expression(part) {
-            return Err(Error::syntax(
-                "NoExpressionAlias: expressions returned by conditional clauses must use AS",
-            ));
-        }
+/// The terminal-RETURN alias rule, one spelling over a query's parts:
+/// every arm's terminal `RETURN` must name its expression columns
+/// ([`is_unaliased_expression`]'s policy — the shared predicate; each
+/// caller keeps its own refusal text, the pattern the predicate's own
+/// doc states). The `NEXT` tail and the conditional branches are the
+/// two sites.
+fn refuse_unaliased_terminal_returns(query: &Query, text: &str) -> Result<()> {
+    if query.parts.iter().any(last_return_has_unaliased_expression) {
+        return Err(Error::syntax(text));
     }
     Ok(())
 }
@@ -493,40 +317,6 @@ fn check_remove_item(
         }
     }
     Ok(())
-}
-
-/// `is_write_procedure` classifies `CALL` targets: the canonical
-/// registry-backed predicate, injected by the facade — the procedure
-/// registry lives in the executor, which the planner cannot depend on.
-/// Every write gate (the `IN TRANSACTIONS` composition rule, the
-/// subquery-expression rejection, the §4 namespace gate in
-/// `namespaces.rs`) classifies procedures through this one predicate, so
-/// no literal procedure name is hardcoded here.
-///
-/// The clause half is the published per-clause answer
-/// ([`crate::clause_mutates_store`]); this function only adds the answers
-/// that live below the clause itself — a `CALL { … }` body, a `WHEN`/`ELSE`
-/// body, a writes-flagged procedure — which is what the composition rules
-/// need. (A nested body is walked here rather than classified outright: a
-/// read-only `CALL { … }` body makes no write.)
-pub(crate) fn clause_is_write(
-    c: &Clause,
-    is_write_procedure: &mut impl FnMut(&str) -> bool,
-) -> bool {
-    crate::clause_mutates_store(c)
-        || matches!(c, Clause::CallSubquery { query, .. } if query_contains_write(query, is_write_procedure))
-        || matches!(c, Clause::Call { name, .. }
-            if name.with_str(|text| is_write_procedure(text)))
-        || matches!(c, Clause::Conditional { branches, else_query }
-            if branches.iter().any(|(_, query)| query_contains_write(query, is_write_procedure))
-                || else_query.as_deref().is_some_and(|q| query_contains_write(q, is_write_procedure)))
-}
-
-pub(crate) fn query_contains_write(
-    query: &Query,
-    is_write_procedure: &mut impl FnMut(&str) -> bool,
-) -> bool {
-    crate::query_any_clause(query, &mut |c| clause_is_write(c, is_write_procedure))
 }
 
 fn query_contains_in_transactions(query: &Query) -> bool {

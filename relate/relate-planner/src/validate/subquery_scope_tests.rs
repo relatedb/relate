@@ -95,6 +95,7 @@ fn a_next_chained_star_over_a_body_export_is_accepted() {
 /// its import exclusion set.
 fn body_exports(
     body: &str,
+    scope: &CallScope,
     env_names: &[String],
     seed_names: &[String],
     import_names: &std::collections::HashSet<String>,
@@ -107,8 +108,17 @@ fn body_exports(
             crate::binding::Binding::Value,
         );
     }
-    crate::validate::validate_query_with_env(&query, &env, seed_names, import_names, &mut |_| false)
-        .expect("the body validates")
+    crate::validate::chain::validate_query_with_env(
+        &query,
+        crate::validate::chain::StageSeed::body(
+            scope,
+            env,
+            seed_names.to_vec(),
+            import_names.clone(),
+        ),
+        &mut |_| false,
+    )
+    .expect("the body validates")
 }
 
 /// LABS-712: the two name lists a `CALL { … }` body validates with come
@@ -125,7 +135,7 @@ fn a_naked_call_body_star_exports_the_outer_scope() {
         "a naked body has no import exclusion set"
     );
     assert_eq!(
-        body_exports("RETURN *", &outer, &seed, &imports),
+        body_exports("RETURN *", &CallScope::None, &outer, &seed, &imports),
         outer,
         "the naked body's star exports the outer scope"
     );
@@ -145,7 +155,7 @@ fn a_scope_clause_body_star_exports_only_its_own_names() {
         "a scope clause's imports are its seed"
     );
     assert_eq!(
-        body_exports("LET x = a + 1 RETURN *", &seed, &seed, &imports),
+        body_exports("LET x = a + 1 RETURN *", &scope, &seed, &seed, &imports),
         vec!["x".to_string()],
         "the scope-clause body's star exports only its own `x`"
     );

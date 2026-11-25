@@ -18,10 +18,9 @@ use crate::pattern::{
     collect_qpp_group_names, element_has_qpp,
 };
 
-use super::{
-    check_remove_item, check_set_item, validate_clauses_with_env, validate_conditional_returns,
-    validate_part_with_env,
-};
+use super::chain::validate_nested_body;
+use super::write::ClausePosition;
+use super::{check_remove_item, check_set_item};
 
 pub(super) fn check_catalog_clause(env: &mut Env, command: &relate_parser::Clause) -> Result<()> {
     for name in catalog_output_names(command) {
@@ -522,10 +521,15 @@ pub(super) fn check_conditional_clause(
         if let Some(predicate) = predicate {
             check_pred(env, is_write_procedure, predicate)?;
         }
-        validate_conditional_returns(query)?;
+        // The branch body's terminal-RETURN alias rule — the one shared
+        // spelling, this site's text.
+        super::refuse_unaliased_terminal_returns(
+            query,
+            "NoExpressionAlias: expressions returned by conditional clauses must use AS",
+        )?;
         for part in &query.parts {
-            validate_part_with_env(
-                part,
+            validate_nested_body(
+                &part.clauses,
                 super::Scope::branch_body(env.clone()),
                 is_write_procedure,
             )?;
@@ -555,7 +559,7 @@ pub(super) fn check_foreach_clause(
     clauses: &[Clause],
 ) -> Result<()> {
     check_expr(env, is_write_procedure, list)?;
-    validate_clauses_with_env(
+    validate_nested_body(
         clauses,
         super::Scope::foreach_body(env, variable),
         is_write_procedure,
@@ -567,8 +571,7 @@ pub(super) fn check_foreach_clause(
 pub(super) fn check_use_clause(
     env: &mut Env,
     is_write_procedure: &mut impl FnMut(&str) -> bool,
-    clause_index: usize,
-    clauses: &[Clause],
+    position: ClausePosition<'_>,
     graph: &Expr,
 ) -> Result<()> {
     // Position, not write history: `USE` is valid at the very front (a run
@@ -577,11 +580,11 @@ pub(super) fn check_use_clause(
     // leading importing WITH. The front's `validate_use_placement` owns the
     // same rule; reading `seen_write` here let a transactions-exempt CALL
     // body slip a later `USE` past this check.
-    let all_use_before = clauses[..clause_index]
+    let all_use_before = position.clauses[..position.index]
         .iter()
         .all(crate::clause_kind::clause_is_routing);
     let after_importing_with =
-        clause_index == 1 && matches!(clauses.first(), Some(Clause::With { .. }));
+        position.index == 1 && matches!(position.clauses.first(), Some(Clause::With { .. }));
     if !all_use_before && !after_importing_with {
         return Err(Error::syntax(
             "InvalidPlacementOfUseClause: USE must be the first clause",

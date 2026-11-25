@@ -6,12 +6,11 @@ use relate_core::Result;
 use relate_ir::{Clause, Expr, Query};
 use relate_names::TokenResolver;
 
-use crate::binding::{next_stage_scope, Env};
 use crate::names::stage_output_names;
 use crate::pattern::{label_expr_contains_dynamic, pattern_contains_dynamic_operands};
 use crate::rewrite;
 use crate::stats::{NoPatternStats, PatternStats, StatsMemo};
-use crate::validate::validate_stage_with_env;
+use crate::validate::chain::{validate_query_with_env, StageSeed};
 
 /// Logical plan is a pipeline of clauses (plus UNION).
 ///
@@ -354,7 +353,7 @@ pub fn plan_with_stats(
     stats: &dyn PatternStats,
 ) -> Result<LogicalPlan> {
     let memo = StatsMemo::new(stats);
-    let mut plan = plan_with_env(query, SeedScope::default(), is_write_procedure, &memo)?;
+    let mut plan = plan_checked(query, is_write_procedure, &memo)?;
     // ADR-0116 §3/§10: lift the statement's `USE` target into the plan.
     // Resolution walks the whole statement (UNION arms, CALL subqueries,
     // WHEN branches, expression subqueries, NEXT stages), so it runs once,
@@ -377,58 +376,35 @@ pub fn plan_with_tokens(
     plan_with_stats(query, is_write_procedure, stats)
 }
 
-/// The scope an enclosing context hands one query.
+/// Validate one statement, then bind it to a plan (ADR-0009) and rewrite
+/// its MATCH parts (ADR-0024). `stats` is whatever the caller holds; the
+/// one production caller ([`plan_with_stats`]) passes its per-statement
+/// [`StatsMemo`] (ADR-0508), which the assembly recursion below threads
+/// unchanged — the memo's lifetime is the whole statement's plan call,
+/// never re-wrapped per stage.
 ///
-/// `env` is what the query may bind and `names` is the order `RETURN *`
-/// expands it in (a `NEXT` stage's incoming scope is a set for binding but
-/// the previous stage's projection order for `*`).
-#[derive(Default)]
-pub(crate) struct SeedScope {
-    pub env: Env,
-    pub names: Vec<String>,
-}
-
-/// Bind one stage of a [`Query`] to a plan (ADR-0009) and rewrite its
-/// MATCH parts (ADR-0024). `stats` is whatever the caller holds; the one
-/// production caller ([`plan_with_stats`]) passes its per-statement
-/// [`StatsMemo`] (ADR-0508), which the `NEXT` recursion threads unchanged
-/// — the memo's lifetime is the whole statement's plan call, never
-/// re-wrapped per stage.
-pub(crate) fn plan_with_env(
+/// Validation is the validate layer's whole-chain walk, run once here
+/// through the same driver a `CALL { … }` body uses — so the one
+/// chain-advance policy (which names flow into each `NEXT` stage, which
+/// exclusion set carries, which 42I25 fact threads) stays the validate
+/// layer's, and the planner's assembly recursion never re-enters it: the
+/// assembly reads no scope, and each stage validates exactly once, as
+/// before.
+pub(crate) fn plan_checked(
     query: Query,
-    seed: SeedScope,
     is_write_procedure: &mut impl FnMut(&str) -> bool,
     stats: &dyn PatternStats,
 ) -> Result<LogicalPlan> {
-    let SeedScope {
-        env: seed_env,
-        names: seed_names,
-    } = seed;
-    // The stage's validation (composition rules, per-part checks and the
-    // UNION column-agreement check, ADR-0332) is the validate layer's
-    // driver, so the planner never spells a validation rule itself. No
-    // CIP-218 star exclusion applies here: a scope-clause body is validated
-    // by `validate_query_with_env`, never through `plan`'s stage driver.
-    let output_names = validate_stage_with_env(
-        &query,
-        &seed_env,
-        &seed_names,
-        &crate::names::no_excluded_imports(),
-        is_write_procedure,
-    )?;
-    // A NEXT stage's scope is the previous stage's exported columns plus the
-    // names this chain inherited from its enclosing scope (a `CALL (a) { … }`
-    // / `COLLECT { … }` body's imports, or a `WHEN` branch's outer
-    // variables): CIP-213 keeps the imported names visible in *every*
-    // statement of the chain (`NextStatementAcceptance` "Should pass constant
-    // through NEXT 3"). At the top level the inherited set is empty, so the
-    // chain carries exactly the previous stage's columns.
-    let next_scope = if query.next.is_some() {
-        let (env, names) = next_stage_scope(&seed_env, &seed_names, &output_names);
-        SeedScope { env, names }
-    } else {
-        SeedScope::default()
-    };
+    validate_query_with_env(&query, StageSeed::statement(), is_write_procedure)?;
+    Ok(plan_stages(query, stats))
+}
+
+/// The planner's stage recursion: rewrite each stage's MATCH parts
+/// (ADR-0024) and assemble the `NEXT` chain into the `LogicalPlan`
+/// (ADR-0009). Infallible by construction — the whole-chain validation in
+/// [`plan_checked`] has already accepted every stage, and the rewrite is
+/// total — so the recursion carries no scope and returns no `Result`.
+fn plan_stages(query: Query, stats: &dyn PatternStats) -> LogicalPlan {
     let Query {
         parts,
         union_all,
@@ -438,50 +414,28 @@ pub(crate) fn plan_with_env(
     for part in &mut parts {
         rewrite::rewrite_part(part, stats);
     }
-    let next = match next {
-        Some(next) => Some(Box::new(plan_with_env(
-            *next,
-            next_scope,
-            is_write_procedure,
-            stats,
-        )?)),
-        None => None,
-    };
-    Ok(LogicalPlan {
+    let next = next.map(|next| Box::new(plan_stages(*next, stats)));
+    LogicalPlan {
         parts,
         union_all,
         next,
         use_target: None,
-    })
+    }
 }
 
 #[cfg(test)]
 mod next_seed_tests {
-    use relate_core::Error;
-
-    use super::*;
-
-    fn lower(cypher: &str) -> Result<LogicalPlan> {
-        let query = relate_front::parse_and_lower(cypher)?;
-        plan(query, &mut |_| false)
-    }
-
-    fn plan_of(cypher: &str) -> Result<LogicalPlan> {
-        lower(cypher).map_err(|e| Error::syntax(format!("{cypher}: {e}")))
-    }
-
     /// A NEXT stage sees the chain's inherited names — a `CALL (a) { … }`
-    /// body's imports, or a `WHEN` branch's outer variables — as well as the
-    /// previous stage's columns (CIP-213 `NextStatementAcceptance` "Should
-    /// pass constant through NEXT 3").
+    /// body's imports, or a `WHEN` branch's outer variables — as well as
+    /// the previous stage's columns: the chained statement keeps the
+    /// imported names visible in every one of its parts.
     #[test]
     fn next_stage_carries_inherited_names() {
-        plan_of(
+        crate::plan_of(
             "LET a = 1 \
              CALL (a) { WHEN true THEN LET b = 2 RETURN b NEXT RETURN a + b AS x } \
              RETURN a, x",
-        )
-        .expect("the chain's imports stay visible into the NEXT stage");
+        );
     }
 
     /// An explicit `GROUP BY` moves ORDER BY and WHERE after grouping, so
@@ -492,26 +446,23 @@ mod next_seed_tests {
             "UNWIND [1, 2] AS a RETURN a, count(*) AS c GROUP BY a ORDER BY sum(a)",
             "UNWIND [1, 2] AS a WITH a, count(*) AS c GROUP BY a WHERE sum(a) > 1 RETURN c",
         ] {
-            plan_of(query).unwrap_or_else(|e| panic!("{query}: {e}"));
+            crate::plan_of(query);
         }
     }
 
     /// A mid-chain NEXT stage must not re-project an imported name: that
-    /// shadows the enclosing binding the chain keeps visible (CIP-213 42N07,
-    /// `NextStatementAcceptance` "Should fail due to redeclaration of
-    /// constant 2").
+    /// shadows the enclosing binding the chain keeps visible (the
+    /// redeclaration the chain rejects, 42N07).
     #[test]
     fn next_stage_reprojecting_an_import_is_rejected() {
-        let err = lower(
+        let text = crate::rejection(
             "LET a = 1 \
              CALL (a) { LET b = 2 RETURN a, b NEXT RETURN a + b AS x } \
              RETURN a, x",
-        )
-        .expect_err("redeclaring the import is rejected");
-        let text = err.to_string();
+        );
         assert!(
             text.contains("VariableShadowing") || text.contains("already declared in outer scope"),
-            "{err}"
+            "{text}"
         );
     }
 }

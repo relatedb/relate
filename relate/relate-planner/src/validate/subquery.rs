@@ -1,8 +1,9 @@
-//! The `CALL { … }` subquery clause: scope-clause imports, CIP-218 export
-//! rules, and the 42I28 importing-WITH shape rule. The `CALL IN
-//! TRANSACTIONS` modifier battery lives in [`super::in_transactions`]; the
-//! body's shadowing policy is [`crate::expr_check`]'s, shared with every
-//! other subquery body.
+//! The `CALL { … }` subquery clause: scope-clause imports, the
+//! CALL-scope export rules (the star rule the chain driver invokes as its
+//! per-stage hook, and the importing-WITH shape rule), and the 42I28 bare
+//! redeclaration rule. The `CALL IN TRANSACTIONS` modifier battery lives
+//! in [`super::in_transactions`]; the body's shadowing policy is
+//! [`crate::expr_check`]'s, shared with every other subquery body.
 
 use std::collections::HashSet;
 
@@ -14,14 +15,23 @@ use crate::binding::{Binding, Env, EnvBridge};
 use crate::expr_text::expr_text;
 use crate::names::{explicit_return_names, query_with_persistent_imports};
 
+use super::chain::{validate_query_with_env, StageSeed};
 use super::in_transactions::check_in_transactions_modifiers;
 use super::query_contains_in_transactions;
+use super::write::ClausePosition;
 
+/// The `CALL { … }` subquery clause checker. The clause's
+/// [`ClausePosition`] carries the 42I25 write history reaching it — the
+/// chain's incoming fact (an unbatched write in an earlier `NEXT` stage)
+/// folded with this part's own earlier unbatched writes, the one answer
+/// the clause-validation walk accumulates — plus the part position the
+/// `IN TRANSACTIONS` modifier battery reads. The typed variant
+/// parameters are the module's convention — the caller destructures the
+/// arm it already matched — so the variant is proven once, at the match.
 pub(super) fn check_call_subquery_clause(
     env: &mut Env,
     is_write_procedure: &mut impl FnMut(&str) -> bool,
-    clause_index: usize,
-    clauses: &[Clause],
+    position: ClausePosition<'_>,
     query: &Query,
     scope: &CallScope,
     in_transactions: Option<&InTransactions>,
@@ -31,7 +41,7 @@ pub(super) fn check_call_subquery_clause(
             "NestedCallInTransactions: CALL IN TRANSACTIONS cannot be nested",
         ));
     }
-    if in_transactions.is_some() && write_before(clauses, clause_index, is_write_procedure) {
+    if in_transactions.is_some() && position.write_history.unbatched_write_behind() {
         return Err(Error::syntax(
             "WriteBeforeCallInTransactions: a write cannot precede CALL IN TRANSACTIONS",
         ));
@@ -87,22 +97,21 @@ pub(super) fn check_call_subquery_clause(
     };
     let scoped_query = query_with_persistent_imports(query, &persistent_imports);
     // Validate the body against the imports it may read — the same
-    // stage driver the planner runs, without planning anything. The seed is
-    // what the body's own `RETURN *` expands (the whole outer scope for a
-    // naked body); the import list is the scope-clause import set, so a
-    // scope clause's star arms do not re-expand the imports and every
-    // UNION arm agrees on the export shape. Its returned names are the
-    // body's export set, read again below — the walk is not repeated, and
-    // both lists come from the one `call_body_names` derivation.
-    let output_names = crate::validate::validate_query_with_env(
+    // stage driver the planner runs, without planning anything. The seed
+    // is what the body's own `RETURN *` expands (the whole outer scope
+    // for a naked body); the import list is the scope-clause import set,
+    // so a scope clause's star arms do not re-expand the imports and
+    // every UNION arm agrees on the export shape. Its returned names are
+    // the body's export set, read again below — the walk is not
+    // repeated, and both lists come from the one `call_body_names`
+    // derivation.
+    let output_names = validate_query_with_env(
         &scoped_query,
-        &imported,
-        &seed_names,
-        &import_names,
+        StageSeed::body(scope, imported, seed_names, import_names),
         is_write_procedure,
     )?;
     if let Some(tx) = in_transactions {
-        check_in_transactions_modifiers(tx, env, is_write_procedure, clause_index, clauses)?;
+        check_in_transactions_modifiers(tx, env, is_write_procedure, position)?;
     }
     // The post-CALL name space, computed once: the body's exports in both
     // spellings (the explicit RETURN names and the computed export set the
@@ -126,29 +135,6 @@ pub(super) fn check_call_subquery_clause(
     }
 
     Ok(())
-}
-
-/// Whether any clause *before* `clause_index` writes, which is the whole
-/// question `CALL … IN TRANSACTIONS`'s composition rule asks. Derived at
-/// the point of use instead of threaded through the clause loop: the
-/// enclosing part's write history is a pure function of its prefix, and an
-/// `IN TRANSACTIONS` subquery's own writes run in their own transactions,
-/// so they do not make the part a writing one.
-fn write_before(
-    clauses: &[Clause],
-    clause_index: usize,
-    is_write_procedure: &mut impl FnMut(&str) -> bool,
-) -> bool {
-    clauses[..clause_index].iter().any(|clause| {
-        crate::validate::clause_is_write(clause, is_write_procedure)
-            && !matches!(
-                clause,
-                Clause::CallSubquery {
-                    in_transactions: Some(_),
-                    ..
-                }
-            )
-    })
 }
 
 /// The one post-CALL collision policy, over the whole name space the clause
@@ -269,4 +255,69 @@ fn reject_invalid_importing_with(part: &SingleQuery, imported: &HashSet<String>)
         Some(modifier) => Err(refuse(modifier)),
         None => Ok(()),
     }
+}
+
+/// The scope-clause star rule for one stage of a `CALL { … }` body: every
+/// UNION arm whose terminal `RETURN` carries a `*` must expand at least
+/// one name that is not an import, and no arm may re-list an import as a
+/// bare `WITH x`. This is the CALL-scope export policy the body checker
+/// owns; the chain driver ([`super::chain`]) invokes it as its per-stage
+/// hook, gated by the seed's carried scope-clause fact — so it runs once
+/// per stage of the body's chain, never for a planned statement, and the
+/// seed names the driver already carries feed it.
+pub(super) fn validate_stage_star_rule(
+    query: &Query,
+    seed_names: &[String],
+    excluded: &HashSet<String>,
+) -> Result<()> {
+    for part in &query.parts {
+        let Some(Clause::Return { items, .. }) = part.clauses.last() else {
+            continue;
+        };
+        if !items.iter().any(|item| matches!(item.expr, Expr::Star)) {
+            continue;
+        }
+        check_bare_import_redeclaration(&part.clauses, excluded)?;
+        // The star expands through the output-name fold, so every clause
+        // kind a CALL-scope body can export (a `CALL … YIELD` included)
+        // counts, not a hand-spelled subset. The star exclusion wants one
+        // name that is not an import — an empty export set after the
+        // exclusion is that failure.
+        let expanded =
+            crate::names::part_output_names(&part.clauses, seed_names.to_vec(), excluded)?;
+        if expanded.is_empty() {
+            return Err(Error::syntax(
+                "NoVariablesInScope: RETURN * has no non-imported variables",
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Re-listing an imported variable as a bare `WITH x` — no other exported
+/// name beside it and no `*` sibling — is the import-only redeclaration the
+/// CALL-scope body rejects with `VariableAlreadyBound`. A `*` sibling
+/// brings the body's own bindings along (`WITH *, x`), so it is not that
+/// shape.
+fn check_bare_import_redeclaration(clauses: &[Clause], imported: &HashSet<String>) -> Result<()> {
+    for clause in clauses {
+        let Clause::With { items, .. } = clause else {
+            continue;
+        };
+        let has_star = items.iter().any(|item| matches!(item.expr, Expr::Star));
+        let has_non_imported = items.iter().enumerate().any(|(index, item)| {
+            !matches!(item.expr, Expr::Star) && !imported.contains(&item.output_name(index))
+        });
+        for (index, item) in items.iter().enumerate() {
+            let name = item.output_name(index);
+            if imported.contains(&name)
+                && matches!(&item.expr, Expr::Variable(variable) if variable == name.as_str())
+                && !has_non_imported
+                && !has_star
+            {
+                return Err(Error::duplicate_variable(&name));
+            }
+        }
+    }
+    Ok(())
 }

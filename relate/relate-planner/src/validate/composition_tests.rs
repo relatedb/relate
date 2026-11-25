@@ -12,20 +12,7 @@
 use relate_front::parse_and_lower;
 use relate_ir::{Clause, Expr};
 
-use crate::binding::Env;
-use crate::validate::validate_part_with_env;
-
-/// Lower `cypher` and run the semantic clause validation on its one part,
-/// returning the rejection's text.
-fn rejection(cypher: &str) -> String {
-    let query = parse_and_lower(cypher).unwrap_or_else(|error| panic!("{cypher}: {error}"));
-    let [part] = query.parts.as_slice() else {
-        panic!("{cypher}: expected one part");
-    };
-    validate_part_with_env(part, super::Scope::stage(Env::new()), &mut |_| false)
-        .expect_err("the composition rule rejects this statement")
-        .to_string()
-}
+use crate::rejection;
 
 /// The `USE` placement rule is positional: any clause ahead of it — write or
 /// read — makes it misplaced. (An earlier revision asked the write predicate
@@ -48,9 +35,7 @@ fn use_after_a_preceding_clause_is_rejected() {
             graph: Expr::String("neo4j".to_string()),
         },
     );
-    let error = validate_part_with_env(part, super::Scope::stage(Env::new()), &mut |_| false)
-        .expect_err("the placement rule rejects a USE after another clause")
-        .to_string();
+    let error = crate::part_error(&query);
     assert!(
         error.contains("InvalidPlacementOfUseClause: USE must be the first clause"),
         "unexpected error: {error}"
@@ -69,14 +54,67 @@ fn write_before_call_in_transactions_is_rejected() {
     // rule — the DDL family is standalone and the row-producing commands
     // (`TERMINATE TRANSACTIONS`, the SHOWs) are `ClauseClass::Read`, not
     // writes.
-    let error = rejection(
+    let error = crate::part_error(&crate::query_of(
         "CREATE (n:Boxed) \
          CALL { CREATE (m:Other) } IN TRANSACTIONS OF 1 ROWS",
-    );
+    ));
     assert!(
         error.contains("WriteBeforeCallInTransactions"),
         "unexpected error: {error}"
     );
+}
+
+/// The same rule across `NEXT` stages: a writing part refuses a batched
+/// subquery in a later part (42I25) — the chained statement's parts are
+/// one statement, so the writing part precedes the batched part exactly
+/// like a write clause does. A chain-level fact, so these pins ride the
+/// whole-statement plan, not the part-scoped helper.
+#[test]
+fn a_writing_next_part_refuses_call_in_transactions_in_a_later_part() {
+    for cypher in [
+        // The ON ERROR CONTINUE spelling.
+        "CREATE (n:Start) WITH n RETURN n \
+         NEXT CALL (n) { CREATE (:Made) } IN TRANSACTIONS ON ERROR CONTINUE \
+         RETURN count(*) AS c",
+        // The bare spelling: the modifier battery is not the rule's.
+        "CREATE (n:Start) RETURN n \
+         NEXT CALL (n) { CREATE (:Made) } IN TRANSACTIONS \
+         RETURN count(*) AS c",
+    ] {
+        let error = rejection(cypher);
+        assert!(
+            error.contains("WriteBeforeCallInTransactions"),
+            "{cypher}: unexpected error: {error}"
+        );
+    }
+}
+
+/// The refusal is the *unbatched* writes': a batched part's own writes run
+/// in its batches' transactions, so nothing behind them counts as a write
+/// clause for a later part. The reading half — a later part reading what
+/// the statement's own batches committed — is the shape the rule must not
+/// over-reach past; the batched half is the same policy's second
+/// spelling, pinned with it so the chain fact cannot over-reach past the
+/// batches.
+#[test]
+fn a_batched_part_does_not_refuse_a_later_part() {
+    for cypher in [
+        // The reading half: a NEXT part reading what the batches
+        // committed.
+        "UNWIND [1, 2, 3] AS i \
+         CALL (i) { CREATE (z:Z {i: i}) } IN TRANSACTIONS OF 1 ROW \
+         RETURN count(*) AS _ \
+         NEXT MATCH (z:Z) RETURN z.i AS zi",
+        // The batched half: the same policy's second spelling, pinned so
+        // the chain fact cannot over-reach past the batches.
+        "UNWIND [1, 2, 3] AS i \
+         CALL (i) { CREATE (z:Z {i: i}) } IN TRANSACTIONS OF 1 ROW \
+         RETURN count(*) AS _ \
+         NEXT CALL { CREATE (:W) } IN TRANSACTIONS OF 1 ROW \
+         RETURN count(*) AS c",
+    ] {
+        crate::plan_of(cypher);
+    }
 }
 
 /// A grammar-ending DDL command is standalone whichever AST carries it
