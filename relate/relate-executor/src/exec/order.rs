@@ -373,9 +373,7 @@ pub(crate) fn cmp_sort_keys(
 /// Reserve the row buffer, then sample RSS while those rows are still the
 /// live workspace and before the key vector is built.
 fn hold_sort_rows(rows: &[Row]) -> Result<relate_core::tokens::WorkspaceCharge> {
-    let charge = relate_core::tokens::WorkspaceCharge::retain_with(|| {
-        crate::workspace::row_buffer_bytes(rows)
-    })?;
+    let charge = crate::workspace::charge_row_buffer(rows)?;
     relate_core::tokens::peak_hold("sort");
     Ok(charge)
 }
@@ -494,6 +492,48 @@ fn take_parked_top_k(
     Ok(keyed.into_iter().map(|(_, _, row)| row).collect())
 }
 
+/// A running page over one stream — the per-row twin of
+/// [`page`]'s whole-table cut: the `SKIP`/`LIMIT` counters a landing shape
+/// consumes one row at a time, so no container re-spells the bounds pair.
+pub(crate) struct PageCursor {
+    skip_left: usize,
+    limit_left: Option<usize>,
+}
+
+impl PageCursor {
+    pub(crate) fn new(bounds: PageBounds) -> Self {
+        Self {
+            skip_left: bounds.skip,
+            limit_left: bounds.limit,
+        }
+    }
+
+    /// Whether this row takes a slot: the `SKIP` counter first, then one
+    /// `LIMIT` slot. The slot is spent even when a later stage (the
+    /// trailing `WHERE`) drops the row — the page is cut before it. A spent
+    /// page admits nothing (the funnels stop at [`Self::is_exhausted`], and
+    /// the guard keeps a stray offer from underflowing the counter).
+    pub(crate) fn admit(&mut self) -> bool {
+        if self.skip_left > 0 {
+            self.skip_left -= 1;
+            return false;
+        }
+        match self.limit_left.as_mut() {
+            Some(0) => false,
+            Some(left) => {
+                *left -= 1;
+                true
+            }
+            None => true,
+        }
+    }
+
+    /// Whether the `LIMIT` is spent.
+    pub(crate) fn is_exhausted(&self) -> bool {
+        self.limit_left == Some(0)
+    }
+}
+
 /// The clause's page bounds: how many leading rows `SKIP` drops and how
 /// many `LIMIT` keeps. One named pair, so the feed, the merge paths, the
 /// window decision and the finish tail all read `bounds.skip` and
@@ -512,6 +552,13 @@ impl PageBounds {
     /// empty.
     pub(crate) fn answers_nothing(self) -> bool {
         self.limit == Some(0)
+    }
+
+    /// Whether this page cuts anything at all — a `SKIP`, a `LIMIT`, or
+    /// both. The one spelling of "the clause pages", so no consumer
+    /// re-spells the bounds fields.
+    pub(crate) fn is_paged(self) -> bool {
+        self.skip > 0 || self.limit.is_some()
     }
 
     /// A skip-only page: everything before `skip` drops, the rest is kept.

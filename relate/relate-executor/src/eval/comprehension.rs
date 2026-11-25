@@ -19,17 +19,17 @@ use crate::ctx::EvalCtx;
 use crate::overlay::ExecGraph;
 use crate::row::Row;
 
-use super::comprehension_where_holds;
 use super::eval;
 use super::items::{
     bind_element, comprehension_element, into_items, list_argument, COMPREHENSION_SOURCE,
 };
+use super::plain_where_holds;
 use super::{retain_map, retain_values};
 use crate::eval_walk::collect_pattern_rows;
 
 /// The one retaining-projection loop: for each bound row apply the
 /// optional WHERE (the comprehension WHERE gate,
-/// [`comprehension_where_holds`]) and project, collecting through
+/// [`plain_where_holds`]) and project, collecting through
 /// [`retain_values`]. The rows are exact-size, so the container charge
 /// derives from the source count itself — the one spelling its map twin
 /// uses — and cannot be decoupled from it. Shared by the list and
@@ -141,7 +141,7 @@ enum MapBinding {
 /// The map comprehension's retaining-projection loop — the map twin of
 /// [`retain_projected`]: bind each element's [`MapBinding`] — an entry's
 /// key and value, or a list source's item — filter with the optional
-/// `WHERE` (the comprehension WHERE gate, `comprehension_where_holds`),
+/// `WHERE` (the comprehension WHERE gate, `plain_where_holds`),
 /// and project `keyExpr : valueExpr` into a map collected through
 /// [`retain_map`]. A non-string key is a type error; duplicate keys take
 /// the last write (BTreeMap insert). Generic over the bindings iterator
@@ -175,7 +175,7 @@ fn retain_projected_map(
                 }
                 MapBinding::Item(item) => bind_element(row, value_ident, item),
             };
-            if !comprehension_where_holds(graph, &r, predicate, params)? {
+            if !plain_where_holds(graph, &r, predicate, params)? {
                 return Ok(None);
             }
             let key_v = eval(graph, &r, key_expr, params)?;

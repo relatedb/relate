@@ -127,12 +127,12 @@ pub(crate) fn eval_bound(
 
 pub(crate) use function::is_row_unstable_node;
 use function::{entity_backing_map, function};
-pub(in crate::eval) use predicates::comprehension_where_holds;
+pub(crate) use predicates::plain_where_holds;
 #[cfg(test)]
 pub(crate) use predicates::take_candidate_passes;
 pub(crate) use predicates::{
     candidate_passes, filter_rows_where, filter_rows_where_clause, inline_predicates_ok,
-    predicate_holds, where_clause_holds, where_holds,
+    predicate_holds, where_clause_holds,
 };
 use quantifier::{eval_all_reduce, eval_quantifier, eval_reduce};
 pub(crate) use quantifier::{AllReduceFold, AllReduceStep};

@@ -257,6 +257,15 @@ pub(crate) fn row_buffer_bytes(rows: &[Row]) -> u64 {
     rows_accounted(rows.len(), rows.iter())
 }
 
+/// Reserve one whole row buffer's charge — the one spelling of "this table
+/// is held until its stage ends", read by the projection's held input, the
+/// distinct pre-pass and the in-place adoption.
+pub(crate) fn charge_row_buffer(
+    rows: &[Row],
+) -> relate_core::Result<relate_core::tokens::WorkspaceCharge> {
+    relate_core::tokens::WorkspaceCharge::retain_with(|| row_buffer_bytes(rows))
+}
+
 mod prepared;
 mod result;
 mod retained;

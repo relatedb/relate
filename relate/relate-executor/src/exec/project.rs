@@ -17,7 +17,7 @@ use super::classification::{ProjectionClass, ProjectionShape};
 use super::feed::RowStream;
 use super::order::{page, PageBounds};
 use super::pattern_policies::MatchFold;
-use super::post_merge::{adopt_rows, finish_projection, land_feed, Landed, LandedTail};
+use super::post_merge::{adopt_rows, land_feed, Landed, LandedTail};
 use super::scope::{return_columns, star_scope_names, visible_keys, ProjectionFields};
 use super::{materialize_rows_strict, QueryResult, RowFeed};
 use crate::consumer::{BatchFlow, StreamSink};
@@ -326,6 +326,41 @@ impl ProjectionInput<'_> {
             Self::Feed(RowFeed::Folded(_)) | Self::SinkProjected(_) | Self::SinkLanded(_) => Ok(()),
         }
     }
+
+    /// The reservation the row table this input hands over owes the pool —
+    /// the one home of the handoff policy [`prepare_input`] bills at every
+    /// exit, read once the input has settled (after the collected
+    /// materialize and page, never mid-pipeline). Rows the input itself
+    /// holds are reserved here and released when its stage ends; rows
+    /// owned elsewhere reserve nothing: a folded feed is priced where it
+    /// was built, a generated feed by its producer, and the aggregating
+    /// shape's collected rows by its own `InputBill` (InputBill's measure
+    /// is the same row walk — a second reservation here would price one
+    /// container twice and refuse statements whose real footprint fits
+    /// the pool).
+    fn reservation(
+        &self,
+        class: &ProjectionClass<'_>,
+    ) -> Result<relate_core::tokens::WorkspaceCharge> {
+        match self {
+            // A folded feed's rows are priced where the feed was built.
+            Self::Feed(RowFeed::Folded(_)) => Ok(relate_core::tokens::WorkspaceCharge::empty()),
+            // A generated feed's rows are priced by its producer (its
+            // probe is empty, so the buffer charge would be a no-op —
+            // stated, not relied on).
+            Self::Feed(RowFeed::Held(stream)) if !stream.is_held() => {
+                Ok(relate_core::tokens::WorkspaceCharge::empty())
+            }
+            // The aggregating shape's own input bill reserves its
+            // collected rows and releases them per landing.
+            _ if matches!(class.shape, ProjectionShape::Aggregate { .. }) => {
+                Ok(relate_core::tokens::WorkspaceCharge::empty())
+            }
+            // Every other input holds its rows for as long as it holds
+            // them: the one reservation of the row table it carries.
+            settled => crate::workspace::charge_row_buffer(settled.probe()),
+        }
+    }
 }
 
 pub(crate) fn project_rows(
@@ -387,8 +422,8 @@ pub(super) fn project_classed(
     } else {
         Refresh::Identity
     };
-    let merged = merge_rows(graph, params, class, input, scope, &mut refresh, bounds)?;
-    finish_projection(graph, params, class, merged, bounds)
+    let landed = merge_rows(graph, params, class, input, scope, &mut refresh, bounds)?;
+    landed.finish(graph, params, class, bounds)
 }
 
 /// The merge dispatch: which path turns the prepared input into the
@@ -412,7 +447,7 @@ fn merge_rows(
         // window's bounded heap).
         (ProjectionInput::SinkProjected(mut rows), ProjectionShape::Plain) => {
             refresh.rows(graph, &mut rows);
-            adopt_rows(graph, params, class, bounds, rows)
+            adopt_rows(graph, class, bounds, rows)
         }
         // A bounded sink already ran the clause's container; the carried
         // landing's facts say so, and the only mutation is the in-place
@@ -438,13 +473,10 @@ fn merge_rows(
         // the aggregation's own emission loop, and its rows are an
         // unordered table the tail still sorts. It is also the one shape
         // that finishes a folded feed.
-        (ProjectionInput::Feed(feed), ProjectionShape::Aggregate { .. }) => Ok(Landed {
-            rows: aggregate_rows(graph, params, feed, class, scope, refresh)?,
-            windowed: false,
-            streamed_distinct: false,
-            funnel_filtered_where: false,
-            streamed_page: false,
-        }),
+        (ProjectionInput::Feed(feed), ProjectionShape::Aggregate { .. }) => {
+            Ok(LandedTail::untouched()
+                .into_landed(aggregate_rows(graph, params, feed, class, scope, refresh)?))
+        }
         (ProjectionInput::Feed(RowFeed::Held(stream)), ProjectionShape::Plain) => {
             plain_rows(graph, params, stream, class, refresh, bounds)
         }
@@ -469,7 +501,10 @@ fn merge_rows(
 /// parked feed that resolves to no window is collected here under the one
 /// retaining charge, and the eager pre-projection page applies at this
 /// stage, so a `LIMIT 1` must not evaluate a later row whose projection
-/// raises an error (CIP-27).
+/// raises an error (CIP-27). The charge is the container's own reservation
+/// ([`crate::workspace::charge_row_buffer`]): the rows it holds for as long
+/// as it holds them — a streamed feed's rows belong to its producer and are
+/// priced there, so that probe is empty and the reservation is a no-op.
 fn prepare_input<'a>(
     input: ProjectionInput<'a>,
     class: &ProjectionClass<'_>,
@@ -488,26 +523,26 @@ fn prepare_input<'a>(
         // A bounded sink's landing is already the clause's answer page (or
         // first-seen set); it carries its own facts and pages itself.
         ProjectionInput::SinkLanded(landed) => {
-            let charge = held_charge(&landed.rows)?;
-            return Ok((ProjectionInput::SinkLanded(landed), charge));
+            let input = ProjectionInput::SinkLanded(landed);
+            let charge = input.reservation(class)?;
+            return Ok((input, charge));
         }
         ProjectionInput::SinkProjected(rows) => (rows, ProjectionInput::SinkProjected),
         ProjectionInput::Feed(RowFeed::Folded(folded)) => {
-            return Ok((
-                ProjectionInput::Feed(RowFeed::Folded(folded)),
-                relate_core::tokens::WorkspaceCharge::empty(),
-            ));
+            let input = ProjectionInput::Feed(RowFeed::Folded(folded));
+            let charge = input.reservation(class)?;
+            return Ok((input, charge));
         }
         ProjectionInput::Feed(RowFeed::Held(stream))
             if class.folds_feed(bounds) && !stream.is_held() =>
         {
-            // A streamed feed is priced by its producer, never here: the
-            // guard already excluded the held container (the one source
-            // whose probe is non-empty), so this arm holds no reservation.
-            return Ok((
-                ProjectionInput::Feed(RowFeed::Held(stream)),
-                relate_core::tokens::WorkspaceCharge::empty(),
-            ));
+            // A streamed feed stays a stream — the guard already excluded
+            // the held container (the one source whose probe is
+            // non-empty) — and the reservation policy states where its
+            // rows are priced.
+            let input = ProjectionInput::Feed(RowFeed::Held(stream));
+            let charge = input.reservation(class)?;
+            return Ok((input, charge));
         }
         // The generator's own materializing form — the one place a feed
         // that cannot fold becomes rows, so its charge cannot drift from
@@ -521,25 +556,10 @@ fn prepare_input<'a>(
     } else {
         rows
     });
-    let charge = if matches!(class.shape, ProjectionShape::Aggregate { .. }) {
-        // The aggregating shape's own input bill reserves these rows and
-        // releases them per landing (InputBill's measure is the same
-        // row walk) — a second reservation here would price one
-        // container twice and refuse statements whose real footprint
-        // fits the pool.
-        relate_core::tokens::WorkspaceCharge::empty()
-    } else {
-        held_charge(input.probe())?
-    };
+    // Every exit bills the same one policy: the input's own reservation,
+    // read once the input has settled.
+    let charge = input.reservation(class)?;
     Ok((input, charge))
-}
-
-/// The reservation for the container the projection is handed: the rows it
-/// holds for as long as it holds them (a streamed feed's rows belong to its
-/// producer and are priced there, so its probe is empty and this is a
-/// no-op).
-fn held_charge(rows: &[Row]) -> Result<relate_core::tokens::WorkspaceCharge> {
-    relate_core::tokens::WorkspaceCharge::retain_with(|| crate::workspace::row_buffer_bytes(rows))
 }
 
 /// How collected rows are handed back as the projection's input.
@@ -653,7 +673,8 @@ fn plain_rows(
     // per-allocation checks alone cannot see a many-row result whose rows
     // each build a large but under-cap value. The ordered-window shape
     // (ADR-0555 §3) lands the same built row into the bounded top-k heap
-    // instead, its plain WHERE read as each row arrives.
+    // instead; its trailing WHERE filters the window's page in the finish
+    // tail.
     let built = |row| plain_output_row(graph, params, class, &keep, refresh, row);
     land_feed(graph, params, class, bounds, stream, built)
 }

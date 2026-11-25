@@ -18,9 +18,9 @@ use crate::ctx::ExecCtx;
 use crate::overlay::ExecGraph;
 use crate::row::Row;
 
-use super::comprehension_where_holds;
 use super::eval;
 use super::function::{lazy_range, RangeValues};
+use super::plain_where_holds;
 
 /// The comprehension protocol's bind step: one source element bound to
 /// `ident` in a clone of the input row — shared by the value form's row
@@ -36,7 +36,7 @@ pub(in crate::eval) fn bind_element(row: &Row, ident: &SmallName, item: Value) -
 /// The comprehension's one gate-and-project step over a bound row: sample
 /// `cancel_tick` (the skipped rows included, so a predicate that rejects
 /// everything stays cancellable), apply the optional WHERE (the
-/// comprehension WHERE gate, [`comprehension_where_holds`]) and project —
+/// comprehension WHERE gate, [`plain_where_holds`]) and project —
 /// `Ok(None)` when the row is filtered out. Both comprehension forms route
 /// through it: the value form's collector loop (`retain_projected`) and
 /// the `UNWIND` pull form (`CompElements::next`), so the two cannot drift.
@@ -48,7 +48,7 @@ pub(in crate::eval) fn comprehension_element(
     projection: &Expr,
 ) -> Result<Option<Value>> {
     graph.cancel_tick()?;
-    if !comprehension_where_holds(graph, row, predicate, params)? {
+    if !plain_where_holds(graph, row, predicate, params)? {
         return Ok(None);
     }
     eval(graph, row, projection, params).map(Some)
@@ -153,7 +153,7 @@ pub(crate) enum Elements<'a> {
 /// `range()` counter, or an evaluated list walked without a second
 /// copy), and each pulled element is bound to `ident` in a clone of the
 /// input row, gated by the comprehension `WHERE`
-/// ([`comprehension_where_holds`]) and projected on demand. The
+/// ([`plain_where_holds`]) and projected on demand. The
 /// projected output list the comprehension's value form builds
 /// (`eval_list_comp` → `retain_projected`) never exists here, so an
 /// aggregating consumer's memory follows its groups, not the list length.

@@ -327,10 +327,22 @@ impl<'a> ProjectionClass<'a> {
         streams_distinct(&self.fields, self.shape)
     }
 
-    /// ADR-0453's plain `WHERE` on this clause — the predicate applied per
-    /// row on the stream or in the landing funnel. The one home of the
-    /// plain/HAVING split: every consumer of the fact reads it here, never
-    /// re-deriving it from `where_mode`.
+    /// Whether the clause takes the pass-through page container — the one
+    /// place that rule is spelled. The fold funnel's superset
+    /// ([`land_feed`][super::post_merge::land_feed]): a named-`DISTINCT`
+    /// shape, a plain `WHERE`, or any page. The `MATCH` sink admits the
+    /// narrower named-`DISTINCT` form alone (its rows arrive unprojected,
+    /// so a plain page is the projection path's).
+    pub(crate) fn takes_page_container(&self, bounds: PageBounds) -> bool {
+        self.streams_pass()
+            && (self.streams_distinct() || self.plain_where().is_some() || bounds.is_paged())
+    }
+
+    /// ADR-0453's plain `WHERE` on this clause — the trailing predicate the
+    /// page container applies to its answered page, or the finish tail to
+    /// the page it cut. The one home of the plain/HAVING split: every
+    /// consumer of the fact reads it here, never re-deriving it from
+    /// `where_mode`.
     pub(crate) fn plain_where(&self) -> Option<&'a Expr> {
         self.where_mode.and_then(WhereMode::plain)
     }
