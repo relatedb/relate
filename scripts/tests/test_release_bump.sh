@@ -172,6 +172,11 @@ tap_check "refusal: the diagnostic names the first-release shape" $?
 cmp -s "$sandbox/changelog-bad.md" "$fx4/CHANGELOG.md"
 tap_check "refusal: the changelog is restored byte-identical" $?
 
+# The refusal fires after the sweep, so every inventory surface was bumped
+# and must be restored: nothing in the work tree differs from HEAD.
+git -C "$fx4" diff --quiet HEAD
+tap_check "refusal: every swept version surface is restored to HEAD" $?
+
 # --- Case 5: refusal (uncommitted edit to a touched path) ---------------------
 
 fx5="$sandbox/dirty"

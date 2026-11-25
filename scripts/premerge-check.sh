@@ -31,7 +31,8 @@
 #                 fetched from the remote and answered through the ref that
 #                 fetch wrote — never a stale local branch; or a full 40- or
 #                 64-character commit id, used as it stands (an
-#                 after-the-fact check against a pinned base). A shorter
+#                 after-the-fact check against a pinned base; it must be
+#                 a local commit, else exit 2). A shorter
 #                 hex spelling is a name like any other: it is fetched.
 #
 # Env:
@@ -77,10 +78,21 @@ fail() {
 # `premerge-check:` prefix on every line, the stderr stream and the exit
 # status (1 — "do not merge") are stated here, never at each arm that
 # concludes one. Only the lines that explain the verdict stay at the site.
+STATUS_DO_NOT_MERGE=1
 do_not_merge() {
     echo >&2
     printf 'premerge-check: %s\n' "$@" >&2
-    exit 1
+    exit "$STATUS_DO_NOT_MERGE"
+}
+
+# The raw-block form of the same verdict, for a report that is a producer's
+# own output rather than prefixed lines: `do_not_merge_block <header> <file>`
+# prints the prefixed header, then lines 2-40 of the file as they stand, on
+# the same stream and with the same status as `do_not_merge`.
+do_not_merge_block() {
+    echo "premerge-check: $1" >&2
+    sed -n '2,40p' "$2" >&2
+    exit "$STATUS_DO_NOT_MERGE"
 }
 
 # The status-to-verdict mapping, one home. A command this gate runs has
@@ -96,7 +108,7 @@ verdict() {
     shift 3
     case $status in
         0) return 0 ;;
-        1) do_not_merge "$@" ;;
+        "$STATUS_DO_NOT_MERGE") do_not_merge "$@" ;;
         *) fail "$label could not run (status $status)" "$log" ;;
     esac
 }
@@ -197,8 +209,10 @@ is_commit "$head_rev" || fail "$head_rev is not a commit (fetch it first)"
 # (a single-branch or custom-refspec clone maps other names nowhere). A
 # failed fetch is reported with git's own error rather than a guess, and it
 # is an error, never a fall back to the stale local branch of that name.
-# A base spelled in hex is a commit id used as it stands, for
-# after-the-fact checks against a pinned base.
+# A base spelled as a FULL object id is a commit id used as it stands, for
+# after-the-fact checks against a pinned base; one that is not a local
+# commit is an error, never reinterpreted as a branch name. Assigns
+# `base_ref` in the caller's shell, so `fail` owns the exit status directly.
 resolve_base() {
     local given=$1 ref
     case $given in
@@ -208,9 +222,10 @@ resolve_base() {
     # Only a FULL object id names itself. A shorter hex spelling is a name
     # like any other — a branch or tag can be spelled in hex — so it is
     # fetched and verified rather than trusted as a pinned commit.
-    if [[ $given =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]] \
-            && is_commit "$given"; then
-        printf '%s\n' "$given"
+    if [[ $given =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]]; then
+        is_commit "$given" \
+            || fail "pinned base $given is not a local commit (fetch it first)"
+        base_ref=$given
         return 0
     fi
     if ! git -C "$REPO" fetch origin "$given" >/dev/null 2>"$scratch/fetch.err"; then
@@ -220,13 +235,9 @@ resolve_base() {
     if ! is_commit "$ref"; then
         fail "fetching $given did not produce $ref — this clone's refspec does not map it, refusing to merge against an unverified base"
     fi
-    printf '%s\n' "$ref"
+    base_ref=$ref
 }
-# resolve_base prints the ref or fails. `fail` runs in the substitution's
-# subshell, so its exit status is what `|| exit 2` carries into this shell —
-# the message still reaches stderr, and the status is still the
-# environment one.
-base_ref=$(resolve_base "$base_rev") || exit 2
+resolve_base "$base_rev"
 
 
 # A relative target dir is resolved against the caller's cwd, not the
@@ -253,13 +264,11 @@ echo "premerge-check: merging $head_rev onto $base_rev"
 merge_status=0
 git -C "$REPO" merge-tree --write-tree "$base_ref" "$head_rev" \
     >"$scratch/tree" 2>"$scratch/tree.err" || merge_status=$?
-# The conflict report is merge-tree's own output, sliced where it is
-# printed — not a verdict line — so it keeps its site; the other two
-# statuses are read through the one mapping.
-if [ "$merge_status" -eq 1 ]; then
-    echo "premerge-check: the merge CONFLICTS — resolve before merging:" >&2
-    sed -n '2,40p' "$scratch/tree" >&2
-    exit 1
+# The conflict report is merge-tree's own output, so it goes through the
+# verdict reporter's raw-block form; the other statuses are read through
+# the one mapping.
+if [ "$merge_status" -eq "$STATUS_DO_NOT_MERGE" ]; then
+    do_not_merge_block "the merge CONFLICTS — resolve before merging:" "$scratch/tree"
 fi
 verdict "$merge_status" "merge-tree" "$scratch/tree.err"
 tree=$(head -n 1 "$scratch/tree")

@@ -44,6 +44,10 @@
 # scripts/build-wasm.sh stamps it from the workspace Cargo.toml (bumped
 # above), so it needs no edit here.
 #
+# The per-file surfaces above are one inventory in the script
+# (`version_surfaces`); the rollback list, the sweep and the read-back all
+# derive from it.
+#
 # Runs in CI on ubuntu-latest (GNU sed); the shared sedi helper
 # (scripts/lib/sedi.sh) also works with BSD sed so local rehearsals on macOS
 # behave the same.
@@ -136,7 +140,36 @@ docs_version_files=(
   "docs/api/cli/examples/agents.md"
   "docs/api/java/examples/RelateE2E.java"
 )
-touched=("$cargo_toml" "$pyproject" "$pyinit" "$lockfile" "$changelog" "$java_pom" "$dotnet_csproj" "$js_main_pkg" "$js_lockfile" "${js_platform_pkgs[@]}" "${docs_version_files[@]}")
+
+# The one inventory of per-file version surfaces: `path<TAB>kind`, one row
+# per surface. The rollback list (`touched`), the step-1 sweep and the
+# step-4 read-back all derive from it through `surface_set` / `surface_check`
+# below, so a new surface is one row here plus one arm in each dispatcher
+# (an unknown kind is a loud error in both) and cannot enter the rollback
+# list without the sweep and the read-back. Surfaces regenerated or swept
+# by their own tool (Cargo.lock, the npm lockfile, the docs files, the
+# CHANGELOG) are not rows: they sit in `touched` beside the derived paths.
+version_surfaces() {
+  printf '%s\t%s\n' \
+    "$cargo_toml" cargo \
+    "$pyproject" pyproject \
+    "$pyinit" pyinit \
+    "$js_main_pkg" npm-main
+  local f
+  for f in "${js_platform_pkgs[@]}"; do
+    printf '%s\t%s\n' "$f" npm-platform
+  done
+  printf '%s\t%s\n' \
+    "$java_pom" pom \
+    "$dotnet_csproj" csproj
+}
+
+surface_paths=()
+while IFS=$'\t' read -r surface_path _; do
+  surface_paths+=("$surface_path")
+done < <(version_surfaces)
+
+touched=("${surface_paths[@]}" "$lockfile" "$changelog" "$js_lockfile" "${docs_version_files[@]}")
 
 # Changelog fragments (ADR-0627): consumed at the release cut. Globbed up
 # front — before the collector can delete them — so the up-front dirty-tree
@@ -227,37 +260,47 @@ trap 'restore_touched "interrupted"' INT TERM HUP
 
 # --- 1. Version surfaces -----------------------------------------------------
 
-toml_section_set_version "$cargo_toml" "[workspace.package]" "$next"
-# The relate* entries in [workspace.dependencies] carry a version pin so the
-# publishable crates can reach crates.io (ADR-0560); the pins ride the
-# same lockstep version as every other surface.
-toml_workspace_deps_set_version "$cargo_toml" "$next"
-toml_section_set_version "$pyproject" "[project]" "$next"
-sedi "$pyinit" "s/$pyinit_fallback/return \"$next\"/g"
+# surface_set <path> <kind> — the sweep's one dispatcher over the inventory
+# (`version_surfaces`); step 4's `surface_check` is its read-back twin.
+surface_set() {
+  case "$2" in
+    cargo)
+      toml_section_set_version "$1" "[workspace.package]" "$next"
+      # The relate* entries in [workspace.dependencies] carry a version pin
+      # so the publishable crates can reach crates.io (ADR-0560); the pins
+      # ride the same lockstep version as every other surface.
+      toml_workspace_deps_set_version "$1" "$next"
+      ;;
+    pyproject) toml_section_set_version "$1" "[project]" "$next" ;;
+    pyinit) sedi "$1" "s/$pyinit_fallback/return \"$next\"/g" ;;
+    # npm manifests (ADR-0278, ADR-0616). The platform package.json files
+    # carry exactly one "version" key; the main package.json's
+    # optionalDependencies are file:platforms/ links to the in-repo platform
+    # directories (the repository shape — they carry no version, so nothing
+    # here pins: the published registry pins are injected at pack time by
+    # npm_json.py's pin verb). The top-level "version" sits at 2-space
+    # indent.
+    npm-main | npm-platform)
+      sedi "$1" "s/^  \"version\": \"[^\"]*\"/  \"version\": \"$next\"/"
+      ;;
+    # Maven: the project's own <version> only, through the same structural
+    # accessor the step-4 read-back calls — dependency and plugin versions
+    # are never touched.
+    pom) python3 "$pom_py" set "$1" "$next" ;;
+    # .NET: the package <Version> only, through the same structural accessor
+    # the step-4 read-back calls.
+    csproj) python3 "$csproj_py" set "$1" "$next" ;;
+    *) echo "release-bump: unknown version-surface kind '$2' for $1" >&2; exit 1 ;;
+  esac
+}
+
+while IFS=$'\t' read -r surface_path surface_kind; do
+  surface_set "$surface_path" "$surface_kind"
+done < <(version_surfaces)
+
 # Prose and examples that quote the Relate version — the sweep's own
 # membership rule sits at the docs_version_files definition above.
 python3 scripts/version_tokens.py rewrite --to "$next" "${docs_version_files[@]}"
-
-# npm manifests (ADR-0278, ADR-0616). The platform package.json files carry
-# exactly one "version" key; the main package.json's optionalDependencies
-# are file:platforms/ links to the in-repo platform directories (the
-# repository shape — they carry no version, so nothing here pins: the
-# published registry pins are injected at pack time by
-# npm_json.py's pin verb). The top-level "version" sits at
-# 2-space indent.
-sedi "$js_main_pkg" "s/^  \"version\": \"[^\"]*\"/  \"version\": \"$next\"/"
-for f in "${js_platform_pkgs[@]}"; do
-  sedi "$f" "s/^  \"version\": \"[^\"]*\"/  \"version\": \"$next\"/"
-done
-
-# Maven: the project's own <version> only, through the same structural
-# accessor the step-4 read-back calls — dependency and plugin versions are
-# never touched.
-python3 "$pom_py" set "$java_pom" "$next"
-
-# .NET: the package <Version> only, through the same structural accessor the
-# step-4 read-back calls.
-python3 "$csproj_py" set "$dotnet_csproj" "$next"
 
 # Regenerate the npm lockfile from the bumped manifest instead of sed'ing it:
 # the lockfile's root-entry "version" sits at a different indent than the
@@ -328,73 +371,94 @@ read_back_eq() {
   fi
 }
 
-check_cargo="$(toml_section_version "$cargo_toml" "[workspace.package]")"
-check_pyproject="$(toml_section_version "$pyproject" "[project]")"
+# surface_check <path> <kind> — the read-back twin of `surface_set`: one
+# dispatcher over the same inventory rows, so every swept surface is read
+# back. A non-zero reader status means the entry is absent or malformed,
+# distinct from a wrong value (read_back_eq keeps them apart).
+surface_check() {
+  local f="$1" check
+  case "$2" in
+    cargo)
+      check="$(toml_section_version "$f" "[workspace.package]")"
+      expect_eq "Cargo.toml [workspace.package] version" "$next" "$check"
+      # Workspace dependency pins: every relate* entry must read back at
+      # $next — a stale pin would publish a crates.io dependency on a
+      # version that does not exist. The reader prints pinless entries as
+      # `-`, so an entry whose pin drifted out of the grammar is caught here
+      # too. The one sanctioned path-only entry (named once in toml.sh) is
+      # not skipped but shape-checked: it must read back pinless.
+      local stale_pins
+      stale_pins="$(toml_workspace_dep_versions "$f" | awk -v v="$next" -v exempt="$TOML_WORKSPACE_DEP_PATH_ONLY" '
+        $1 == exempt { if ($2 != "-") print $1; next }
+        $2 != v { print $1 }')"
+      [[ -z "$stale_pins" ]] || {
+        echo "release-bump: Cargo.toml [workspace.dependencies] pins not at $next:" >&2
+        echo "$stale_pins" >&2
+        fail=1
+      }
+      ;;
+    pyproject)
+      check="$(toml_section_version "$f" "[project]")"
+      expect_eq "pyproject.toml [project] version" "$next" "$check"
+      ;;
+    pyinit)
+      # The fallback-literal grammar is the one pattern defined beside
+      # `pyinit` above, so the sweep and this check cannot disagree about
+      # what a fallback literal is. The invariant is "no stale fallback
+      # literal survives the sweep" — the count of literals is
+      # __init__.py's own fact, never mirrored here.
+      if grep -E "$pyinit_fallback" "$f" | grep -v "return \"$next\"" > /dev/null; then
+        echo "release-bump: __init__.py still has a stale fallback version literal" >&2
+        fail=1
+      fi
+      grep -q "return \"$next\"" "$f" || {
+        echo "release-bump: __init__.py carries no fallback literal return \"$next\"" >&2
+        fail=1
+      }
+      ;;
+    # npm manifests: the main package's "version" and the five file:
+    # platform links in its optionalDependencies, and each platform
+    # package's "version". Both link checks (here and in the lockfile below)
+    # expect the platform-package list's length — the same count the
+    # inventory iterates, never a second copy of the number. The links are
+    # version-free: a value that is not a file:platforms/ link fails loudly
+    # (npm_json refuses it), so a future edit cannot quietly reintroduce
+    # registry pins into the repo manifest — the shape the release-broken
+    # npm ci came from.
+    npm-main)
+      check="$(npm_json version "$f")"
+      expect_eq "$f version" "$next" "$check"
+      check="$(npm_json file-links "$f")"
+      expect_eq "$f optionalDependencies file: links" "$js_pin_count" "$check"
+      ;;
+    npm-platform)
+      check="$(npm_json version "$f")"
+      expect_eq "$f version" "$next" "$check"
+      ;;
+    pom)
+      read_back_eq "$f project version" \
+        "$f has no readable project <version> entry" \
+        python3 "$pom_py" get "$f"
+      ;;
+    csproj)
+      read_back_eq "$f package version" \
+        "$f has no readable package <Version> entry" \
+        python3 "$csproj_py" get "$f"
+      ;;
+    *) echo "release-bump: unknown version-surface kind '$2' for $f" >&2; exit 1 ;;
+  esac
+}
 
-expect_eq "Cargo.toml [workspace.package] version" "$next" "$check_cargo"
-expect_eq "pyproject.toml [project] version" "$next" "$check_pyproject"
-# Workspace dependency pins: every relate* entry must read back at $next —
-# a stale pin would publish a crates.io dependency on a version that does
-# not exist. The reader prints pinless entries as `-`, so an entry whose
-# pin drifted out of the grammar is caught here too. The one sanctioned
-# path-only entry (named once in toml.sh) is not skipped but shape-checked:
-# it must read back pinless.
-stale_pins="$(toml_workspace_dep_versions "$cargo_toml" | awk -v v="$next" -v exempt="$TOML_WORKSPACE_DEP_PATH_ONLY" '
-  $1 == exempt { if ($2 != "-") print $1; next }
-  $2 != v { print $1 }')"
-[[ -z "$stale_pins" ]] || {
-  echo "release-bump: Cargo.toml [workspace.dependencies] pins not at $next:" >&2
-  echo "$stale_pins" >&2
-  fail=1
-}
-# The fallback-literal grammar is the one pattern defined beside `pyinit`
-# above, so the sweep and this check cannot disagree about what a fallback
-# literal is. The invariant is "no stale fallback literal survives the
-# sweep" — the count of literals is __init__.py's own fact, never mirrored
-# here.
-if grep -E "$pyinit_fallback" "$pyinit" | grep -v "return \"$next\"" > /dev/null; then
-  echo "release-bump: __init__.py still has a stale fallback version literal" >&2
-  fail=1
-fi
-grep -q "return \"$next\"" "$pyinit" || {
-  echo "release-bump: __init__.py carries no fallback literal return \"$next\"" >&2
-  fail=1
-}
+js_pin_count="${#js_platform_pkgs[@]}"
+while IFS=$'\t' read -r surface_path surface_kind; do
+  surface_check "$surface_path" "$surface_kind"
+done < <(version_surfaces)
+
 # toml_lock_package_version exits non-zero when the relate package is absent
 # from the lockfile; read_back_eq keeps absent distinct from wrong.
 read_back_eq "Cargo.lock relate package version" \
   "Cargo.lock has no relate package entry" \
   toml_lock_package_version "$lockfile" relate
-
-# Maven: read back through the same accessor; a non-zero status means the
-# entry is missing or the pom is malformed — distinct from a wrong value.
-read_back_eq "$java_pom project version" \
-  "$java_pom has no readable project <version> entry" \
-  python3 "$pom_py" get "$java_pom"
-
-# .NET: read back through the same accessor; a non-zero status means the
-# entry is missing, blank, or ambiguous — distinct from a wrong value.
-read_back_eq "$dotnet_csproj package version" \
-  "$dotnet_csproj has no readable package <Version> entry" \
-  python3 "$csproj_py" get "$dotnet_csproj"
-
-# npm manifests: the main package's "version", the five file: platform
-# links in its optionalDependencies, and each platform package's "version".
-# Both link checks (here and in the lockfile below) expect the
-# platform-package list's length — the same count the sweep above iterates,
-# never a second copy of the number. The links are version-free: a value
-# that is not a file:platforms/ link fails loudly (npm_json refuses it), so
-# a future edit cannot quietly reintroduce registry pins into the repo
-# manifest — the shape the release-broken npm ci came from.
-js_pin_count="${#js_platform_pkgs[@]}"
-check_js_main="$(npm_json version "$js_main_pkg")"
-expect_eq "$js_main_pkg version" "$next" "$check_js_main"
-check_js_links="$(npm_json file-links "$js_main_pkg")"
-expect_eq "$js_main_pkg optionalDependencies file: links" "$js_pin_count" "$check_js_links"
-for f in "${js_platform_pkgs[@]}"; do
-  check_platform="$(npm_json version "$f")"
-  expect_eq "$f version" "$next" "$check_platform"
-done
 
 # npm lockfile: the top-level "version", the packages[""] root entry's
 # "version", and the five file: platform links mirrored into the lock.
