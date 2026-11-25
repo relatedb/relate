@@ -7,9 +7,9 @@
 </p>
 
 Relate is an embedded, in-memory property-graph engine written in Rust, with a
-command-line shell for interactive and scripted queries. A graph is a single
-`.rl` file, a directory, or pure in-memory — durable through a fsync'd
-write-ahead log and Parquet checkpoints.
+CLI for interactive and scripted queries. A graph is a single `.rl` file, a
+(markdown) folder, or pure in-memory — durable through a fsync'd write-ahead
+log and Parquet checkpoints.
 The same engine powers the `relate` CLI, a Python package, Node.js and browser
 (WASM) npm packages, a Rust crate, and an optional one-process server speaking
 Bolt, HTTP, and MCP. No server to babysit, no infrastructure to operate.
@@ -24,249 +24,86 @@ larger-than-memory warehouse, an analytics engine, or a multi-tenant server.
 
 ## Install
 
-**CLI (macOS & Linux):**
+**macOS & Linux:**
 
 ```bash
 curl -sSfL https://relatedb.ai/install.sh | bash
+relate skill install    # optional: teach your AI coding agents to drive relate
 ```
 
-**CLI (Homebrew, macOS & Linux):**
+If `relate` is not found afterwards, add `~/.local/bin` to your `PATH` — the
+installer prints the line to use.
 
-```bash
-brew install relatedb/tap/relate
-```
-
-The project tap installs the release binary and records the install as
-package-managed, so `relate upgrade` defers to `brew upgrade relate` instead
-of replacing what Homebrew owns
-([ADR-0659](docs/adr/0659-package-manager-distribution-channels.md)).
-
-**CLI (Windows, PowerShell):**
+**Windows (PowerShell):**
 
 ```powershell
 irm https://relatedb.ai/install.ps1 | iex
+relate skill install    # optional: teach your AI coding agents to drive relate
 ```
 
-From `cmd` or Git Bash, run
-`powershell -ExecutionPolicy ByPass -c "irm https://relatedb.ai/install.ps1 | iex"`.
-It installs `relate.exe` to `%LOCALAPPDATA%\Programs\relate` and adds that
-folder to your user `PATH`. It runs the same checks as `install.sh` with
-the inbox Windows `ssh-keygen`, in Windows PowerShell 5.1 and PowerShell 7
-([ADR-0586](docs/adr/0586-windows-powershell-installer.md)). The binary
-links the C runtime statically, so it needs no Visual C++ redistributable
-([ADR-0587](docs/adr/0587-windows-static-crt.md)).
+The skill gives every detected agent (Claude Code, Cursor, Codex, Gemini CLI,
+Copilot, …) the CLI flags, the Cypher dialect and the gotchas; `relate
+upgrade` keeps it current — [Agent skill](#agent-skill).
 
-**CLI (Fedora & RHEL, dnf):**
-
-```bash
-sudo curl -fsSL https://relatedb.ai/rpm/relate.repo -o /etc/yum.repos.d/relate.repo && sudo dnf install relate
-```
-
-The repo file enables `repo_gpgcheck=1`, so dnf verifies the repository
-metadata (`repomd.xml`) against the committed repository key
-([ADR-0659](docs/adr/0659-package-manager-distribution-channels.md)) and
-imports that key from the same host — no `--nogpgcheck` and no manual key
-import. This install is owned by dnf: the real binary lives at
-`/usr/lib/relate/relate` with a `/usr/bin/relate` symlink, and `relate
-upgrade` replaces nothing — upgrade it with `sudo dnf upgrade relate`.
-
-> **Piping a script into a shell runs it before you have read it.** Both
-> installers authenticate everything they download (the signed manifest,
-> then the binary's checksum), but the script itself is trusted on the
-> strength of the HTTPS connection to `relatedb.ai`. To read it first,
-> download it, inspect it, then run the local copy:
->
-> ```bash
-> curl -sSfLo install.sh https://relatedb.ai/install.sh && less install.sh && bash install.sh
-> ```
->
-> ```powershell
-> irm https://relatedb.ai/install.ps1 -OutFile install.ps1; notepad install.ps1
-> powershell -ExecutionPolicy ByPass -File .\install.ps1
-> ```
->
-> Both scripts are also attached to every
-> [GitHub release](https://github.com/relatedb/relate/releases/latest), as
-> the copy from the tagged commit.
-
-Downloads the release binary for your platform (macOS and Linux, amd64 and
-arm64) to `$HOME/.local/bin`, resolving the latest release from
-[`releases.json`](https://relatedb.ai/releases.json) — the same release
-metadata `relate upgrade` reads
-([ADR-0571](docs/adr/0571-installer-resolves-via-releases-json.md) — and
-the assets themselves come straight from the GitHub release download route,
-so the installer makes no GitHub API requests and no token is ever needed,
-even behind shared-IP networks
-([ADR-0585](docs/adr/0585-installer-downloads-via-direct-route.md))). Each
-release's `SHA256SUMS` manifest is
-authenticated against its SSHSIG signature with the stock `ssh-keygen` — the
-public key is pinned in the script, and the installer **fails closed** on a
-missing or invalid signature
-([ADR-0115](docs/adr/0115-sshsig-release-signing.md)). macOS binaries are
-additionally signed and notarized, so Gatekeeper raises no warning
-([ADR-0123](docs/adr/0123-macos-codesign-notarize.md)), and Windows binaries
-are additionally Authenticode-signed with an RFC 3161 timestamp
-([ADR-0594](docs/adr/0594-windows-authenticode-signing.md)). Prebuilt binaries for
-Linux, macOS, and Windows are on the
-[releases page](https://github.com/relatedb/relate/releases/latest), and an
-installed binary self-updates:
-
-```bash
-relate upgrade          # download, verify, and replace (alias: update)
-relate upgrade --check  # report current vs latest; changes nothing
-```
-
-On Windows a running `.exe` cannot replace itself, so `relate upgrade`
-points you at the PowerShell installer: rerun it to upgrade.
-`relate upgrade --check` works on every platform.
-
-**CLI (Windows, winget):**
-
-```powershell
-winget install --id Relatedb.Relate -e
-```
-
-The release pipeline generates the winget manifests from each release's
-asset manifest — the installer is the tagged `relate-windows-amd64.exe` with
-its published sha256 — and submits the version bump to
-[microsoft/winget-pkgs](https://github.com/microsoft/winget-pkgs)
-([ADR-0659](docs/adr/0659-package-manager-distribution-channels.md)).
-
-**CLI (Debian & Ubuntu, apt):**
-
-```bash
-sudo install -d -m 0755 /etc/apt/keyrings
-curl -fsSL https://relatedb.ai/apt/repo-signing-key.asc | sudo tee /etc/apt/keyrings/relate.asc >/dev/null
-echo "deb [signed-by=/etc/apt/keyrings/relate.asc] https://relatedb.ai/apt stable main" | sudo tee /etc/apt/sources.list.d/relate.list >/dev/null
-sudo apt-get update
-sudo apt-get install relate
-```
-
-The package keeps the binary in `/usr/lib/relate` and symlinks it to
-`/usr/bin/relate`; upgrade it with apt
-(`sudo apt-get update && sudo apt-get install --only-upgrade relate`).
-apt verifies the repository metadata against the committed key it fetches
-from the same root — no `--allow-unauthenticated`
-([ADR-0659](docs/adr/0659-package-manager-distribution-channels.md)).
-
-**CLI (Windows):** download `relate-windows-amd64.exe` from the
-[releases page](https://github.com/relatedb/relate/releases/latest), then
-check its Authenticode signature before the first run:
-
-```powershell
-Get-AuthenticodeSignature .\relate-windows-amd64.exe |
-  Format-List Status, TimeStamperCertificate,
-    @{ Label = 'SignerSubject'; Expression = { $_.SignerCertificate.Subject } }
-```
-
-`Status` must be `Valid` with a `TimeStamperCertificate` present — the
-RFC 3161 timestamp keeps the signature valid after the certificate
-expires — and the `SignerSubject` (the `SignerCertificate` subject) must
-name the expected publisher: the code-signing certificate held in DigiCert
-Software Trust Manager, set up in
-[RELEASING.md](RELEASING.md#windows-signing)
-([ADR-0594](docs/adr/0594-windows-authenticode-signing.md)).
-
-**CLI (Windows, Chocolatey):**
-
-```powershell
-choco install relate
-```
-
-The package runs the release's Windows binary from Chocolatey's package
-directory, shimmed onto `PATH`, and verifies the download's SHA-256
-against the release's `assets.json` before installing. It writes the
-`.relate-package-managed` marker beside the binary, so `relate upgrade`
-defers to `choco upgrade relate`
-([ADR-0659](docs/adr/0659-package-manager-distribution-channels.md)).
-
-**Python:**
-
-```bash
-pip install relate-db   # the import is `import relate`
-```
-
-**npm — Node.js and the browser:**
-
-```bash
-npm install @relate/relate        # Node.js 18+ (native bindings)
-npm install @relate/relate-wasm   # browser (WebAssembly)
-```
-
-**Rust:**
-
-```bash
-cargo add --git https://github.com/relatedb/relate relate
-```
-
+Homebrew, Python, npm, Rust, direct downloads, and how every download is
+verified: [Other install options](#other-install-options).
 
 ## Quick start
 
-Hand the wheel to your AI agents, or drive it yourself:
+Copy the whole block into a terminal — outputs are the `#` lines.
 
 ```bash
-# Once: install the relate skill bundle — CLI + Cypher + vector + spatial
-# references — into every detected AI agent (Claude Code, Cursor, Codex,
-# Gemini CLI, Copilot, Windsurf, OpenCode, ...)
-relate skill install
-
-# One-shot query on an in-memory database
+# A one-shot query on an in-memory database
 relate "RETURN 1 + 2 AS sum"
 
-# Open (or create) a store and drop into the interactive shell
-relate query --database ./friends
+# +-----+
+# | sum |
+# +-----+
+# | 3   |
+# +-----+
 
-# Script-friendly output
-relate --json ./friends "MATCH (p:Person) RETURN p.name"
+# Create a small graph in a store (a directory; name it friends.rl for one file)
+relate -d ./friends "CREATE (:Person {name: 'Alice'})-[:KNOWS]->(:Person {name: 'Bob'})-[:KNOWS]->(:Person {name: 'Charlie'})"
 
-# Run a file of statements
-relate -d ./friends < setup.cypher
+# Script-friendly JSON: whom does Alice know?
+relate --json -d ./friends "MATCH p = (:Person {name: 'Alice'})-[:KNOWS]->() RETURN p"
+
+# {"data": [{"p": [
+#   {"id": 0, "kind": "node", "labels": ["Person"], "properties": {"name": "Alice"}},
+#   {"end_node": 1, "id": 0, "kind": "relationship", "properties": {}, "start_node": 0, "type": "KNOWS"},
+#   {"id": 1, "kind": "node", "labels": ["Person"], "properties": {"name": "Bob"}}
+# ]}], "planCache": "miss", "timings": {…}}
+
+# Several statements at once: give Charlie a friend, then ask who Alice can reach
+relate -d ./friends "
+MATCH (c:Person {name: 'Charlie'}) CREATE (c)-[:KNOWS {since: 2024}]->(:Person {name: 'Dana'});
+MATCH (:Person {name: 'Alice'})-[:KNOWS]->+(p) RETURN p.name AS reachable ORDER BY reachable;
+"
+
+# +-----------+
+# | reachable |
+# +-----------+
+# | "Bob"     |
+# | "Charlie" |
+# | "Dana"    |
+# +-----------+
+
+# Explore the same store in the interactive shell (end statements with ;  .quit to exit)
+relate query -d ./friends
+
+# cypher>
 ```
 
-`relate skill install` is optional — it teaches supported agents the CLI
-flags, the Cypher dialect, and the gotchas, so they can drive `relate` for
-you. `relate upgrade` keeps the bundle current automatically. More in
-[Agent skill](#agent-skill).
-
-An example session:
-
-```
-$ relate query --database ./friends
-
-Relate v1.3.0
-Type .help for help, .exit to quit.
-
-cypher> CREATE (alice:Person {name: 'Alice', age: 30});
-Nodes created: 1, Properties set: 2, Labels added: 1
-
-cypher> CREATE (bob:Person {name: 'Bob', age: 28});
-Nodes created: 1, Properties set: 2, Labels added: 1
-
-cypher> MATCH (a:Person {name: 'Alice'}), (b:Person {name: 'Bob'})
-   ...> CREATE (a)-[:FRIENDS_WITH {since: 2020}]->(b);
-Relationships created: 1, Properties set: 1
-
-cypher> MATCH (p:Person)-[r:FRIENDS_WITH]->(friend)
-   ...> RETURN p.name, friend.name, r.since;
-+--------+-------------+---------+
-| p.name | friend.name | r.since |
-+--------+-------------+---------+
-| Alice  | Bob         | 2020    |
-+--------+-------------+---------+
-```
-
-## Surfaces
-
-One engine, many front doors: the CLI (Quick start above), the libraries
-below, the server surfaces (Bolt, HTTP, MCP), and the extension mount
-([Extensions](#extensions) below).
+## Python and JavaScript
 
 ### Python
 
 Queries execute in-process — a native extension module (PyO3), no server, no
-subprocess:
+subprocess — so it runs wherever Python does: scripts, Jupyter notebooks,
+Streamlit apps, web backends, or an agent's tool code:
 
 ```python
+# pip install relate-db
 import relate
 
 db = relate.connect(":memory:")   # or "./friends" — a directory or .rl file
@@ -282,6 +119,16 @@ for row in db.execute("MATCH (p:Person)-[:FRIENDS_WITH]->(f) RETURN p.name, f.na
     print(f"{row['p.name']} -> {row['f.name']}")   # Alice -> Bob
 ```
 
+Draw a result as an interactive graph:
+
+```python
+# pip install neo4j-viz
+from relate.viz import to_visualization_graph
+
+graph = to_visualization_graph(db.execute("MATCH p = ()-[:FRIENDS_WITH]->() RETURN p"))
+graph.render()  # an interactive graph in Jupyter
+```
+
 A native `Database` class adds `execute_arrow()` — the result as Arrow IPC
 stream bytes (one serialized conversion from engine rows) for pandas or Polars. Spec: [`docs/api/python/`](docs/api/python/); runnable
 example: [`examples/python/python_demo.py`](examples/python/python_demo.py).
@@ -289,6 +136,7 @@ example: [`examples/python/python_demo.py`](examples/python/python_demo.py).
 ### Node.js
 
 ```js
+// npm install @relate/relate   (or: pnpm add / yarn add @relate/relate)
 const { Database } = require("@relate/relate");
 
 const db = Database.open("./friends");        // or ":memory:"
@@ -302,21 +150,93 @@ result.consume().elapsedMs;    // engine-reported milliseconds
 Node 18+; the native library arrives via platform optional-dependencies — no
 install scripts. Spec: [`docs/api/javascript/`](docs/api/javascript/).
 
-### Browser (WASM)
+## Markdown mode
 
-The engine compiled to WebAssembly — run Cypher in a page, no server:
+A graph can live in a folder of markdown notes: every node is a note, every
+relationship a `[[wikilink]]` in its frontmatter, and the property you name
+with `--markdown-body-properties` (default `body`) is the note's text. Open
+the folder in Obsidian, edit it in any editor, diff it in git — and query it
+with Cypher.
 
-```js
-import init, { RelateDb } from "@relate/relate-wasm";
+```bash
+relate -d ./story --snapshot-format markdown --markdown-body-properties text "CREATE (:Mascot {name: 'Archie', text: 'Archie guards the graph and never forgets a relationship.'})-[:LOVES]->(:Database {name: 'Relate', text: 'A graph database in a single binary.'})"
 
-await init();
+head story/*/*.md
 
-const db = new RelateDb();                    // in-memory
-const result = JSON.parse(db.execute("RETURN 1 AS n", null));
+# ==> story/Database/index.md <==
+# # Database
+#
+# - [[Database/Relate]]
+#
+# ==> story/Database/Relate.md <==
+# ---
+# type: Database
+# name: Relate
+# ---
+#
+# A graph database in a single binary.
+#
+# ==> story/Mascot/Archie.md <==
+# ---
+# type: Mascot
+# name: Archie
+# LOVES:
+#   - "[[Database/Relate]]"
+# ---
+#
+# Archie guards the graph and never forgets a relationship.
+#
+# ==> story/Mascot/index.md <==
+# # Mascot
+#
+# - [[Mascot/Archie]]
+
+# Query it again — no flags needed, the folder remembers them
+relate -d ./story "MATCH (m:Mascot)-[:LOVES]->(d) RETURN m.name, d.name, m.text"
+
+# +----------+----------+-------------------------------------------------------------+
+# | m.name   | d.name   | m.text                                                      |
+# +----------+----------+-------------------------------------------------------------+
+# | "Archie" | "Relate" | "Archie guards the graph and never forgets a relationship." |
+# +----------+----------+-------------------------------------------------------------+
 ```
 
-Durable browser storage via OPFS: `await RelateDb.open("opfs://graph")` —
-runs in a dedicated worker only. Spec: [`docs/api/wasm/`](docs/api/wasm/).
+An existing vault of `<Label>/<name>.md` notes opens the same way:
+[the vault guide](docs/guides/obsidian-vault.md).
+
+## Relate Features
+
+| Area | What it covers |
+| --- | --- |
+| **Cypher** | Reading and writing (`MATCH`, `OPTIONAL MATCH`, `CREATE`, `MERGE`, `SET`, `REMOVE`, `DELETE`, `FOREACH`, `INSERT`), composing (`WITH`, `UNWIND`, `UNION`, `CALL {}` subqueries, subquery expressions), schema DDL (indexes, constraints, graph types), 80+ built-in functions, and modern pattern matching — label expressions, quantified path patterns, path selectors. One dialect: current Cypher. |
+| **Language floor** | The openCypher TCK is the dialect floor, measured by the project's spec harness: Neo4j's Cypher suites — the upstream TCK among them — run against the engine's Python wheel on every ready PR, as reported coverage plus the ADR-0661 regression gate (a scenario main does not already carry as failing is red). History: [`docs/tck/compliance.md`](docs/tck/compliance.md). |
+| **Vector search** | `vector()` properties, `vector.similarity.*` scoring functions, `CREATE VECTOR INDEX` plus the `SEARCH` clause for index-backed top-K with pre-filtering, and hybrid vector + full-text queries. |
+| **Geospatial** | WGS-84 and Cartesian points (2D/3D), `point.distance()`, radius and bounding-box predicates (`point.withinBBox`), and R-tree point indexes (`CREATE POINT INDEX`). The dialect covers points only — richer geometry is host-language work. |
+| **Profiling** | `EXPLAIN` renders the plan tree; `PROFILE` adds per-operator rows and time. Profiling costs nothing on non-PROFILE runs. |
+| **CLI shell** | Interactive REPL with readline-style editing, dot-commands, output modes `table`, `csv`, `json`, `jsonl`, `markdown`, `cypher`. |
+| **Import / sync** | `LOAD CSV` directly in Cypher; `--fetch-params` binds a fetched URL/file JSON document as a parameter; `pull`/`push` mirror subgraphs between Relate and a Neo4j/Aura instance; `clone` copies a whole store across layouts — directory ↔ `.rl` bundle, optionally transcoding the snapshot codec. |
+| **Read-only & follow** | `--read-only` opens an existing store without writing or checkpointing; `--read-only=live` follows a native directory's WAL while another process writes it. The same access modes — snapshot and live freshness — ride `serve` and the Rust API (`OpenMode::ReadOnly` / `Follow`, ADR-0136). |
+| **Surfaces** | Rust crate, Python + Arrow IPC, JS/Java/Go/Swift over the typed C ABI, Bolt, HTTP, MCP, WASM. |
+
+Task guides — vector similarity, geospatial, CSV import, backup/restore,
+storage — live in [`docs/guides/`](docs/guides/); tested, runnable recipes for
+most of the above are in the [cookbook](https://relatedb.ai/cookbook/).
+
+## Server — Bolt, HTTP, MCP
+
+When you want a socket instead of a library:
+
+```bash
+relate serve --database ./friends --bolt 7687 --http 7474 --mcp 7475
+```
+
+One process, one store, one generated token (printed at startup): Neo4j
+drivers connect over Bolt — neo4j-browser works out of the box — the HTTP
+Query API v2 serves JSON, and MCP (streamable HTTP) serves AI hosts. Binds
+loopback by default; runs until SIGINT/SIGTERM. Specs:
+[`bolt`](docs/api/bolt/), [`http`](docs/api/http/), [`mcp`](docs/api/mcp/).
+
+## Other languages
 
 ### Rust
 
@@ -366,21 +286,35 @@ fallible call reports through one typed error channel. Contract:
 
 ### Java
 
-`ai.relatedb:relate` — Java 17+, JNA over the C ABI, with the native
-library bundled in the jar (one fat jar, or one of five platform
-classifiers):
+[`ai.relatedb:relate`](https://central.sonatype.com/artifact/ai.relatedb/relate)
+on Maven Central — Java 17+, JNA over the C ABI, with the native library
+bundled in the jar (one fat jar, or one of five platform classifiers). The
+quickest try is a [JBang](https://www.jbang.dev/) script — save it as
+`Hello.java` and run `jbang Hello.java`:
 
 ```java
-try (Database db = Database.open("./friends");
-     Database.Connection conn = db.connect()) {
-    Result result = conn.query("RETURN $n AS n", java.util.Map.of("n", 1));
-    result.columns();   // List<String>
-    result.rows();      // List<List<Object>> — typed values
+///usr/bin/env jbang "$0" "$@" ; exit $?
+//DEPS ai.relatedb:relate:1.2.0
+//RUNTIME_OPTIONS --enable-native-access=ALL-UNNAMED
+
+import ai.relatedb.Database;
+
+class Hello {
+    public static void main(String... args) {
+        try (Database db = Database.open("./friends");
+             Database.Connection conn = db.connect()) {
+            conn.query("CREATE (:Person {name: 'Alice'})-[:KNOWS]->(:Person {name: 'Bob'})");
+            Database.Result result = conn.query(
+                "MATCH (a:Person)-[:KNOWS]->(b) RETURN a.name AS from, b.name AS to");
+            System.out.println(result.columns() + " " + result.rows());
+            // [from, to] [[Alice, Bob]]
+        }
+    }
 }
 ```
 
-Jars are on the [releases page](https://github.com/relatedb/relate/releases/latest)
-until Maven Central goes live. Spec: [`docs/api/java/`](docs/api/java/).
+`result.columns()` is a `List<String>`, `result.rows()` a
+`List<List<Object>>` of typed values. Spec: [`docs/api/java/`](docs/api/java/).
 
 ### Go
 
@@ -426,74 +360,22 @@ let result = try conn.query("MATCH (p:Person) RETURN p.name")
 
 Spec: [`docs/api/swift/`](docs/api/swift/).
 
-### Server — Bolt, HTTP, MCP
+### Browser (WASM)
 
-When you want a socket instead of a library:
+The engine compiled to WebAssembly — run Cypher in a page, no server:
 
-```bash
-relate serve --database ./friends --bolt 7687 --http 7474 --mcp 7475
+```js
+// npm install @relate/relate-wasm   (or: pnpm add / yarn add @relate/relate-wasm)
+import init, { RelateDb } from "@relate/relate-wasm";
+
+await init();
+
+const db = new RelateDb();                    // in-memory
+const result = JSON.parse(db.execute("RETURN 1 AS n", null));
 ```
 
-One process, one store, one generated token (printed at startup): Neo4j
-drivers connect over Bolt — neo4j-browser works out of the box — the HTTP
-Query API v2 serves JSON, and MCP (streamable HTTP) serves AI hosts. Binds
-loopback by default; runs until SIGINT/SIGTERM. Specs:
-[`bolt`](docs/api/bolt/), [`http`](docs/api/http/), [`mcp`](docs/api/mcp/).
-
-Docker — `make docker` builds the server image (multi-stage, a `FROM scratch`
-runtime with static binaries); `make docker-run` runs Bolt (7687), HTTP
-(7474), and MCP (7475) on localhost with a data volume. Auth is on by
-default; the token is in the startup banner:
-
-```bash
-TOKEN=$(docker logs <container> 2>&1 | sed -n 's/.*generated token for user relate: //p' | head -1)
-python -c "from neo4j import GraphDatabase; print(GraphDatabase.driver('bolt://localhost:7687', auth=('relate', '$TOKEN')).execute_query('RETURN 1 AS n')[0][0]['n'])"
-```
-
-Or preset it with `-e RELATE_AUTH=relate:secret` (`...=none` disables it —
-publish ports on trusted networks only). Configuration is env-based and
-echoed at startup (`docker logs` is the debugging surface); a fresh store can
-be seeded before the server starts:
-
-```bash
-docker run -p 7687:7687 -p 7474:7474 -p 7475:7475 -v "$PWD/data:/data" \
-  -e RELATE_QUERY="UNWIND range(1,100) AS i CREATE (:Person {id: i})" \
-  relate-bolt:latest
-
-# fetch-and-seed from a JSON API, or mirror a Neo4j/Aura subgraph:
-#   -e RELATE_LOAD='value=https://…' + -e RELATE_LOAD_QUERY='UNWIND $value.items AS q MERGE (:Question {id: q.question_id})'
-#   -e RELATE_PULL_FROM=/run/secrets/neo4j.env + -e RELATE_PULL_QUERY='MATCH (o:Organization)-[r]-() RETURN o, r LIMIT 500'
-```
-
-For large seeds, two knobs matter (details:
-[Bulk import](docs/guides/import-csv.md#bulk-import-durability-and-batch-size)):
-batch the writes into few statements — one `UNWIND` per few thousand rows
-— because each autocommit statement pays one WAL fsync under the default
-`full` durability; and relax that barrier for the seed run with
-`-e RELATE_DURABILITY_MODE=everysecond` (a crash can lose ~1s of
-acknowledged writes — drop the variable when serving).
-
-`INSTANCES=N` runs a test fleet of N serve processes with stepped port
-ranges. The image is a dev/test image: `serve` is plaintext-only and warns
-loudly about it — for encrypted Bolt, front it with a TLS-terminating proxy.
-
-## Features
-
-| Area | What it covers |
-| --- | --- |
-| **Cypher** | Reading and writing (`MATCH`, `OPTIONAL MATCH`, `CREATE`, `MERGE`, `SET`, `REMOVE`, `DELETE`, `FOREACH`, `INSERT`), composing (`WITH`, `UNWIND`, `UNION`, `CALL {}` subqueries, subquery expressions), schema DDL (indexes, constraints, graph types), 80+ built-in functions, and modern pattern matching — label expressions, quantified path patterns, path selectors. One dialect: current Cypher. |
-| **Language floor** | The openCypher TCK is the dialect floor, measured by the project's spec harness: Neo4j's Cypher suites — the upstream TCK among them — run against the engine's Python wheel on every ready PR, as reported coverage plus the ADR-0661 regression gate (a scenario main does not already carry as failing is red). History: [`docs/tck/compliance.md`](docs/tck/compliance.md). |
-| **Vector search** | `vector()` properties, `vector.similarity.*` scoring functions, `CREATE VECTOR INDEX` plus the `SEARCH` clause for index-backed top-K with pre-filtering, and hybrid vector + full-text queries. |
-| **Geospatial** | WGS-84 and Cartesian points (2D/3D), `point.distance()`, radius and bounding-box predicates (`point.withinBBox`), and R-tree point indexes (`CREATE POINT INDEX`). The dialect covers points only — richer geometry is host-language work. |
-| **Profiling** | `EXPLAIN` renders the plan tree; `PROFILE` adds per-operator rows and time. Profiling costs nothing on non-PROFILE runs. |
-| **CLI shell** | Interactive REPL with readline-style editing, dot-commands, output modes `table`, `csv`, `json`, `jsonl`, `markdown`, `cypher`. |
-| **Import / sync** | `LOAD CSV` directly in Cypher; `--fetch-params` binds a fetched URL/file JSON document as a parameter; `pull`/`push` mirror subgraphs between Relate and a Neo4j/Aura instance; `clone` copies a whole store across layouts — directory ↔ `.rl` bundle, optionally transcoding the snapshot codec. |
-| **Read-only & follow** | `--read-only` opens an existing store without writing or checkpointing; `--read-only=live` follows a native directory's WAL while another process writes it. The same access modes — snapshot and live freshness — ride `serve` and the Rust API (`OpenMode::ReadOnly` / `Follow`, ADR-0136). |
-| **Surfaces** | Rust crate, Python + Arrow IPC, JS/Java/Go/Swift over the typed C ABI, Bolt, HTTP, MCP, WASM. |
-
-Task guides — vector similarity, geospatial, CSV import, backup/restore,
-storage — live in [`docs/guides/`](docs/guides/); tested, runnable recipes for
-most of the above are in the [cookbook](https://relatedb.ai/cookbook/).
+Durable browser storage via OPFS: `await RelateDb.open("opfs://graph")` —
+runs in a dedicated worker only. Spec: [`docs/api/wasm/`](docs/api/wasm/).
 
 ## CLI reference
 
@@ -635,6 +517,240 @@ relate telemetry status    # e.g. "disabled (config file)"
 `DO_NOT_TRACK=1` or `RELATE_TELEMETRY=0` also disable it. Only the standalone
 CLI collects metrics; the embedded Rust and Python APIs do not. Full contract:
 [CLI reference](https://relatedb.ai/docs/reference/cli/flags/).
+
+## Other install options
+
+**CLI (macOS & Linux):**
+
+```bash
+curl -sSfL https://relatedb.ai/install.sh | bash
+```
+
+**CLI (Homebrew, macOS & Linux):**
+
+```bash
+brew install relatedb/tap/relate
+```
+
+The project tap installs the release binary and records the install as
+package-managed, so `relate upgrade` defers to `brew upgrade relate` instead
+of replacing what Homebrew owns
+([ADR-0659](docs/adr/0659-package-manager-distribution-channels.md)).
+
+**CLI (Windows, PowerShell):**
+
+```powershell
+irm https://relatedb.ai/install.ps1 | iex
+```
+
+From `cmd` or Git Bash, run
+`powershell -ExecutionPolicy ByPass -c "irm https://relatedb.ai/install.ps1 | iex"`.
+It installs `relate.exe` to `%LOCALAPPDATA%\Programs\relate` and adds that
+folder to your user `PATH`. It runs the same checks as `install.sh` with
+the inbox Windows `ssh-keygen`, in Windows PowerShell 5.1 and PowerShell 7
+([ADR-0586](docs/adr/0586-windows-powershell-installer.md)). The binary
+links the C runtime statically, so it needs no Visual C++ redistributable
+([ADR-0587](docs/adr/0587-windows-static-crt.md)).
+
+<!-- Not published yet (the rpm repository is work in progress): restore
+     when https://relatedb.ai/rpm/relate.repo is live.
+
+**CLI (Fedora & RHEL, dnf):**
+
+```bash
+sudo curl -fsSL https://relatedb.ai/rpm/relate.repo -o /etc/yum.repos.d/relate.repo && sudo dnf install relate
+```
+
+The repo file enables `repo_gpgcheck=1`, so dnf verifies the repository
+metadata (`repomd.xml`) against the committed repository key
+([ADR-0659](docs/adr/0659-package-manager-distribution-channels.md)) and
+imports that key from the same host — no `--nogpgcheck` and no manual key
+import. This install is owned by dnf: the real binary lives at
+`/usr/lib/relate/relate` with a `/usr/bin/relate` symlink, and `relate
+upgrade` replaces nothing — upgrade it with `sudo dnf upgrade relate`.
+-->
+
+> **Piping a script into a shell runs it before you have read it.** Both
+> installers authenticate everything they download (the signed manifest,
+> then the binary's checksum), but the script itself is trusted on the
+> strength of the HTTPS connection to `relatedb.ai`. To read it first,
+> download it, inspect it, then run the local copy:
+>
+> ```bash
+> curl -sSfLo install.sh https://relatedb.ai/install.sh && less install.sh && bash install.sh
+> ```
+>
+> ```powershell
+> irm https://relatedb.ai/install.ps1 -OutFile install.ps1; notepad install.ps1
+> powershell -ExecutionPolicy ByPass -File .\install.ps1
+> ```
+>
+> Both scripts are also attached to every
+> [GitHub release](https://github.com/relatedb/relate/releases/latest), as
+> the copy from the tagged commit.
+
+Downloads the release binary for your platform (macOS and Linux, amd64 and
+arm64) to `$HOME/.local/bin`, resolving the latest release from
+[`releases.json`](https://relatedb.ai/releases.json) — the same release
+metadata `relate upgrade` reads
+([ADR-0571](docs/adr/0571-installer-resolves-via-releases-json.md) — and
+the assets themselves come straight from the GitHub release download route,
+so the installer makes no GitHub API requests and no token is ever needed,
+even behind shared-IP networks
+([ADR-0585](docs/adr/0585-installer-downloads-via-direct-route.md))). Each
+release's `SHA256SUMS` manifest is
+authenticated against its SSHSIG signature with the stock `ssh-keygen` — the
+public key is pinned in the script, and the installer **fails closed** on a
+missing or invalid signature
+([ADR-0115](docs/adr/0115-sshsig-release-signing.md)). macOS binaries are
+additionally signed and notarized, so Gatekeeper raises no warning
+([ADR-0123](docs/adr/0123-macos-codesign-notarize.md)), and Windows binaries
+are additionally Authenticode-signed with an RFC 3161 timestamp
+([ADR-0594](docs/adr/0594-windows-authenticode-signing.md)). Prebuilt binaries for
+Linux, macOS, and Windows are on the
+[releases page](https://github.com/relatedb/relate/releases/latest), and an
+installed binary self-updates:
+
+```bash
+relate upgrade          # download, verify, and replace (alias: update)
+relate upgrade --check  # report current vs latest; changes nothing
+```
+
+On Windows a running `.exe` cannot replace itself, so `relate upgrade`
+points you at the PowerShell installer: rerun it to upgrade.
+`relate upgrade --check` works on every platform.
+
+<!-- Not published yet (no manifest in microsoft/winget-pkgs): restore
+     when `winget install --id Relatedb.Relate -e` resolves.
+
+**CLI (Windows, winget):**
+
+```powershell
+winget install --id Relatedb.Relate -e
+```
+
+The release pipeline generates the winget manifests from each release's
+asset manifest — the installer is the tagged `relate-windows-amd64.exe` with
+its published sha256 — and submits the version bump to
+[microsoft/winget-pkgs](https://github.com/microsoft/winget-pkgs)
+([ADR-0659](docs/adr/0659-package-manager-distribution-channels.md)).
+-->
+
+<!-- Not published yet (the apt repository is work in progress): restore
+     when https://relatedb.ai/apt/repo-signing-key.asc is live.
+
+**CLI (Debian & Ubuntu, apt):**
+
+```bash
+sudo install -d -m 0755 /etc/apt/keyrings
+curl -fsSL https://relatedb.ai/apt/repo-signing-key.asc | sudo tee /etc/apt/keyrings/relate.asc >/dev/null
+echo "deb [signed-by=/etc/apt/keyrings/relate.asc] https://relatedb.ai/apt stable main" | sudo tee /etc/apt/sources.list.d/relate.list >/dev/null
+sudo apt-get update
+sudo apt-get install relate
+```
+
+The package keeps the binary in `/usr/lib/relate` and symlinks it to
+`/usr/bin/relate`; upgrade it with apt
+(`sudo apt-get update && sudo apt-get install --only-upgrade relate`).
+apt verifies the repository metadata against the committed key it fetches
+from the same root — no `--allow-unauthenticated`
+([ADR-0659](docs/adr/0659-package-manager-distribution-channels.md)).
+-->
+
+**CLI (Windows):** download `relate-windows-amd64.exe` from the
+[releases page](https://github.com/relatedb/relate/releases/latest), then
+check its Authenticode signature before the first run:
+
+```powershell
+Get-AuthenticodeSignature .\relate-windows-amd64.exe |
+  Format-List Status, TimeStamperCertificate,
+    @{ Label = 'SignerSubject'; Expression = { $_.SignerCertificate.Subject } }
+```
+
+`Status` must be `Valid` with a `TimeStamperCertificate` present — the
+RFC 3161 timestamp keeps the signature valid after the certificate
+expires — and the `SignerSubject` (the `SignerCertificate` subject) must
+name the expected publisher: the code-signing certificate held in DigiCert
+Software Trust Manager, set up in
+[RELEASING.md](RELEASING.md#windows-signing)
+([ADR-0594](docs/adr/0594-windows-authenticode-signing.md)).
+
+<!-- Not published yet (no package on community.chocolatey.org): restore
+     when `choco install relate` resolves.
+
+**CLI (Windows, Chocolatey):**
+
+```powershell
+choco install relate
+```
+
+The package runs the release's Windows binary from Chocolatey's package
+directory, shimmed onto `PATH`, and verifies the download's SHA-256
+against the release's `assets.json` before installing. It writes the
+`.relate-package-managed` marker beside the binary, so `relate upgrade`
+defers to `choco upgrade relate`
+([ADR-0659](docs/adr/0659-package-manager-distribution-channels.md)).
+-->
+
+
+**Python:**
+
+```bash
+pip install relate-db   # the import is `import relate`
+```
+
+**npm — Node.js and the browser:**
+
+```bash
+npm install @relate/relate        # Node.js 18+ (native bindings)
+npm install @relate/relate-wasm   # browser (WebAssembly)
+```
+
+**Rust:**
+
+```bash
+cargo add --git https://github.com/relatedb/relate relate
+```
+
+
+## Docker
+
+`make docker` builds the server image (multi-stage, a `FROM scratch`
+runtime with static binaries); `make docker-run` runs Bolt (7687), HTTP
+(7474), and MCP (7475) on localhost with a data volume. Auth is on by
+default; the token is in the startup banner:
+
+```bash
+TOKEN=$(docker logs <container> 2>&1 | sed -n 's/.*generated token for user relate: //p' | head -1)
+python -c "from neo4j import GraphDatabase; print(GraphDatabase.driver('bolt://localhost:7687', auth=('relate', '$TOKEN')).execute_query('RETURN 1 AS n')[0][0]['n'])"
+```
+
+Or preset it with `-e RELATE_AUTH=relate:secret` (`...=none` disables it —
+publish ports on trusted networks only). Configuration is env-based and
+echoed at startup (`docker logs` is the debugging surface); a fresh store can
+be seeded before the server starts:
+
+```bash
+docker run -p 7687:7687 -p 7474:7474 -p 7475:7475 -v "$PWD/data:/data" \
+  -e RELATE_QUERY="UNWIND range(1,100) AS i CREATE (:Person {id: i})" \
+  relate-bolt:latest
+
+# fetch-and-seed from a JSON API, or mirror a Neo4j/Aura subgraph:
+#   -e RELATE_LOAD='value=https://…' + -e RELATE_LOAD_QUERY='UNWIND $value.items AS q MERGE (:Question {id: q.question_id})'
+#   -e RELATE_PULL_FROM=/run/secrets/neo4j.env + -e RELATE_PULL_QUERY='MATCH (o:Organization)-[r]-() RETURN o, r LIMIT 500'
+```
+
+For large seeds, two knobs matter (details:
+[Bulk import](docs/guides/import-csv.md#bulk-import-durability-and-batch-size)):
+batch the writes into few statements — one `UNWIND` per few thousand rows
+— because each autocommit statement pays one WAL fsync under the default
+`full` durability; and relax that barrier for the seed run with
+`-e RELATE_DURABILITY_MODE=everysecond` (a crash can lose ~1s of
+acknowledged writes — drop the variable when serving).
+
+`INSTANCES=N` runs a test fleet of N serve processes with stepped port
+ranges. The image is a dev/test image: `serve` is plaintext-only and warns
+loudly about it — for encrypted Bolt, front it with a TLS-terminating proxy.
 
 ## Development
 
