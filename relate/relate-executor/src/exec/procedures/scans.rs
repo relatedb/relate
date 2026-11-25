@@ -291,9 +291,8 @@ pub(crate) fn vector_call_source<'a>(
         // scanning, and scans with no prepared filters — its fulltext
         // counterpart's exact shape.
         let scan = resolve_vector_index(s.ctx.graph, &s.index_name, &query)?;
-        let kind = scan.detail.entity_kind();
-        entity_kind_mismatch(s.kind, kind, "vector")?;
-        let candidates = scan_candidates(s.ctx, &scan, &query, limit, kind, &[])?;
+        entity_kind_mismatch(s.kind, scan.detail.entity_kind(), "vector")?;
+        let candidates = scan_candidates(s.ctx, &scan, &query, limit, s.kind, &[])?;
         Ok(candidates)
     })
 }

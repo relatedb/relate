@@ -36,7 +36,7 @@ mod growth;
 
 use combine::combine_candidates;
 use deferred::deferred_search_rows;
-use direct::direct_search_rows;
+use direct::{direct_search_rows, pre_bound_search_rows};
 
 /// The SEARCH clause's legacy `InvalidValueType` detail channel: the class
 /// token is spelled once for the helper's users here, the call site owns
@@ -370,21 +370,25 @@ pub(crate) fn search_match_clause(
     let binding_kind = search
         .binding_var
         .with_str(|text| path_pattern_binding_kind(patterns, text));
-    // The row source is a clause-invariant fact, resolved once beside
-    // `binding_kind` rather than re-decided per input row: the source
-    // reads a variable this MATCH's own pattern binds (`deferred` — the
-    // pattern matches first and each row's binding is filtered against
-    // its own candidate list) or it does not (`direct` — each candidate
-    // seeds the binding and the pattern matches per candidate).
-    let source = if search_reads_pattern(search, patterns) {
-        deferred_search_rows
-    } else {
-        direct_search_rows
-    };
+    // The row source follows the clause facts resolved once beside
+    // `binding_kind`: the source reads a variable this MATCH's own
+    // pattern binds (`deferred` — the pattern matches first and each
+    // row's binding is filtered against its own candidate list); else the
+    // input row already binds the SEARCH variable (`pre-bound` — a
+    // single-entity membership question); else each candidate seeds the
+    // binding and the pattern matches per candidate (`direct`).
+    let reads_pattern = search_reads_pattern(search, patterns);
     let corpora = fulltext::CorpusMemo::new(ctx.graph);
     let env = SearchEnv { ctx, corpora };
     let mut out = Vec::new();
     for input in rows {
+        let source = if reads_pattern {
+            deferred_search_rows
+        } else if input.get_name(&search.binding_var).is_some() {
+            pre_bound_search_rows
+        } else {
+            direct_search_rows
+        };
         let mut matched = source(
             &env,
             &input,
@@ -625,5 +629,33 @@ mod tests {
         assert_eq!(record.reads.node_reads, 12, "{:?}", record.reads);
         assert_eq!(record.rows, 12, "the rows the clause emitted into the fold");
         assert_eq!(record.memory_bytes, 0, "a streamed clause holds nothing");
+    }
+
+    /// A pre-bound row's window of one is decided before any fetch: a
+    /// LIMIT-0 window keeps nothing, so the clause answers empty without
+    /// reaching the index — the entity-kind rejection a fetch would raise
+    /// (a relationship binding against a node index) is not reached.
+    /// Deliberate, ticket-prescribed (REL8-2128); the control shows the
+    /// same statement with LIMIT 1 does reach the index and is rejected.
+    #[test]
+    fn a_pre_bound_limit_zero_window_answers_before_the_index_is_read() {
+        let g = vector_index_graph();
+        exec_autocommit(&g, "CREATE (:Person)-[:KNOWS]->(:Person)").unwrap();
+        let search = |limit: u32| {
+            format!(
+                "MATCH ()-[r:KNOWS]->() WITH r MATCH ()-[r]->() \
+                 SEARCH r IN (VECTOR INDEX vidx FOR [1.0, 0.0] LIMIT {limit}) \
+                 RETURN count(*) AS c"
+            )
+        };
+        let rejected = try_exec_cypher(&g, &search(1))
+            .err()
+            .expect("a LIMIT-1 window reads the index and rejects the kind mismatch");
+        assert!(
+            rejected.to_string().contains("does not match index"),
+            "{rejected}"
+        );
+        let rows = exec_cypher(&g, &search(0)).rows;
+        assert_eq!(rows[0][0], Value::Int(0));
     }
 }

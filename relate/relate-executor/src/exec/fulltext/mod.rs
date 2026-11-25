@@ -61,7 +61,7 @@ use crate::ctx::ExecCtx;
 use crate::eval::eval;
 use crate::exec::candidates::{ranked_candidates, resolve_search_index, TopWindow};
 use crate::exec::ddl_options::{index_analyzer, index_eventually_consistent};
-use crate::exec::search_filters::prepare_search_filters;
+use crate::exec::search_filters::{prepare_search_filters, PreparedSearchFilter};
 use crate::overlay::ExecGraph;
 use crate::redo::{IndexDetailSpec, IndexKindSpec};
 
@@ -191,9 +191,13 @@ fn analyzers_from(
 /// The one fulltext scan, windowed: rank the index's matching entities by
 /// the calibrated BM25 score, best-first under
 /// [`crate::exec::candidates::ranked_better_cmp`] (score descending,
-/// element id ascending), through the shared CIP-225 [`TopWindow`] — the
-/// SEARCH clause's `SKIP`/`OFFSET`/`LIMIT` page, in the family's named
-/// window (`offset` before `limit`, never a positional pair).
+/// element id ascending), through the shared CIP-225 [`TopWindow`], in the
+/// family's named window (`offset` before `limit`, never a positional
+/// pair). The two callers state different windows: the SEARCH clause
+/// passes a limit-only window (`index_candidates` always passes offset 0 —
+/// the clause's SKIP/OFFSET pages entity survivors in the caller, over the
+/// entities the whole MATCH keeps), and the procedures' `options` supply
+/// both `skip` and `limit`.
 pub(crate) fn search(
     memo: &CorpusMemo,
     graph: &ExecGraph<'_>,
@@ -201,15 +205,13 @@ pub(crate) fn search(
     query: &str,
     offset: usize,
     limit: usize,
-    filters: &[crate::exec::search_filters::PreparedSearchFilter<'_>],
+    filters: &[PreparedSearchFilter<'_>],
 ) -> Result<Vec<(i64, f64)>> {
-    let FulltextScan { detail, analyzers } = scan;
     rank(
         memo,
         graph,
-        &detail,
+        scan,
         query,
-        analyzers,
         TopWindow::new(offset, limit),
         filters,
     )
@@ -232,17 +234,17 @@ pub(crate) fn operand(value: &Value) -> Result<Option<&str>> {
 fn rank(
     memo: &CorpusMemo,
     graph: &ExecGraph<'_>,
-    detail: &IndexDetailSpec,
+    scan: FulltextScan,
     query: &str,
-    analyzers: Analyzers,
     mut window: TopWindow,
-    filters: &[crate::exec::search_filters::PreparedSearchFilter<'_>],
+    filters: &[PreparedSearchFilter<'_>],
 ) -> Result<Vec<(i64, f64)>> {
+    let FulltextScan { detail, analyzers } = scan;
     let clauses = parse(query, analyzers.query)?;
     if clauses.is_empty() {
         return Ok(Vec::new());
     }
-    let corpus = memo.corpus(graph, detail, analyzers.index);
+    let corpus = memo.corpus(graph, &detail, analyzers.index);
     let (docs, stats) = (&corpus.docs, &corpus.stats);
     // Fuzzy clauses expand against each field's vocabulary once per scan.
     let clauses: Vec<ResolvedClause<'_>> = clauses

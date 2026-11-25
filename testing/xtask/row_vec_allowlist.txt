@@ -81,6 +81,8 @@ exec/post_merge.rs::retain_distinct # projection/filter stage materializes its r
 exec/search.rs::search_match_clause # emits each matched row into a folding consumer; the returned vector is the un-streamed clause's held form (ADR-0660)
 exec/search/deferred.rs::deferred_search_rows # clause arm materializes its output rows; to be replaced by streaming
 exec/search/direct.rs::direct_search_rows # clause arm materializes its output rows; to be replaced by streaming
+exec/search/direct.rs::match_candidate # one seeded candidate's pattern rows: the per-candidate bounded landing of match_clause (allowlisted above the walker), handed straight to the clause arm's output
+exec/search/direct.rs::pre_bound_search_rows # the pre-bound clause arm: at most one candidate (the pre-bound entity), so the output is that one entity's pattern rows, bounded per input row; the sibling of direct_search_rows' materializing form
 exec/feed.rs::held_rows # the materializing drain both the feed's own form and the CALL composition share; the ADR-0463 charge guards it
 exec/feed.rs::materialize # the feed spine's materializing form: the consumer that cannot fold holds these rows, and ADR-0463 charges them
 exec/feed.rs::into_held # the held stream's container read for the sink-projected feed: the sink's own rows, charged where they were built
