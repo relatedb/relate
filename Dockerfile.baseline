@@ -8,14 +8,14 @@
 # re-download dependencies -- but cargo still rebuild-verifies the unchanged
 # crates (the measured CI finding the main Dockerfile records: restored
 # cache, full rebuild).
-# The one toolchain fact this file carries: the target-cache id keys on it,
-# so a bump (or a --build-arg override pinning a different Rust) moves the
-# image and the cache suffix together. Neither image has a default on
-# purpose — their only builder (baseline-container.sh) always passes the
-# pair pinned in scripts/baseline-env.sh, so a standalone build without them
-# fails loudly instead of resolving whatever `rust:…`/`debian:…` tag a
-# default would spell (REL8-2081).
-ARG BASELINE_TOOLCHAIN=1.99
+# The target-cache id keys on the toolchain, and baseline-container.sh (the
+# only builder) derives it once from the pinned build image in
+# scripts/baseline-env.sh, so the image and the cache suffix move together.
+# None of the toolchain or the two images has a default on purpose: a
+# standalone build without them fails loudly instead of resolving whatever
+# `rust:…`/`debian:…` tag, or keying a cache on a stale toolchain, a default
+# would spell (REL8-2081, REL8-2097).
+ARG BASELINE_TOOLCHAIN
 ARG BASELINE_BUILD_IMAGE
 ARG BASELINE_RUN_IMAGE
 FROM ${BASELINE_BUILD_IMAGE} AS build
@@ -41,8 +41,8 @@ RUN --mount=type=cache,id=relate-cargo-registry-${TARGETARCH},target=/usr/local/
     --mount=type=cache,id=relate-cargo-git-${TARGETARCH},target=/usr/local/cargo/git,sharing=locked \
     --mount=type=cache,id=relate-${LANE_CACHE_ID}-target-${BASELINE_TOOLCHAIN}-${TARGETARCH},target=/src/target,sharing=locked \
     set -eu; \
-    if [ -z "${LANE_BINS}" ] || [ -z "${LANE_CACHE_ID}" ] || [ -z "${LANE_ENTRYPOINT}" ]; then \
-      echo "LANE_BINS, LANE_CACHE_ID and LANE_ENTRYPOINT are required (see the header)" >&2; \
+    if [ -z "${BASELINE_TOOLCHAIN}" ] || [ -z "${LANE_BINS}" ] || [ -z "${LANE_CACHE_ID}" ] || [ -z "${LANE_ENTRYPOINT}" ]; then \
+      echo "BASELINE_TOOLCHAIN, LANE_BINS, LANE_CACHE_ID and LANE_ENTRYPOINT are required (see the header)" >&2; \
       exit 1; \
     fi; \
     bins=""; \
