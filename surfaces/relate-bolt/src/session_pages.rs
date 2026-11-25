@@ -9,7 +9,8 @@ use super::*;
 
 /// One PULL/DISCARD step's outcome (ADR-0309, ADR-0110): the ending SUCCESS
 /// when the step took the result's last row, `has_more` when rows remain,
-/// or the client-reachable depth failure.
+/// the client-reachable depth failure, or a streamed statement's end in
+/// failure.
 pub(super) enum Page {
     /// The result was consumed to its end: send this ending SUCCESS.
     Ending(summary::Metadata),
@@ -18,6 +19,16 @@ pub(super) enum Page {
     /// A PULL row nested past the packstream depth limit: restore the
     /// result and fail the session (ADR-0110).
     DepthExceeded,
+    /// A streamed statement failed while executing (ADR-0319, ADR-0682):
+    /// the rows before the failure are written, the FAILURE follows and
+    /// the result closes.
+    Failed(relate::Error),
+    /// A streamed statement's worker waited out the PULL idle timeout and
+    /// stopped (ADR-0682): the FAILURE follows and the result closes.
+    Stalled,
+    /// A streamed batch exceeds the `--max-result-bytes` cap: the FAILURE
+    /// follows and the result closes.
+    OverCap,
 }
 
 /// Encode and write one RECORD (0x71): the one place a result row is

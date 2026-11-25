@@ -41,6 +41,10 @@ impl Args {
             query_timeout,
             max_result_bytes: self.max_result_bytes,
             max_connections: self.max_connections,
+            // A client that stops pulling is bounded by the same idle
+            // timeout the operator set for the connection (documented
+            // default of the library-level `pull_idle_timeout`).
+            pull_idle_timeout: idle_timeout,
             ..ConnLimits::default()
         }
     }

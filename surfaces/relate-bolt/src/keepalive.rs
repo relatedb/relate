@@ -15,7 +15,7 @@ use relate::{CancelToken, Connection, Executed, Heartbeat, Value};
 pub(crate) const DEFAULT_KEEP_ALIVE_INTERVAL: Duration = Duration::from_secs(60);
 
 /// A Bolt 4.1+ NOOP: an empty chunk between messages.
-const NOOP: [u8; 2] = [0x00, 0x00];
+pub(crate) const NOOP: [u8; 2] = [0x00, 0x00];
 
 /// Run `work` with a heartbeat that writes a NOOP to `stream` each
 /// `interval` the work is still running (ADR-0312). The NOOPs fall between

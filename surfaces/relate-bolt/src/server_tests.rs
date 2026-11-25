@@ -266,6 +266,12 @@ fn governance_flags_parse_with_documented_defaults() {
     assert_eq!(overridden.idle_timeout_secs, 0);
     assert_eq!(overridden.query_timeout_secs, 1);
     assert_eq!(overridden.max_result_bytes, 1 << 20);
+    // `--idle-timeout-secs` also bounds a stalled streamed PULL.
+    assert_eq!(overridden.conn_limits().pull_idle_timeout, None);
+    assert_eq!(
+        defaults.conn_limits().pull_idle_timeout,
+        defaults.conn_limits().idle_timeout
+    );
 
     let help = Args::try_parse_from(["relate-bolt", "--help"])
         .unwrap_err()

@@ -16,6 +16,14 @@ session transactions (ADR-0028); `RUN` without `BEGIN` stays auto-commit.
 See the [LOGON example](examples/logon.md) for a driver-visible 5.4
 connection.
 
+An auto-commit `RUN` streams its result (ADR-0682): the server produces
+bounded batches as the client `PULL`s them, so a driver paging a multi-million
+row result with `PULL {n}` never makes the server hold the answer, and a
+client that stops pulling has its statement stopped by the PULL idle timeout.
+The paging sequence is exercised end to end by
+`surfaces/relate-bolt/src/protocol_stream_tests.rs`, which pulls a
+two-million-row result under a 16 MiB workspace pool.
+
 The HELLO SUCCESS identifies the server honestly — `server:
 "Relate/<version>"` — plus a per-connection `connection_id` the Java
 driver requires (ADR-0293) and Neo4j's receive-timeout hint, which the
