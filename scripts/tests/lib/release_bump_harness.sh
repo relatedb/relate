@@ -94,6 +94,10 @@ build_fixture() {
 	cp "$ROOT/scripts/changes_collect.py" "$fx/scripts/"
 	cp -R "$ROOT/scripts/lib" "$fx/scripts/lib"
 	cp "$ROOT/scripts/version_tokens.py" "$fx/scripts/"
+	# The copy carries the source tree's bytecode caches when earlier suites
+	# ran Python there; the fixture's `git add -A` would commit them and the
+	# bump's own python3 calls would then dirty tracked files no surface owns.
+	find "$fx/scripts" -name __pycache__ -type d -prune -exec rm -rf {} +
 
 	cat >"$fx/Cargo.toml" <<'EOF'
 [workspace.package]
