@@ -94,7 +94,11 @@ runs:
           --location --silent --show-error --fail \
           --output "$sm_dir/smctl.exe" \
           https://pki-downloads.digicert.com/stm/latest/smctl.exe
-        actual=$(sha256sum "$sm_dir/smctl.exe" | cut -d' ' -f1)
+        # Git-Bash's sha256sum can emit MSYS-mangled output (a leading
+        # backslash before the hash), so take the first 64 hex characters
+        # of the stream — always the digest, whatever prefixes or path
+        # mangling surround it.
+        actual=$(sha256sum "$sm_dir/smctl.exe" | tr -cd '0-9a-f' | cut -c1-64)
         if [ "$smctl_sha256" != "$actual" ]; then
           echo "::error::smctl digest mismatch: repo pin says $smctl_sha256, CDN served $actual — bump the pin deliberately (RELEASING.md, Windows signing)"
           exit 1
