@@ -6,7 +6,9 @@ use std::collections::BTreeMap;
 
 use relate_core::{Error, Result, Value};
 use relate_ir::Clause;
+use relate_planner::LogicalPlan;
 
+use crate::consumer::StreamSink;
 use crate::ctx::{ExecCtx, QueryCtx};
 use crate::graph::QueryStats;
 use crate::metrics::PlanMetricsSite;
@@ -31,7 +33,9 @@ use super::match_arm::exec_match_arm;
 use super::match_clause::LadderFacts;
 use super::procedures::{exec_call_clause, CallClauseOut, CallPipeline, CallSpec};
 use super::profile_tick::{finish_parked_feed, profile_tick, ProfileTick};
-use super::project::{project_rows, return_result, ProjectionInput, RowSource};
+use super::project::{
+    maps_each_row, project_rows, return_result, stream_terminal_return, ProjectionInput, RowSource,
+};
 use super::scope::{carry_scope_bindings, star_scope_names, ProjectionFields};
 use super::stats_short_circuit::stats_short_circuit;
 use super::unwind::unwind_feed;
@@ -73,6 +77,7 @@ pub(crate) fn run_clauses(
         qctx,
         profile,
         None,
+        Terminal::Land,
     )
 }
 
@@ -103,6 +108,7 @@ pub(crate) fn run_nested_clauses_scoped(
         qctx,
         None,
         Some(scope),
+        Terminal::Land,
     )
 }
 
@@ -123,6 +129,17 @@ pub(crate) fn run_nested_clauses(
     run_clauses(graph, clauses, params, rows, qctx, None)
 }
 
+/// Where a clause loop's terminal `RETURN` delivers (ADR-0682): landed into
+/// the part's rows, or handed batch by batch to the statement's consumer.
+/// `Stream` is constructed only by [`execute_part_read_streamed`], over a
+/// part [`streamable_part`] admitted, with no PROFILE site and no enclosing
+/// scope — so the loop's remaining question is the per-run one: whether the
+/// RETURN's input can take the per-batch form.
+enum Terminal<'s, 'a> {
+    Land,
+    Stream(&'s mut StreamSink<'a>),
+}
+
 #[allow(clippy::too_many_arguments)]
 fn run_clauses_mode(
     graph: &ExecGraph<'_>,
@@ -133,6 +150,7 @@ fn run_clauses_mode(
     qctx: QueryCtx<'_>,
     profile: Option<PlanMetricsSite<'_>>,
     scope: Option<&Row>,
+    mut terminal: Terminal<'_, '_>,
 ) -> Result<(Vec<Row>, Option<QueryResult>)> {
     // The statement's evaluation context, built once before the clause
     // loop (stellar round 2, F-2-21): the authenticated principal
@@ -591,26 +609,50 @@ fn run_clauses_mode(
             }
             Clause::Return { items, .. } => {
                 let spec = ProjectionFields::of_projection(clause)?;
-                let mut rows = project_clause(
-                    ctx,
-                    stream,
-                    &mut folded,
-                    &spec,
-                    true,
-                    rows_from,
-                    scope,
-                    &mut metrics_tick,
-                )?;
-                // `RETURN` moves its cells into the query result below, so
-                // the clause is recorded here, while the values are still in
-                // the rows; the tick is then taken, so the shared tail's
-                // "the tick is still live" is the one fact that says the
-                // clause is unrecorded.
-                if let Some(tick) = metrics_tick.take() {
-                    tick.record(i, &rows, clause_ladder);
+                // ADR-0682: a streamed terminal hands its batches to the
+                // caller's consumer — the static shape was admitted once
+                // (`streamable_part`); what is left is the run's own input:
+                // no folded MATCH aggregation beside it, and an input the
+                // per-batch form can take (a landed sink's tail facts have
+                // no per-batch reading). Every other RETURN keeps landing
+                // into the part's rows.
+                let streamed_to = match &mut terminal {
+                    Terminal::Stream(sink)
+                        if folded.is_none() && !matches!(rows_from, RowSource::SinkLanded(_)) =>
+                    {
+                        Some(&mut **sink)
+                    }
+                    _ => None,
+                };
+                if let Some(sink) = streamed_to {
+                    last_result = Some(stream_terminal_return(
+                        ctx, stream, sink, &spec, items, clauses, rows_from,
+                    )?);
+                    // The terminal consumed the stream; the loop tail's
+                    // probe reads the empty held container.
+                    RowStream::held(Vec::new())
+                } else {
+                    let mut rows = project_clause(
+                        ctx,
+                        stream,
+                        &mut folded,
+                        &spec,
+                        true,
+                        rows_from,
+                        scope,
+                        &mut metrics_tick,
+                    )?;
+                    // `RETURN` moves its cells into the query result below, so
+                    // the clause is recorded here, while the values are still in
+                    // the rows; the tick is then taken, so the shared tail's
+                    // "the tick is still live" is the one fact that says the
+                    // clause is unrecorded.
+                    if let Some(tick) = metrics_tick.take() {
+                        tick.record(i, &rows, clause_ladder);
+                    }
+                    last_result = Some(return_result(graph, items, clauses, &mut rows)?);
+                    RowStream::held(rows)
                 }
-                last_result = Some(return_result(graph, items, clauses, &mut rows)?);
-                RowStream::held(rows)
             }
         };
         // ADR-0344 phase 2 + metric fields + ADR-0463: report one clause
@@ -660,8 +702,17 @@ fn run_generator_batches(
         // projection, so they are dropped with the batch, never held. The
         // admitted tail projects nothing, so its result is always `None` —
         // refused loudly where the empty return relies on it.
-        let (_, result) =
-            run_clauses_mode(graph, mode, head.tail, params, batch, qctx, None, scope)?;
+        let (_, result) = run_clauses_mode(
+            graph,
+            mode,
+            head.tail,
+            params,
+            batch,
+            qctx,
+            None,
+            scope,
+            Terminal::Land,
+        )?;
         if result.is_some() {
             return Err(Error::internal("the admitted tail projected a result"));
         }
@@ -712,6 +763,43 @@ fn project_clause<'a>(
     let rows = project_rows(ctx, input, spec, inflate, scope)?;
     finish_parked_feed(facts, tick.as_mut());
     Ok(rows)
+}
+
+/// The one part of a plan whose answer streams from its terminal `RETURN`
+/// to a batch consumer (ADR-0682 decision 1). Only [`streamable_part`]
+/// constructs it, so holding one is the proof of the shape.
+#[derive(Clone, Copy)]
+pub(crate) struct StreamablePart<'p> {
+    clauses: &'p [Clause],
+}
+
+/// The plan's streamable part, when its shape streams (ADR-0682 decision
+/// 1): a single stage (no `NEXT`) with a single part (no `UNION`), ending in
+/// a `RETURN` whose projection maps each row — no aggregation, `DISTINCT`,
+/// `ORDER BY`, `SKIP` or `LIMIT`, so each pulled batch projects
+/// independently of every other. `None` keeps the materialized terminal;
+/// its result replays through the same consumer after the run.
+pub(crate) fn streamable_part(plan: &LogicalPlan) -> Result<Option<StreamablePart<'_>>> {
+    let [clauses] = plan.parts.as_slice() else {
+        return Ok(None);
+    };
+    if plan.next.is_some() {
+        return Ok(None);
+    }
+    // A `USE` routes the statement to a namespace the surface learns only
+    // from the finished result's header; a streaming surface fixes the
+    // namespace before the first row, so such a statement lands.
+    if clauses
+        .iter()
+        .any(|clause| matches!(clause, Clause::Use { .. }))
+    {
+        return Ok(None);
+    }
+    let Some(clause @ Clause::Return { .. }) = clauses.last() else {
+        return Ok(None);
+    };
+    let streams = maps_each_row(&ProjectionFields::of_projection(clause)?);
+    Ok(streams.then_some(StreamablePart { clauses }))
 }
 
 /// Whether the clause after a generator is the `WITH`/`RETURN` that consumes
@@ -784,6 +872,40 @@ pub(crate) fn execute_part_read_seeded(
     qctx: QueryCtx<'_>,
     profile: Option<PlanMetricsSite<'_>>,
 ) -> Result<QueryResult> {
+    read_part(graph, clauses, params, rows, qctx, profile, Terminal::Land)
+}
+
+/// [`execute_part_read_seeded`] for the admitted streamable part (ADR-0682):
+/// the terminal `RETURN` hands its batches to `sink`. No PROFILE site — a
+/// PROFILE run keeps the materialized terminal — and no enclosing scope.
+pub(crate) fn execute_part_read_streamed(
+    graph: &ExecGraph<'_>,
+    part: StreamablePart<'_>,
+    params: &BTreeMap<String, Value>,
+    rows: Vec<Row>,
+    qctx: QueryCtx<'_>,
+    sink: &mut StreamSink<'_>,
+) -> Result<QueryResult> {
+    read_part(
+        graph,
+        part.clauses,
+        params,
+        rows,
+        qctx,
+        None,
+        Terminal::Stream(sink),
+    )
+}
+
+fn read_part(
+    graph: &ExecGraph<'_>,
+    clauses: &[Clause],
+    params: &BTreeMap<String, Value>,
+    rows: Vec<Row>,
+    qctx: QueryCtx<'_>,
+    profile: Option<PlanMetricsSite<'_>>,
+    terminal: Terminal<'_, '_>,
+) -> Result<QueryResult> {
     let (mut rows, last_result) = run_clauses_mode(
         graph,
         ClauseMode::Read,
@@ -793,6 +915,7 @@ pub(crate) fn execute_part_read_seeded(
         qctx,
         profile,
         None,
+        terminal,
     )?;
     // The read path reports no write stats; its wrapper resets stats on
     // the way out regardless.

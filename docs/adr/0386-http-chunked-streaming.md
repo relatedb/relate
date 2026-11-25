@@ -238,3 +238,5 @@ policy verbatim where it is quoted.
 ## Later references
 
 [ADR-0675](./0675-http-rows-encode-lazily.md) narrows Decision 6: the success envelope no longer rebuilds the rows as a JSON tree; they encode lazily from the engine's values.
+
+[ADR-0682](./0682-engine-batch-consumer.md) builds on this decision: the engine can hand result batches to the surface as they are produced, so the chunked response can start before the statement ends.

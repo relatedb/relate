@@ -60,7 +60,7 @@ impl Connection {
         token: CancelToken,
         heartbeat: Option<Heartbeat<'_>>,
     ) -> Result<Executed> {
-        self.run_cancellable(cypher, params, &token, heartbeat)
+        self.run_cancellable(cypher, params, &token, heartbeat, None)
     }
 
     /// [`Self::commit`], ticking `heartbeat` on this thread while the

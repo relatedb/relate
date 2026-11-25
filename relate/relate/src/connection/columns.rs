@@ -69,3 +69,28 @@ pub(super) fn restore_authored_column_names(
         }
     }
 }
+
+/// The authored spellings a streamed statement announces in place of the
+/// plan's placeholder names (ADR-0663, ADR-0682): the restore above applied
+/// to the planned output names, one entry per planned column (`Some` where
+/// the spelling changed). `None` when no column is renamed — the streamed
+/// `Columns` event and the result header then spell the same names.
+pub(super) fn authored_renames(
+    logical: &LogicalPlan,
+    cypher: &str,
+    preview: relate_core::PreviewFeatures,
+) -> Option<Vec<Option<String>>> {
+    let planned = relate_planner::plan_output_names_expect(logical);
+    let mut restored = planned.clone();
+    restore_authored_column_names(logical, cypher, &mut restored, preview);
+    if planned == restored {
+        return None;
+    }
+    Some(
+        planned
+            .into_iter()
+            .zip(restored)
+            .map(|(planned, restored)| (planned != restored).then_some(restored))
+            .collect(),
+    )
+}

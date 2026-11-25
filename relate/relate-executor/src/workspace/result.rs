@@ -18,15 +18,37 @@ use super::{buffer_bytes, created_label_bytes, property_container_bytes};
 /// counted once by allocation identity, including payloads referenced by
 /// more than one output row.
 pub fn result_rows_bytes(rows: &[Vec<Value>]) -> u64 {
-    let mut seen = IdSet::default();
-    let mut bytes = buffer_bytes(rows.len(), size_of::<Vec<Value>>() as u64);
-    for row in rows {
-        bytes += buffer_bytes(row.len(), size_of::<Value>() as u64);
-        for value in row {
-            bytes += result_value_heap(value, &mut seen);
+    ResultRowsMeter::default().add(rows)
+}
+
+/// [`result_rows_bytes`] over a result that arrives in batches (ADR-0682):
+/// the identity set lives across calls, so a payload shared by rows of
+/// different batches is charged once, as the materialized walk charges it,
+/// and each call returns only the bytes its batch adds. The caller must keep
+/// every counted row alive while it keeps the meter — a freed allocation's
+/// address could be reused and mistaken for a counted one.
+#[derive(Default)]
+pub struct ResultRowsMeter {
+    seen: IdSet<usize>,
+    rows: usize,
+}
+
+impl ResultRowsMeter {
+    /// The bytes `rows` add to what the meter has already counted.
+    pub fn add(&mut self, rows: &[Vec<Value>]) -> u64 {
+        // The outer row buffer grows as one vector: charge its growth, not a
+        // fresh buffer per batch.
+        let before = buffer_bytes(self.rows, size_of::<Vec<Value>>() as u64);
+        self.rows += rows.len();
+        let mut bytes = buffer_bytes(self.rows, size_of::<Vec<Value>>() as u64) - before;
+        for row in rows {
+            bytes += buffer_bytes(row.len(), size_of::<Value>() as u64);
+            for value in row {
+                bytes += result_value_heap(value, &mut self.seen);
+            }
         }
+        bytes
     }
-    bytes
 }
 
 fn mark_arc<T: ?Sized>(value: &Arc<T>, seen: &mut IdSet<usize>) -> bool {
@@ -133,4 +155,28 @@ fn result_property_heap(entries: &Arc<relate_core::PropertyMap>, seen: &mut IdSe
         bytes += result_value_heap(value, seen);
     }
     bytes
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_meter_over_batches_counts_a_shared_payload_once_like_the_whole_walk() {
+        let shared: Arc<str> = Arc::from("a payload shared by rows of different batches");
+        let row = || vec![Value::String(shared.clone())];
+        let (first, second) = (vec![row(), row()], vec![row(), row()]);
+        let whole: Vec<Vec<Value>> = first.iter().chain(&second).cloned().collect();
+
+        let mut meter = ResultRowsMeter::default();
+        let (a, b) = (meter.add(&first), meter.add(&second));
+
+        // The second batch never charges the payload again.
+        assert!(a > str_logical_bytes(&shared));
+        assert!(b < a);
+        // A fresh walk per batch charges the payload twice.
+        assert!(result_rows_bytes(&first) + result_rows_bytes(&second) > a + b);
+        // The batches together are what the one-shot walk of the whole result is.
+        assert_eq!(a + b, result_rows_bytes(&whole));
+    }
 }

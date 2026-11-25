@@ -36,7 +36,18 @@ asserts its explicitly stacked connection threads
 bounded reads run on the connection's own thread without the worker
 handoff, and only the statements that can outlive a keep-alive interval
 — every write among them — escalate (ADR-0259's guarantees hold on both
-paths).
+paths). A caller that cannot hold a large answer — a transport writing rows
+to a socket as they arrive — runs the statement through
+`Connection::query_streaming` (ADR-0682): the consumer sees the result
+columns once, then each bounded batch of rows as the terminal `RETURN`
+produces it, with the pull itself as back-pressure (the next batch is
+pulled only after the consumer returns), and the call returns the
+statement's summary (stats, plan, notifications, timings) after the last
+batch. Statements whose shape cannot stream — a `UNION`, an aggregation or
+unlimited `ORDER BY`, a write, `EXPLAIN`, a catalog command — run
+materialized as ever and replay through the same consumer, so one consumer
+serves every statement; `query` itself is the streaming call with a
+collecting consumer.
 `Full` (the default) shares one WAL barrier among independent waiters
 and acknowledges after it. `EverySecond` acknowledges after apply and can lose
 the latest approximately one second of writes; `Snapshot` can lose everything

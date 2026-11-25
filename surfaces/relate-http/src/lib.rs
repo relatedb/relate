@@ -32,6 +32,7 @@ mod query_api;
 mod reply;
 mod server;
 mod stream;
+mod streamed;
 mod tx;
 mod tx_limits;
 mod tx_registry;

@@ -102,7 +102,7 @@ impl ResultHeader {
         namespace: Namespace,
         timing: impl FnOnce() -> TimingStamp,
     ) -> Self {
-        let column_types = stamp_column_types(columns.len(), rows);
+        let column_types = stamp_column_types(columns.len(), rows.first().map(Vec::as_slice));
         let timing = timing();
         Self {
             columns,
@@ -429,8 +429,7 @@ impl QueryResult {
 /// column order (the CLI's exec path asserts the same) — so a first row
 /// short of `column_count` is a contract break and fails loudly here,
 /// not a column stamped `ANY`.
-fn stamp_column_types(column_count: usize, rows: &[Vec<Value>]) -> Vec<String> {
-    let first = rows.first();
+pub(crate) fn stamp_column_types(column_count: usize, first: Option<&[Value]>) -> Vec<String> {
     (0..column_count)
         .map(|i| {
             let cell = match first {

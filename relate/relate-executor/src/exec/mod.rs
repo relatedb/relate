@@ -66,6 +66,7 @@ mod load_csv;
 mod match_arm;
 mod profile_chain;
 mod profile_tick;
+mod read;
 // The LABS-348 hub join — the whole family (gate, join, row-shape
 // helpers, test hooks), invoked by the driver at its pattern-0→
 // pattern-1 boundary (`match_clause::match_paths`) over the caller's
@@ -111,6 +112,7 @@ pub(crate) mod vector;
 pub(crate) mod write;
 
 pub use catalog_show::catalog_create_statements;
+pub use read::{execute_read_at, execute_read_streaming_at};
 
 /// The read path's one rejection policy: the message a `ClauseMode::Read`
 /// clause loop refuses `c` with, or `None` to dispatch it. The dispatcher
@@ -440,50 +442,6 @@ fn run_statement(graph: &ExecGraph<'_>, request: &ExecRequest<'_>) -> Result<(Qu
         request.plan_metrics,
     )?;
     Ok((result, attempted))
-}
-
-/// Execute a read-only plan at the caller-pinned timestamp in `admission`
-/// without repinning. The caller must keep its `Graph::pin_now()` guard alive
-/// through this call so version GC cannot discard rows visible at
-/// `snapshot_ts`, and must capture `schema` alongside that pin while
-/// serializing with graph publication.
-///
-/// There is deliberately no graph-only wrapper that acquires both itself: the
-/// publication read guard lives on the embedded database's `Shared` state, not
-/// on a bare `Graph`, so such a wrapper could not capture the pin and schema
-/// atomically. Admission must happen under that guard at the caller.
-pub fn execute_read_at(admission: &ReadAdmission<'_>) -> Result<QueryResult> {
-    let view = ExecGraph::read_at(admission.graph, admission.snapshot_ts)
-        .with_schema(admission.schema)
-        .with_cancel(admission.cancel)
-        .with_ontology_document(admission.ontology_document);
-    view.check_cancelled()?;
-    // A read view carries no scratch, so the resets are vacuous and this
-    // call is the declared-name seeding — kept through the same one
-    // statement-entry operation every write entry takes, never a second
-    // spelling of it.
-    view.begin_statement(admission.request.plan);
-    let _clock = QueryClockGuard::new();
-    // A read admission records its write-attempt fact from the same canonical
-    // plan walk as every write entry — never a hardcoded "a read cannot
-    // write": a mutation operator reaching this route is still an attempt (the
-    // read-only scratch refuses to apply it). A read view applies nothing, so
-    // its applied count is the zero the admission starts with.
-    let attempted = plan_mutates_store(admission.request.plan);
-    // ADR-0395: the freshly constructed view carries a zeroed counter —
-    // the read admission's statement gets its own budget.
-    let qctx =
-        QueryCtx::new(admission.request.query_text).with_principal(admission.request.principal);
-    let mut result = execute_plan_read_seeded(
-        &view,
-        admission.request.plan,
-        admission.request.params,
-        vec![Row::new()],
-        qctx,
-        admission.request.plan_metrics,
-    )?;
-    result.stats = QueryStats::default();
-    finish_statement(result, &view, attempted)
 }
 
 /// Name the statement's effect and finish the result — the one assignment to

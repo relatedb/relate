@@ -30,6 +30,8 @@ use crate::Result;
 use crate::{CancelToken, Value};
 
 #[cfg(not(target_arch = "wasm32"))]
+use super::dispatch::RetryHost;
+#[cfg(not(target_arch = "wasm32"))]
 use super::QueryOutcome;
 
 impl Connection {
@@ -46,6 +48,7 @@ impl Connection {
         params: BTreeMap<String, Value>,
         token: &CancelToken,
         heartbeat: Option<Heartbeat<'_>>,
+        stream: Option<&mut super::stream::ConsumerStream<'_>>,
     ) -> QueryOutcome {
         // The guarded decision: the admission and its route under the
         // fast path's panic guard, so ADR-0259's containment holds on
@@ -76,7 +79,7 @@ impl Connection {
             // exactly as an unasserted connection's statement always did.
             Ok(Ok(Route::WorkerCold)) => QueryOutcome::from_result(Self::run_on_worker(
                 self.worker_slot(),
-                || self.run_query(cypher, params, token),
+                || self.run_query(cypher, params, token, stream),
                 heartbeat,
             )),
             // Inline: there is no wait, so a heartbeat can never be due
@@ -88,21 +91,9 @@ impl Connection {
             // the entry: a generation-mismatch replan compiles the same
             // depth-bounded carried AST, so the plan that runs is
             // bounded by the same fact (ADR-0663).
-            Ok(Ok(Route::Inline(admission))) => {
-                // The inline route's two producers need different retry
-                // hosts: the asserted fast path's thread carries the
-                // worker's own stack (retry in place); the probe's
-                // (ADR-0663, an unasserted thread) sends REL8-1120's
-                // retry — whose re-admission parses the raw text — to
-                // the worker. The flag is exactly the producer: the
-                // asserted path requires it, the probe refuses it.
-                let retry_host = if self.caller_stack_asserted {
-                    super::dispatch::RetryHost::ThisThread
-                } else {
-                    super::dispatch::RetryHost::Worker
-                };
+            Ok(Ok(Route::Inline(admission, retry_host))) => {
                 QueryOutcome::from_result(catch_inline_panic(|| {
-                    self.run_admitted(admission, cypher, &params, token, retry_host)
+                    self.run_admitted(admission, cypher, &params, token, retry_host, stream)
                 }))
             }
             // Escalate: the post-admission body runs on the 64 MiB
@@ -120,7 +111,8 @@ impl Connection {
                         cypher,
                         &params,
                         token,
-                        super::dispatch::RetryHost::ThisThread,
+                        RetryHost::ThisThread,
+                        stream,
                     )
                 },
                 heartbeat,
@@ -148,8 +140,10 @@ impl Connection {
             super::cache::CacheUse::Query,
             web_time::Instant::now(),
         )?;
+        // The asserted thread carries the worker's own stack, so
+        // REL8-1120's retry runs in place.
         Ok(if plan_is_bounded_work(&admission.logical) {
-            Route::Inline(admission)
+            Route::Inline(admission, RetryHost::ThisThread)
         } else {
             Route::Escalate(admission)
         })
@@ -170,7 +164,9 @@ impl Connection {
         params: &BTreeMap<String, Value>,
     ) -> Result<Route> {
         match self.admit_hit_only(cypher, params, web_time::Instant::now())? {
-            Some(admission) => Ok(Route::Inline(admission)),
+            // An unasserted thread: REL8-1120's retry — whose
+            // re-admission parses the raw text — goes to the worker.
+            Some(admission) => Ok(Route::Inline(admission, RetryHost::Worker)),
             None => Ok(Route::WorkerCold),
         }
     }
@@ -240,9 +236,14 @@ impl Connection {
 /// statement, admission included, on its own stack. A named route — not
 /// a boolean mode — so the dispatch arms read as what they are and a
 /// future route cannot be conflated with either.
+///
+/// The inline route carries its REL8-1120 retry host: its two producers
+/// differ — the asserted fast path's thread carries the worker's own stack
+/// (retry in place), the cache-hit probe's (ADR-0663, an unasserted
+/// thread) sends the retry to the worker — so the producer decides it once.
 #[cfg(not(target_arch = "wasm32"))]
 enum Route {
-    Inline(super::admission::Admission),
+    Inline(super::admission::Admission, RetryHost),
     Escalate(super::admission::Admission),
     WorkerCold,
 }

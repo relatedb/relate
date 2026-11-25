@@ -2,6 +2,9 @@
 // tombstones, and the delta merge beside the live store.
 mod adjacency;
 mod catalog_meta;
+// The terminal batch consumer (ADR-0682): private module, root re-exports
+// only (one public path).
+mod consumer;
 mod csv;
 mod ctx;
 mod metrics;
@@ -91,6 +94,7 @@ mod vector_config;
 mod vector_similarity;
 
 pub use catalog_meta::{DeprecatedBy, DeprecationForm};
+pub use consumer::{BatchFlow, RowConsumer, StreamSink, BATCH_ROWS};
 pub use csv::CsvPolicy;
 pub use ctx::BatchCommit;
 pub use effect::StatementEffect;
@@ -105,7 +109,7 @@ pub use exec::graph_stats::GraphStats;
 pub use exec::procedures::{check_explicit_arity, check_implicit_passing_mode};
 pub use exec::{
     catalog_create_statements, ddl_notifications::ddl_notifications, execute, execute_read_at,
-    ExecRequest, QueryResult, ReadAdmission,
+    execute_read_streaming_at, ExecRequest, QueryResult, ReadAdmission,
 };
 pub use frontier_decline::{FrontierDecline, FrontierDeclineReason, FrontierRunDecline};
 pub use function_registry::builtin_function_deprecation;
@@ -195,7 +199,7 @@ pub use redo::{
     IndexFacts, IndexKindSpec, OntologyOp, PullKind, RedoOp, MAX_ONTOLOGY_SPEC_BYTES,
 };
 #[doc(hidden)]
-pub use workspace::result_rows_bytes;
+pub use workspace::{result_rows_bytes, ResultRowsMeter};
 
 /// Whether an `IN TRANSACTIONS` body takes the batch pass (ADR-0669):
 /// one clause-engine pass per batch instead of one nested invocation

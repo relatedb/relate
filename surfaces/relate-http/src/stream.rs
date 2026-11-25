@@ -19,9 +19,11 @@
 
 use std::io::{self, BufWriter, Write};
 
+use flate2::write::GzEncoder;
 use serde::Serialize;
 
 use crate::content_encoding::{gzip_encoder, BodyEncoding};
+use crate::http::{write_head, Framing};
 use crate::v2_envelope::ReplyBody;
 
 /// The uncompressed serialized body size at which a reply switches from the
@@ -81,36 +83,158 @@ pub(crate) fn count_json<T: Serialize>(body: &T) -> io::Result<CountedJson> {
 /// [`BodyEncoding::Gzip`] the compressor composes above that buffer: the
 /// envelope feeds the gzip encoder and the compressed bytes are the frame
 /// payloads. The body ends with one zero-size last chunk and no trailer
-/// section — [`finish_frames`] flushes the frame buffer, the last chunk and
+/// section — [`ChunkedBody::finish`] flushes the frame buffer, the last chunk and
 /// the sink, so there is no second flush here.
 pub(crate) fn write_chunked(
     sink: &mut impl Write,
     body: &ReplyBody,
     encoding: BodyEncoding,
 ) -> io::Result<()> {
-    let mut buffered = BufWriter::with_capacity(FRAME_BUFFER_BYTES, ChunkWriter::new(&mut *sink));
-    match encoding {
-        BodyEncoding::Gzip => {
-            let mut encoder = gzip_encoder(buffered);
-            serde_json::to_writer(&mut encoder, body).map_err(io::Error::other)?;
-            finish_frames(encoder.finish()?)
+    let mut frames = ChunkedBody::new(&mut *sink, encoding);
+    serde_json::to_writer(&mut frames, body).map_err(io::Error::other)?;
+    frames.finish()
+}
+
+/// Write a chunked reply's head (ADR-0386 §4): the streamed body's encoding
+/// is negotiated from `accept_encoding` by weight alone
+/// ([`BodyEncoding::for_streamed_body`] — the final size is unknown before
+/// the head), its `content-encoding` header joins `extra_headers`, and the
+/// head goes out with `Transfer-Encoding: chunked`. Returns the encoding the
+/// body must be written in. The one chunked head: the whole-body reply
+/// ([`write_chunked`]) and the statement streamer (`crate::streamed`) both
+/// open their bodies through it.
+pub(crate) fn write_chunked_head(
+    writer: &mut impl Write,
+    status: u16,
+    content_type: &str,
+    mut extra_headers: Vec<(String, String)>,
+    accept_encoding: Option<&str>,
+) -> io::Result<BodyEncoding> {
+    let encoding = BodyEncoding::for_streamed_body(accept_encoding);
+    encoding.push_header(&mut extra_headers);
+    write_head(
+        writer,
+        status,
+        content_type,
+        Framing::Chunked,
+        &extra_headers,
+    )?;
+    Ok(encoding)
+}
+
+/// The one frame composition (ADR-0386 §2): the fixed-size frame buffer
+/// over a frame writer `F`, with the gzip encoder above it when negotiated.
+/// The standalone server's `F` is the RFC 9112 [`ChunkWriter`]
+/// ([`ChunkedBody`]); an embedder's is `crate::framing`'s unframed payload
+/// writer. [`Self::finish`] flushes the compressor and the buffer and hands
+/// the frame writer back for its own ending.
+pub(crate) enum EncodedFrames<F: Write> {
+    Identity(BufWriter<F>),
+    Gzip(GzEncoder<BufWriter<F>>),
+}
+
+impl<F: Write> EncodedFrames<F> {
+    pub(crate) fn new(frames: F, encoding: BodyEncoding) -> Self {
+        let buffered = BufWriter::with_capacity(FRAME_BUFFER_BYTES, frames);
+        match encoding {
+            BodyEncoding::Gzip => Self::Gzip(gzip_encoder(buffered)),
+            BodyEncoding::Identity => Self::Identity(buffered),
         }
-        BodyEncoding::Identity => {
-            serde_json::to_writer(&mut buffered, body).map_err(io::Error::other)?;
-            finish_frames(buffered)
+    }
+
+    /// Flush the compressor (when present) and the frame buffer into the
+    /// frame writer, and return it.
+    pub(crate) fn finish(self) -> io::Result<F> {
+        let buffered = match self {
+            Self::Gzip(encoder) => encoder.finish()?,
+            Self::Identity(buffered) => buffered,
+        };
+        buffered.into_inner().map_err(|error| error.into_error())
+    }
+}
+
+impl<F: Write> Write for EncodedFrames<F> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        match self {
+            Self::Gzip(encoder) => encoder.write(buf),
+            Self::Identity(buffered) => buffered.write(buf),
+        }
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        match self {
+            Self::Gzip(encoder) => encoder.flush(),
+            Self::Identity(buffered) => buffered.flush(),
         }
     }
 }
 
-/// Flush the frame buffer into the chunk writer and terminate the body: the
-/// buffered bytes become the last frames, then [`ChunkWriter::finish`] writes
-/// the zero-size last chunk and flushes the sink. The finished inner writer
-/// has no value to hand back, so the result is the write outcome alone.
-fn finish_frames<W: Write>(buffered: BufWriter<ChunkWriter<W>>) -> io::Result<()> {
-    buffered
-        .into_inner()
-        .map_err(|error| error.into_error())?
-        .finish()
+/// An open chunked body: the [`EncodedFrames`] composition over the RFC
+/// 9112 chunk writer. [`write_chunked`] feeds it one whole body; the
+/// statement streamer (`crate::streamed`) feeds it the envelope piece by
+/// piece as the engine's batches arrive. Either way the body ends through
+/// [`Self::finish`].
+pub(crate) struct ChunkedBody<W: Write>(EncodedFrames<ChunkWriter<W>>);
+
+impl<W: Write> ChunkedBody<W> {
+    pub(crate) fn new(sink: W, encoding: BodyEncoding) -> Self {
+        Self(EncodedFrames::new(ChunkWriter::new(sink), encoding))
+    }
+
+    /// End the body: flush the compressor (when present) and the frame
+    /// buffer — the buffered bytes become the last frames — then write the
+    /// zero-size last chunk and flush the sink.
+    pub(crate) fn finish(self) -> io::Result<()> {
+        self.0.finish()?.finish()
+    }
+}
+
+impl<W: Write> Write for ChunkedBody<W> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.0.write(buf)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.0.flush()
+    }
+}
+
+/// The one frame slicer (ADR-0386 §2): hand `buf` to `frame` in payloads of
+/// at most [`FRAME_BUFFER_BYTES`]. An empty `buf` yields no frame at all.
+/// Both frame writers — the RFC 9112 [`ChunkWriter`] and `crate::framing`'s
+/// unframed payload writer — slice through it.
+pub(crate) fn for_each_frame(
+    buf: &[u8],
+    mut frame: impl FnMut(&[u8]) -> io::Result<()>,
+) -> io::Result<usize> {
+    for payload in buf.chunks(FRAME_BUFFER_BYTES) {
+        frame(payload)?;
+    }
+    Ok(buf.len())
+}
+
+/// A [`Write`] that only counts the bytes written to it: the encoded size of
+/// a value, measured without keeping it (the statement streamer's
+/// buffered-rows measure, `crate::streamed`). [`CountingWriter`] is the
+/// keeping, bounded form the one-shot framing decision needs.
+#[derive(Default)]
+pub(crate) struct ByteCount(usize);
+
+impl ByteCount {
+    pub(crate) fn bytes(&self) -> usize {
+        self.0
+    }
+}
+
+impl Write for ByteCount {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.0 += buf.len();
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 /// The counting pass's writer (ADR-0386 §5): it keeps the body's bytes while
@@ -191,12 +315,12 @@ impl<W: Write> Write for ChunkWriter<W> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         // An empty buffer writes nothing at all: a zero-size chunk is the
         // last chunk and would terminate the body early.
-        for frame in buf.chunks(FRAME_BUFFER_BYTES) {
-            write!(self.inner, "{:x}\r\n", frame.len())?;
-            self.inner.write_all(frame)?;
-            self.inner.write_all(b"\r\n")?;
-        }
-        Ok(buf.len())
+        let inner = &mut self.inner;
+        for_each_frame(buf, |frame| {
+            write!(inner, "{:x}\r\n", frame.len())?;
+            inner.write_all(frame)?;
+            inner.write_all(b"\r\n")
+        })
     }
 
     fn flush(&mut self) -> io::Result<()> {

@@ -418,6 +418,24 @@ pub(crate) fn missing_element_id_error() -> Error {
     Error::execution("elements of this namespace have no element ids")
 }
 
+/// Refuse rows that carry an entity under a namespace with no element-id
+/// segment: the wire form has no id to carry, and the ADR-0675 writer
+/// encodes lazily, so the refusal has to happen before a row is written
+/// rather than failing a chunk mid-stream. The scan is skipped entirely
+/// unless the namespace lacks a segment (`system` is the only one), and
+/// [`carries_entity`] descends into containers, so `collect(n)` / `{a: n}`
+/// are caught too. The one check: the collected reply runs it over the
+/// whole result, the statement streamer (`crate::streamed`) per batch.
+pub(crate) fn refuse_entities_without_element_ids(
+    namespace: Namespace,
+    rows: &[Vec<relate::Value>],
+) -> Result<(), Error> {
+    if namespace.element_id_segment().is_none() && rows.iter().flatten().any(carries_entity) {
+        return Err(missing_element_id_error());
+    }
+    Ok(())
+}
+
 /// The Neo4j `coordinatesType` vocabulary for a vector's coordinate kind.
 fn vector_coord_name(coord: &relate_model::VectorCoordKind) -> &'static str {
     use relate_model::VectorCoordKind as K;

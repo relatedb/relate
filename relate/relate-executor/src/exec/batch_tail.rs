@@ -33,8 +33,9 @@ use super::shortcut_common::plain_match_patterns;
 /// Driving rows per batch (ADR-0555's batch bound). The tail runs once per
 /// batch, so this bounds the *driving* rows — not the tail's own containers,
 /// which a `MATCH` fan-out grows past the batch and which stay charged by
-/// ADR-0463.
-pub(super) const BATCH_ROWS: usize = 1024;
+/// ADR-0463. The one home is the consumer module (ADR-0682: the terminal's
+/// consumer deliveries batch by the same bound).
+pub(super) use crate::consumer::BATCH_ROWS;
 
 /// One footprint axis: the names a read pattern requires, or `Any` when some
 /// read pattern is unlabeled and so matches any node (rel). The two states
