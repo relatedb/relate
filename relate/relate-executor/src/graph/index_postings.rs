@@ -7,6 +7,7 @@
 use super::declared::DrainState;
 use super::index::PropPairIndex;
 use super::index_lookup::RecheckSpec;
+use super::pair_postings::PRESIZE_PREFIX;
 use super::*;
 
 use crate::group_key::identity_narrower_than_eq;
@@ -56,6 +57,23 @@ impl PairVersion {
 fn feed_sorted(mut ids: Vec<i64>, st: &mut PropPairIndex, feed: &impl Fn(i64, &mut PropPairIndex)) {
     ids.sort_unstable();
     for id in ids {
+        feed(id, st);
+    }
+}
+
+/// [`feed_sorted`] for the pair's first build: after the first
+/// [`PRESIZE_PREFIX`] candidates the postings decide whether the key looks
+/// unique and reserve for the rest, so the build's table never doubles
+/// beside its predecessor. The drain keeps [`feed_sorted`]: it is small.
+fn feed_build(mut ids: Vec<i64>, st: &mut PropPairIndex, feed: &impl Fn(i64, &mut PropPairIndex)) {
+    ids.sort_unstable();
+    let total = ids.len();
+    let (head, tail) = ids.split_at(PRESIZE_PREFIX.min(total));
+    for &id in head {
+        feed(id, st);
+    }
+    st.postings.presize(head.len(), total);
+    for &id in tail {
         feed(id, st);
     }
 }
@@ -113,7 +131,7 @@ impl Graph {
     ) -> R {
         let mut st = pairs.entry(pair).or_default();
         if !st.built {
-            feed_sorted(candidates(), &mut st, &feed);
+            feed_build(candidates(), &mut st, &feed);
             st.built = true;
             st.postings.shrink_to_fit();
         }
