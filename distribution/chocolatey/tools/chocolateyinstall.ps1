@@ -1,5 +1,11 @@
 $ErrorActionPreference = 'Stop'
 
+# Chocolatey's PowerShell host does not auto-load the Utility module on
+# every host version — the v1.3.0 install died with "Get-FileHash is not
+# recognized" — so the import is explicit: the SHA256SUMS check below
+# needs the cmdlet whatever the host loads by default.
+Import-Module Microsoft.PowerShell.Utility
+
 # The package's tools directory: where the real binary and its provenance
 # marker live. $MyInvocation resolves to this script only at file scope, so
 # the constant is defined here, not inside a function.
