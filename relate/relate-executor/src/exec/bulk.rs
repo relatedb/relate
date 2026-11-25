@@ -313,11 +313,14 @@ enum RenameProjection {
     Renamed(HashMap<String, String>),
 }
 
-/// Whether a `WITH` clause is a pure rename projection: no aggregation,
-/// distinct, ordering, paging, or filter, every item a variable or `*`,
-/// and no source variable renamed twice (two names for one entity, which
-/// the one-entry-per-variable factor list cannot carry). `None` when the
-/// clause is not a pure rename.
+/// Whether a `WITH` clause is a pure rename projection. `None` when the
+/// clause is any of: not a `WITH`; carrying `DISTINCT`, a grouping,
+/// ordering, `SKIP`, `LIMIT`, or `WHERE`; holding an item that is neither
+/// a variable nor `*`; renaming one source twice (two names for one
+/// entity, which the one-entry-per-variable factor list cannot carry);
+/// giving two sources one target (the second would shadow the first); or
+/// pairing `*` with a real (non-identity) alias. The inline comments in the
+/// body own the per-shape reasons.
 fn with_rename_projection(clause: &Clause) -> Option<RenameProjection> {
     let Clause::With {
         distinct,
