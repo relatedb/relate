@@ -534,32 +534,81 @@ const POINT_FAMILY: ConfigFamily = ConfigFamily {
 /// The `indexConfig` key naming a fulltext index's analyzer.
 pub(crate) const KEY_FULLTEXT_ANALYZER: &str = "fulltext.analyzer";
 
-/// The analyzer a stored fulltext index was created with: its
-/// [`KEY_FULLTEXT_ANALYZER`] setting, the standard analyzer when absent. A
-/// stored value the create-time validation would have rejected is catalog
-/// drift.
-pub(crate) fn index_analyzer(
+/// The one stored-setting reader every typed read-side reader is a single
+/// call of: navigate the outer `indexConfig` (the one [`index_config`]
+/// boundary, its non-map rejection mapped to the shared drift error),
+/// find the stored setting by key, then narrow — absent answers the
+/// caller's default, a value the caller's typed reading fails to narrow
+/// is the drift rejection. The create-time validation would have
+/// rejected a stored shape this reader cannot narrow, so the rejection
+/// is catalog drift, never a silently unconfigured index.
+fn stored_setting<T>(
     options: &BTreeMap<String, Value>,
     index_name: &str,
-) -> Result<Analyzer> {
+    key: &str,
+    default: T,
+    narrow: impl Fn(&Value) -> Option<T>,
+) -> Result<T> {
     let drift = || {
         Error::execution(format!(
             "InvalidIndexDefinition: fulltext index {index_name} has an invalid indexConfig option"
         ))
     };
     let config = index_config(options).map_err(|_| drift())?;
-    match config.and_then(|config| config.get(KEY_FULLTEXT_ANALYZER)) {
-        None => Ok(Analyzer::Standard),
-        Some(Value::String(name)) => Analyzer::from_name(name).ok_or_else(drift),
-        Some(_) => Err(drift()),
+    match config.and_then(|config| config.get(key)) {
+        None => Ok(default),
+        Some(value) => narrow(value).ok_or_else(drift),
     }
+}
+
+/// The analyzer a stored fulltext index was created with: its
+/// [`KEY_FULLTEXT_ANALYZER`] setting, the standard analyzer when absent.
+pub(crate) fn index_analyzer(
+    options: &BTreeMap<String, Value>,
+    index_name: &str,
+) -> Result<Analyzer> {
+    stored_setting(
+        options,
+        index_name,
+        KEY_FULLTEXT_ANALYZER,
+        Analyzer::Standard,
+        |value| match value {
+            Value::String(name) => Analyzer::from_name(name),
+            _ => None,
+        },
+    )
+}
+
+/// The `indexConfig` key naming a fulltext index's eventual consistency.
+pub(crate) const KEY_FULLTEXT_EVENTUALLY_CONSISTENT: &str = "fulltext.eventually_consistent";
+
+/// Whether a stored fulltext index was created eventually consistent: its
+/// [`KEY_FULLTEXT_EVENTUALLY_CONSISTENT`] setting, `false` when absent.
+/// The SEARCH clause rejects such an index (ADR-0680); the
+/// `db.index.fulltext.query*` procedures are its supported surface.
+pub(crate) fn index_eventually_consistent(
+    options: &BTreeMap<String, Value>,
+    index_name: &str,
+) -> Result<bool> {
+    stored_setting(
+        options,
+        index_name,
+        KEY_FULLTEXT_EVENTUALLY_CONSISTENT,
+        false,
+        |value| match value {
+            Value::Bool(eventually_consistent) => Some(*eventually_consistent),
+            _ => None,
+        },
+    )
 }
 
 /// The fulltext index's two `indexConfig` settings.
 const FULLTEXT_FAMILY: ConfigFamily = ConfigFamily {
+    // The key vocabulary is the read side's (these constants); the create
+    // side owns only the value shapes.
     keys: &[
         (KEY_FULLTEXT_ANALYZER, ValueShape::Analyzer),
-        ("fulltext.eventually_consistent", ValueShape::Boolean),
+        (KEY_FULLTEXT_EVENTUALLY_CONSISTENT, ValueShape::Boolean),
     ],
     foreign_prefixes: &["spatial.", "vector."],
     foreign_expected: "'fulltext.analyzer' or 'fulltext.eventually_consistent'",

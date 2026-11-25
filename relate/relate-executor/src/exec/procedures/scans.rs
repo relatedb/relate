@@ -220,7 +220,7 @@ pub(crate) fn fulltext_call_source<'a>(
     signature: &'static ProcSignature,
 ) -> Result<ComposeSource<'a>> {
     // One corpus per index for the whole call, not one per input row.
-    let corpora = fulltext::CorpusMemo::default();
+    let corpora = fulltext::CorpusMemo::new(ctx.graph);
     scan_call_source(ctx, kind, call, signature, move |input, s| {
         // The fulltext arm's operand read (the twin of the vector arm's
         // `vector_operand`): NULL matches nothing — the

@@ -17,6 +17,9 @@
 
 use std::borrow::Cow;
 use std::cell::RefCell;
+use std::num::NonZeroUsize;
+
+use crate::recency::RecencySlots;
 
 use regex::{Regex, RegexBuilder};
 use relate_core::{Error, Result};
@@ -34,11 +37,12 @@ const MAX_CACHED_PROGRAM_BYTES: usize = 256 * 1024;
 /// patterns costs one compile each, as before, and never grows the table.
 const CACHED_PATTERNS: usize = 8;
 
-/// The one recency policy: the back holds the recently used pattern, the
-/// front is the eviction victim. A hit refreshes its entry to the back;
-/// an insert into a full table first drops the front. Recency and
-/// eviction live here, never at a call site.
-struct PatternCache(Vec<Slot>);
+/// The compiled-pattern table: one bounded-recency [`RecencySlots`]
+/// over the repo's shared policy — the back holds the recently used
+/// pattern, the front is the eviction victim — carrying this cache's
+/// own slot type; recency and eviction live in the shared table, never
+/// here.
+struct PatternCache(RecencySlots<Slot>);
 
 /// One cached pattern: the key (pattern text and mode) and what the table
 /// knows about it.
@@ -80,19 +84,17 @@ impl PatternCache {
     /// or `None` when the table holds no such pattern. The caller owns the
     /// match, so this API never takes the subject text.
     fn hit(&mut self, pattern: &str, mode: Mode) -> Option<&Entry> {
-        let pos = self.0.iter().position(|slot| slot.matches(pattern, mode))?;
-        let slot = self.0.remove(pos);
-        self.0.push(slot);
-        self.0.last().map(|slot| &slot.entry)
+        self.0
+            .hit(|slot| slot.matches(pattern, mode))
+            .map(|slot| &slot.entry)
     }
 
     /// A newly classified pattern takes the back; a full table first drops
     /// its least recently used front entry.
     fn insert(&mut self, pattern: &str, mode: Mode, entry: Entry) {
-        if self.0.len() == CACHED_PATTERNS {
-            self.0.remove(0);
-        }
-        self.0.push(Slot {
+        // A pattern slot carries nothing to refund on eviction — the
+        // evicted program's teardown is its drop.
+        let _ = self.0.insert(Slot {
             pattern: pattern.into(),
             mode,
             entry,
@@ -101,7 +103,12 @@ impl PatternCache {
 }
 
 thread_local! {
-    static COMPILED: RefCell<PatternCache> = const { RefCell::new(PatternCache(Vec::new())) };
+    static COMPILED: RefCell<PatternCache> =
+        const {
+            RefCell::new(PatternCache(RecencySlots::new(
+                NonZeroUsize::new(CACHED_PATTERNS).expect("a non-zero cache cap"),
+            )))
+        };
 }
 
 /// The one authored rejection an invalid `=~` pattern reports — 22N11, an

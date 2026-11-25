@@ -5,6 +5,7 @@ mod catalog_meta;
 mod csv;
 mod ctx;
 mod metrics;
+mod recency;
 // The one tiered distinct set under every DISTINCT site (LABS-852).
 mod distinct_set;
 #[cfg(test)]

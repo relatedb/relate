@@ -1013,3 +1013,11 @@ all five conflicts (§5).
   the corpus does call it, so this table's `catalog-only` classification of
   that row no longer holds. It answers from the engine's analyzer table; the
   alignment rule itself is unchanged.
+
+- **[ADR-0680](./0680-search-match-filter-semantics.md)** —
+  `db.index.fulltext.awaitEventuallyConsistentIndexRefresh` is executable
+  too: the 2026-11-24 corpus re-sync put the call in the fulltext
+  acceptance background, so the "no corpus scenario CALLs it" premise of
+  this table's `catalog-only` row is gone. It is a void no-op (the engine
+  applies index updates synchronously); the alignment rule itself is
+  unchanged.
