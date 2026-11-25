@@ -14,7 +14,7 @@
     <title>Relate</title>
     <authors>Relate maintainers</authors>
     <projectUrl>https://relatedb.ai</projectUrl>
-    <license type="expression">Apache-2.0</license>
+    <licenseUrl>https://spdx.org/licenses/Apache-2.0.html</licenseUrl>
     <requireLicenseAcceptance>false</requireLicenseAcceptance>
     <summary>Embedded openCypher graph database with a single-binary CLI.</summary>
     <description>Relate is an embedded, in-memory property graph engine queried
