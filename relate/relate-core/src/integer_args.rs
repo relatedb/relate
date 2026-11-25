@@ -1,4 +1,4 @@
-//! The ADR-0175 integer-argument sites' authored texts.
+//! The integer-argument sites' authored texts.
 //!
 //! Written once so every layer that raises a site's rejection reads the
 //! same text: the planner's checks at plan time and, for the sites with a
@@ -6,9 +6,13 @@
 //! slice bounds are plan-time only — their runtime coercion has no type
 //! rejection — and `SKIP` / `LIMIT` carry their own planner tokens.
 //! [`crate::FUNCTION_REQUIRES_ONE_ARGUMENT`] sets the precedent for a
-//! rejection spelling shared across layers.
+//! rejection spelling shared across layers. The `CALL { … } IN
+//! TRANSACTIONS` modifier sites (the batch size, the concurrency hint,
+//! REL8-2179) are rows in the same table: the planner's literal check
+//! and the executor's runtime coercion read one row, so the plan-time
+//! and run-time spellings cannot diverge.
 
-/// One integer-argument site's authored texts.
+/// One ADR-0175 function-argument site's authored texts.
 pub struct IntegerArgSite {
     /// The `InvalidArgumentType` detail of a non-numeric argument.
     pub type_error: &'static str,
@@ -33,6 +37,42 @@ const fn coercion_site(type_error: &'static str, range: &'static str) -> Integer
         type_error,
         range: Some(range),
     }
+}
+
+/// The `CALL { … } IN TRANSACTIONS` modifier sites (REL8-2179): the
+/// `OF n ROWS` batch size and the `IN n CONCURRENT TRANSACTIONS` hint.
+/// Both fields carry the class mapping, stated once: `type_error` is
+/// the plan-time `InvalidArgumentType` sentence a non-INTEGER literal
+/// rejects with and the runtime wrong-typed (`TypeError`) detail;
+/// `range` is the plan-time `InvalidArgument` sentence a non-positive
+/// INTEGER literal rejects with and the runtime `NumberOutOfRange`
+/// (`ArgumentError`) detail for the batch size — a whole sentence,
+/// where a function site's `range` names its site.
+pub const TX_BATCH_SIZE: IntegerArgSite = coercion_site(
+    "batch size must be an integer",
+    "batch size must be a positive integer",
+);
+pub const TX_CONCURRENCY: IntegerArgSite = coercion_site(
+    "concurrency must be an integer",
+    "concurrency must be a positive integer",
+);
+
+/// The `ON ERROR RETRY … WAIT n` retry duration: the plan-time
+/// shape gate's two sentences — the non-numeric rejection's type text
+/// and the negative-duration rejection's range text.
+pub const TX_RETRY_DURATION: IntegerArgSite = coercion_site(
+    "retry duration must be numeric",
+    "retry duration must be non-negative",
+);
+
+/// A site's range sentence — the one accessor every layer reads (the
+/// planner's non-positive literal arms through
+/// [`crate::invalid_argument_text`], the executor's runtime
+/// `NumberOutOfRange` detail directly), owning the coercion-site
+/// invariant the `string_index_arg` sites already rely on.
+pub fn range_text(site: &IntegerArgSite) -> &'static str {
+    site.range
+        .expect("a coercion site states its range sentence")
 }
 
 pub const RANGE_START: IntegerArgSite = type_site("range() start");

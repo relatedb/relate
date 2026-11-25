@@ -812,6 +812,15 @@ pub fn negative_page_bound_text() -> String {
     )
 }
 
+/// A `CALL { … } IN TRANSACTIONS` modifier's positive-integer sentence
+/// ([`crate::integer_args`]) under the pinned `InvalidArgument` token —
+/// the one composition the planner's non-positive literal arms call (the
+/// SKIP/LIMIT shape: the token's single home is here, the layer that
+/// fires decides only the class).
+pub fn invalid_argument_text(detail: impl Into<String>) -> String {
+    format!("InvalidArgument: {}", detail.into())
+}
+
 /// The one spelling of the wrong-type sentence the 22N01 argument errors
 /// and the SEARCH validators share. The expected set is the caller's own
 /// signature; the actual type name is the caller's vocabulary
