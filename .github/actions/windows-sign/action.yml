@@ -11,9 +11,15 @@ description: >-
   certificate material exists on the runner. The runner-side verification
   then pins the exact signing certificate by comparing the signature's
   signer thumbprint with the fingerprint held as a repository variable.
-  Implements ADR-0594. While the API key is unset the action skips with a
-  warning and leaves the binary untouched (ADR-0594); once it is set the leg
-  fails closed.
+  Implements ADR-0594. Before signing, a preflight `smctl healthcheck`
+  step — smctl from the vendor action's CDN location but verified
+  against a SHA-256 pinned in this action (moved only by an explicit
+  bump), its report classified by
+  `scripts/check-smctl-healthcheck.sh` — proves both authentication
+  factors, so a credentials failure surfaces as a diagnosis naming the
+  secret to fix instead of DigiCert's bare sign-time 403. While the API
+  key is unset the action skips with a warning and leaves the binary
+  untouched (ADR-0594); once it is set the leg fails closed.
 
 inputs:
   binary:
@@ -56,6 +62,57 @@ runs:
         # Credentials complete: clear any inherited skip flag so a
         # job-wide WINDOWS_SIGN_SKIP=1 cannot silently skip signing.
         echo "WINDOWS_SIGN_SKIP=0" >> "$GITHUB_ENV"
+
+    - name: Preflight the DigiCert credentials (smctl healthcheck)
+      # `smctl sign` answers a 1FA-authenticated session — API key without
+      # an accepted client certificate — with a bare 403 ("User is not
+      # multi-factor authenticated. Missing Client Authentication
+      # Certificate.") that names neither the failing credential nor the
+      # remedy; the first credentialed release run died on exactly that.
+      # DigiCert's own CI guidance is to run `smctl healthcheck` first:
+      # the same SM_* authentication, but a report that says which factor
+      # failed. smctl comes from the same CDN the pinned vendor action
+      # installs it from, but this step is hand-rolled — not inside a
+      # SHA-pinned action — so ADR-0594's same-origin-sidecar acceptance
+      # does not carry over: the binary is verified against a digest
+      # pinned in this repo, moved only by an explicit bump (RELEASING.md,
+      # "Windows signing"), the same rule as the action SHA pins. The
+      # classifier (scripts/check-smctl-healthcheck.sh) turns the report
+      # into the repo-side remedy — which secret to fix — so a
+      # credentials failure is a diagnosis on the leg, not a raw 403.
+      if: ${{ env.WINDOWS_SIGN_SKIP != '1' }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        sm_dir="$RUNNER_TEMP/smctl-preflight"
+        mkdir -p "$sm_dir"
+        # The repo pin, not the CDN's own sidecar: /stm/latest/ is a
+        # floating name, and the digest below is what makes it safe. It
+        # moves only by an explicit bump, like the action SHA pins.
+        smctl_sha256=811f5e5e6cc4b13d0956d4b6ad902eb6567135fd7d11cee08c1f3adabfa8efa7
+        curl --proto '=https' --proto-redir '=https' --tlsv1.2 --retry 10 --retry-connrefused \
+          --location --silent --show-error --fail \
+          --output "$sm_dir/smctl.exe" \
+          https://pki-downloads.digicert.com/stm/latest/smctl.exe
+        actual=$(sha256sum "$sm_dir/smctl.exe" | cut -d' ' -f1)
+        if [ "$smctl_sha256" != "$actual" ]; then
+          echo "::error::smctl digest mismatch: repo pin says $smctl_sha256, CDN served $actual — bump the pin deliberately (RELEASING.md, Windows signing)"
+          exit 1
+        fi
+        # The healthcheck authenticates through both factors; a 1FA
+        # report may exit non-zero, so the classifier reads the report,
+        # not the exit code.
+        "$sm_dir/smctl.exe" healthcheck > "$sm_dir/healthcheck.txt" 2>&1 || true
+        bash scripts/check-smctl-healthcheck.sh "$sm_dir/healthcheck.txt"
+
+    - name: Clean up the preflight scratch (always)
+      # The healthcheck report names the certificate path and (masked)
+      # credential values; it never outlives the leg. The decoded .p12
+      # stays the caller's to clean (ADR-0594) — this action's own
+      # scratch is its own.
+      if: always() && env.WINDOWS_SIGN_SKIP != '1'
+      shell: bash
+      run: rm -rf "$RUNNER_TEMP/smctl-preflight"
 
     - name: Sign the binary
       # DigiCert's official signing action (ADR-0594), pinned by full commit

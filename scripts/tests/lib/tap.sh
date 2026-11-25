@@ -41,6 +41,15 @@ tap_check_refusal() { # $1 = description, $2 = status (non-zero = pass, like $? 
 	tap_check "$1" "$(( ! $2 ))"
 }
 
+tap_run_capture() { # $1 = out file, $2 = err file, then `--`, then the command; captures its stdout/stderr into the two files and its exit status into tap_status — the one run-capture form the per-suite run_gate wrappers parameterize
+	tap_cap_out=$1
+	tap_cap_err=$2
+	shift 2
+	[ "${1-}" = "--" ] && shift
+	"$@" >"$tap_cap_out" 2>"$tap_cap_err"
+	tap_status=$?
+}
+
 tap_run_status() { # $1 = description, $2 = expected outcome (success|failure); rest = the command
 	tap_desc="$1"
 	tap_expect="$2"
