@@ -164,11 +164,14 @@ pub(super) fn parse(query: &str, analyzer: Analyzer) -> Result<Vec<Clause>> {
     if words.is_empty() {
         return Err(query_error(query, "the query is empty"));
     }
-    for word in attach_suffixes(words) {
-        parser.word(&word)?;
+    let words = attach_suffixes(words);
+    for word in &words {
+        parser.word(word)?;
     }
-    if let Position::Operator(_) = parser.position {
-        return Err(query_error(query, "an operator needs a term after it"));
+    // Every operator-placement refusal is word-level, quoting the operator:
+    // the last word is the trailing operator when the query ends on one.
+    if let (Position::Operator(_), Some(last)) = (&parser.position, words.last()) {
+        return Err(malformed(&last.text, "an operator needs a term after it"));
     }
     Ok(parser.clauses)
 }
@@ -264,7 +267,10 @@ impl Parser<'_> {
         loop {
             let (term, suffix, remainder) = split_suffix(text)?;
             if term.is_empty() {
-                return Err(malformed(text, "a `:` field prefix needs a term after it"));
+                return Err(malformed(
+                    &word.text,
+                    "a `:` field prefix needs a term after it",
+                ));
             }
             self.push_target(occur, property, term, &suffix, literal)?;
             let Some(rest) = remainder else { return Ok(()) };
@@ -513,8 +519,7 @@ mod tests {
         let at_cap = format!("{}*", "a".repeat(MAX_WILDCARD_PARTS - 1));
         assert!(parse(&at_cap, Analyzer::Standard).is_ok());
         let over = format!("{}*", "a".repeat(MAX_WILDCARD_PARTS));
-        let error = parse(&over, Analyzer::Standard).expect_err("over the cap");
-        assert!(matches!(error, Error::Syntax(_)), "{error:?}");
+        assert_syntax_error(&over);
         // Runs of `*` collapse before the count, so they never trip it.
         let stars = "*".repeat(10 * MAX_WILDCARD_PARTS);
         assert!(parse(&format!("a{stars}b"), Analyzer::Standard).is_ok());
@@ -534,9 +539,7 @@ mod tests {
                 .len(),
             MAX_QUERY_CLAUSES
         );
-        let error =
-            parse(&words(MAX_QUERY_CLAUSES + 1), Analyzer::Standard).expect_err("over the cap");
-        assert!(matches!(error, Error::Syntax(_)), "{error:?}");
+        assert_syntax_error(&words(MAX_QUERY_CLAUSES + 1));
     }
 
     #[test]
@@ -546,8 +549,19 @@ mod tests {
             .map(|i| format!("t{i}"))
             .collect::<Vec<_>>()
             .join("-");
-        let error = parse(&word, Analyzer::Standard).expect_err("over the cap");
-        assert!(matches!(error, Error::Syntax(_)), "{error:?}");
+        assert_syntax_error(&word);
+    }
+
+    #[test]
+    fn placement_and_prefix_refusals_quote_the_whole_word() {
+        let message = |query: &str| {
+            parse(query, Analyzer::Standard)
+                .expect_err(query)
+                .to_string()
+        };
+        assert!(message("lamp AND").contains("'AND'"));
+        assert!(message("title:").contains("'title:'"));
+        assert!(message(":lamp").contains("':lamp'"));
     }
 
     #[test]
