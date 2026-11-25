@@ -249,17 +249,34 @@ pub fn parse_and_lower_statement_with_policy_and_params(
     // below, there is no floor AST to detect the construct in.
     let stmt = parse_sized_with_options(src, parse_options(preview))?;
     let lex_parse = parse_started.elapsed();
-    // The one gate loop, derived from the registry itself: every row's
-    // detector is consulted here, so a detector-less registry row is a
-    // compile error. The graph-type family's AST walk runs once, before the
-    // loop, and its arms report membership instead of a second loop.
+    // The one gate loop, derived from the registry itself: each row's
+    // `AstDetector` sites say which detectors run for it, and the match over
+    // the site vocabulary is exhaustive, so a new site kind must say here
+    // whether it has an admission-side consumer. A gated construct whose row
+    // declares no `AstDetector` site is not detected here: the registry row
+    // is where a new gate is declared. The graph-type family's AST walk runs
+    // once, before the loop, and its arms report membership instead of a
+    // second loop.
     let graph_type_gates =
         validate::statement_graph_type_gates(&stmt).map_err(local_callables::walker_error)?;
     for feature in relate_core::PREVIEW_FEATURES {
-        let feature = *feature;
-        let uses = statement_uses_feature(feature, &stmt, &graph_type_gates);
-        if uses.map_err(local_callables::walker_error)? {
-            preview.require(feature)?;
+        for site in feature.gate_sites() {
+            match site {
+                relate_core::GateSite::AstDetector(kind) => {
+                    let uses = detector_uses(*kind, *feature, &stmt, &graph_type_gates)
+                        .map_err(local_callables::walker_error)?;
+                    if uses {
+                        preview.require(*feature)?;
+                    }
+                }
+                // Decided before parsing (`parse_options`) or by a consumer
+                // outside the front (function admission, procedure dispatch,
+                // the namespace mapping).
+                relate_core::GateSite::ParseOption(_)
+                | relate_core::GateSite::NameAdmission
+                | relate_core::GateSite::ProcedureDispatch
+                | relate_core::GateSite::Namespace => {}
+            }
         }
     }
     // The constructs that only materialize against stored graph-type state
@@ -274,67 +291,6 @@ pub fn parse_and_lower_statement_with_policy_and_params(
     )
 }
 
-/// The detector match: whether the parsed `stmt` uses `feature`. Exhaustive
-/// over the registry, so a new row without a detector decision is a compile
-/// error; the row's recorded `GateSite::AstDetector` is checked against it
-/// by the tests.
-fn statement_uses_feature(
-    feature: relate_core::PreviewFeature,
-    stmt: &relate_parser::Statement,
-    graph_type_gates: &[relate_core::PreviewFeature],
-) -> std::result::Result<bool, relate_error::EngineError> {
-    match feature {
-            relate_core::PreviewFeature::HybridSearch => {
-                validate::statement_uses_hybrid_search(stmt)
-            }
-            relate_core::PreviewFeature::LocalCallables => {
-                local_callables::statement_uses_local_callables(stmt)
-            }
-            relate_core::PreviewFeature::Float16CoordinateTypes => {
-                validate::statement_uses_float16_coordinate_types(stmt)
-            }
-            relate_core::PreviewFeature::PathConstruction => {
-                validate::statement_uses_path_construction(stmt)
-            }
-            relate_core::PreviewFeature::ChronologicalComparisons => {
-                validate::statement_uses_chronological_comparisons(stmt)
-            }
-            // `obfuscated-literals` and `cypher-annotations` gate at the
-            // lexer (the disabled form is a syntax error, not the authored
-            // preview error), so a parsed statement never carries a gate to
-            // detect here.
-            relate_core::PreviewFeature::ObfuscatedLiterals
-            | relate_core::PreviewFeature::CypherAnnotations => Ok(false),
-            // `mixed-label-syntax` gates at parse (the `ParseOptions`
-            // threading above), never post-parse, so it is not an AST
-            // detector here. ADR-0378: `ontology` gates
-            // at procedure dispatch (`procedure_gate.rs`), never at parse,
-            // so it has no AST detector here either. The three ADR-0497
-            // name-gate features (six gated names) gate a function *name*,
-            // not a construct
-            // (`validate::validate_function_admission` in the lowering
-            // battery), and their disabled form is the ordinary
-            // unknown-function rejection rather than the authored preview
-            // error a detector would raise.
-            relate_core::PreviewFeature::GraphTypeOptProps
-            | relate_core::PreviewFeature::GraphTypeDefaultValues
-            | relate_core::PreviewFeature::GraphTypeImpliedLabels
-            | relate_core::PreviewFeature::GraphTypeShowVariants => {
-                Ok(graph_type_gates.contains(&feature))
-            }
-            relate_core::PreviewFeature::MixedLabelSyntax
-            | relate_core::PreviewFeature::Ontology
-            | relate_core::PreviewFeature::CollectionZip
-            | relate_core::PreviewFeature::CollectionHas
-            | relate_core::PreviewFeature::GqlStddevAliases
-            // `path-concatenation` gates at run time in the executor's
-            // `concat` (the `||` operand types are only known once
-            // evaluated; the disabled form is the ordinary operand-type
-            // rejection), never at lowering, so it has no detector here.
-            | relate_core::PreviewFeature::PathConcatenation => Ok(false),
-    }
-}
-
 /// The shared size-capped parse of [`parse_and_lower_statement`] and
 /// [`parse_and_lower_statement_with_preview`]: ADR-0079's query-size limit
 /// before parsing (the parser enforces the same cap; this check keeps the
@@ -344,19 +300,65 @@ fn parse_sized(src: &str) -> Result<relate_parser::Statement> {
     parse_sized_with_options(src, relate_parser::lexer::ParseOptions::default())
 }
 
-/// The parse-affecting options derived from the store's preview set: the
-/// registered features that change what the parser accepts rather than
-/// something an AST walk can detect -- the token stream
-/// (`obfuscated-literals`, and `cypher-annotations`' `@` introducer) and the
-/// parser's grammar (`mixed-label-syntax`, and `path-construction`'s
-/// one-element reading).
-fn parse_options(preview: relate_core::PreviewFeatures) -> relate_parser::lexer::ParseOptions {
-    relate_parser::lexer::ParseOptions {
-        obfuscated_literals: preview.enabled(relate_core::PreviewFeature::ObfuscatedLiterals),
-        mixed_label_syntax: preview.enabled(relate_core::PreviewFeature::MixedLabelSyntax),
-        cypher_annotations: preview.enabled(relate_core::PreviewFeature::CypherAnnotations),
-        path_construction: preview.enabled(relate_core::PreviewFeature::PathConstruction),
+/// Switch on the `ParseOptions` field a parse-site feature names. Total over
+/// [`relate_core::ParseOption`]: a new option must say which field it sets.
+fn apply_parse_option(
+    option: relate_core::ParseOption,
+    options: &mut relate_parser::lexer::ParseOptions,
+) {
+    use relate_core::ParseOption as O;
+    match option {
+        O::ObfuscatedLiterals => options.obfuscated_literals = true,
+        O::MixedLabelSyntax => options.mixed_label_syntax = true,
+        O::CypherAnnotations => options.cypher_annotations = true,
+        O::PathConstruction => options.path_construction = true,
     }
+}
+
+/// Run the AST detector a feature's `AstDetector` site names. Total over
+/// [`relate_core::DetectorKind`]; the graph-type family reads the membership
+/// its single walk already computed.
+fn detector_uses(
+    kind: relate_core::DetectorKind,
+    feature: relate_core::PreviewFeature,
+    stmt: &relate_parser::Statement,
+    graph_type_gates: &[relate_core::PreviewFeature],
+) -> std::result::Result<bool, relate_error::EngineError> {
+    use relate_core::DetectorKind as D;
+    match kind {
+        D::HybridSearch => validate::statement_uses_hybrid_search(stmt),
+        D::LocalCallables => local_callables::statement_uses_local_callables(stmt),
+        D::Float16 => validate::statement_uses_float16_coordinate_types(stmt),
+        D::PathConstruction => validate::statement_uses_path_construction(stmt),
+        D::Chronological => validate::statement_uses_chronological_comparisons(stmt),
+        D::GraphTypeMembership => Ok(graph_type_gates.contains(&feature)),
+    }
+}
+
+/// The parse-affecting options derived from the store's preview set: each
+/// enabled feature's `ParseOption` sites set their `ParseOptions` field.
+fn parse_options(preview: relate_core::PreviewFeatures) -> relate_parser::lexer::ParseOptions {
+    let mut options = relate_parser::lexer::ParseOptions::default();
+    for feature in relate_core::PREVIEW_FEATURES {
+        if !preview.enabled(*feature) {
+            continue;
+        }
+        for site in feature.gate_sites() {
+            match site {
+                relate_core::GateSite::ParseOption(option) => {
+                    apply_parse_option(*option, &mut options);
+                }
+                // Detected after parsing (the gate loop in
+                // `parse_and_lower_statement_with_policy_and_params`) or by a
+                // consumer outside the front.
+                relate_core::GateSite::AstDetector(_)
+                | relate_core::GateSite::NameAdmission
+                | relate_core::GateSite::ProcedureDispatch
+                | relate_core::GateSite::Namespace => {}
+            }
+        }
+    }
+    options
 }
 
 /// Normalize a statement for the plan cache (ADR-0503): the engine

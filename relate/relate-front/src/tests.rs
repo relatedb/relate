@@ -1,71 +1,70 @@
 use super::*;
 
-/// The registry's recorded gate sites agree with the front's actual
-/// behavior, per row: a Lexer/Parser row changes `ParseOptions` when
-/// enabled (others change nothing), and an AstDetector row is exactly
-/// a row whose detector fires on its probe statement. The probe table
-/// is an exhaustive match, so a new row is a compile error here.
+/// Each typed gate site the registry declares does what it names. A
+/// `ParseOption` site changes `ParseOptions` when its feature is enabled, a
+/// feature with none leaves them untouched, and an `AstDetector` site's
+/// detector fires on a statement using the construct. The probes are keyed
+/// by the site vocabulary (`DetectorKind`), never by feature, so the test
+/// restates no row; a new site kind is a compile error here.
 #[test]
-fn recorded_gate_sites_agree_with_the_front() {
-    use relate_core::{GateSite, PreviewFeature, PreviewFeatures, PREVIEW_FEATURES};
-    fn probe(feature: PreviewFeature) -> Option<&'static str> {
-        match feature {
-            PreviewFeature::HybridSearch => Some(COMBINE_QUERY),
-            PreviewFeature::LocalCallables => Some("DEFINE FUNCTION f() = 1 RETURN f()"),
-            PreviewFeature::Float16CoordinateTypes => Some("RETURN vector([1.0], 1, FLOAT16)"),
-            PreviewFeature::PathConstruction => {
-                Some("MATCH (a)-[r]->(b) RETURN PATH [a, r, b] AS p")
-            }
-            PreviewFeature::ChronologicalComparisons => Some("RETURN date() IS BEFORE date()"),
-            PreviewFeature::GraphTypeOptProps => {
-                Some("ALTER CURRENT GRAPH TYPE SET { (:L => {p :: ANY}) }")
-            }
-            PreviewFeature::GraphTypeDefaultValues => {
-                Some("ALTER CURRENT GRAPH TYPE SET { (:L => {p :: STRING DEFAULT ON COMMIT 'x'}) }")
-            }
-            PreviewFeature::GraphTypeImpliedLabels => {
-                Some("ALTER CURRENT GRAPH TYPE SET { (:A => {p :: STRING}), (:B => :A) }")
-            }
-            PreviewFeature::GraphTypeShowVariants => {
-                Some("SHOW CURRENT GRAPH TYPE AS CONSOLIDATED")
-            }
-            PreviewFeature::Ontology
-            | PreviewFeature::ObfuscatedLiterals
-            | PreviewFeature::MixedLabelSyntax
-            | PreviewFeature::CollectionZip
-            | PreviewFeature::CollectionHas
-            | PreviewFeature::CypherAnnotations
-            | PreviewFeature::GqlStddevAliases
-            | PreviewFeature::PathConcatenation => None,
+fn declared_gate_sites_behave_as_named() {
+    use relate_core::{DetectorKind, GateSite, PreviewFeature, PreviewFeatures, PREVIEW_FEATURES};
+    fn probe(kind: DetectorKind, feature: PreviewFeature) -> &'static str {
+        match kind {
+            DetectorKind::HybridSearch => COMBINE_QUERY,
+            DetectorKind::LocalCallables => "DEFINE FUNCTION f() = 1 RETURN f()",
+            DetectorKind::Float16 => "RETURN vector([1.0], 1, FLOAT16)",
+            DetectorKind::PathConstruction => PATH_CONSTRUCT_QUERY,
+            DetectorKind::Chronological => "RETURN date() IS BEFORE date()",
+            DetectorKind::GraphTypeMembership => match feature {
+                PreviewFeature::GraphTypeOptProps => {
+                    "ALTER CURRENT GRAPH TYPE SET { (:L => {p :: ANY}) }"
+                }
+                PreviewFeature::GraphTypeDefaultValues => {
+                    "ALTER CURRENT GRAPH TYPE SET { (:L => {p :: STRING DEFAULT ON COMMIT 'x'}) }"
+                }
+                PreviewFeature::GraphTypeImpliedLabels => {
+                    "ALTER CURRENT GRAPH TYPE SET { (:A => {p :: STRING}), (:B => :A) }"
+                }
+                PreviewFeature::GraphTypeShowVariants => "SHOW CURRENT GRAPH TYPE AS CONSOLIDATED",
+                other => panic!(
+                    "{}: GraphTypeMembership is declared only by graph-type rows",
+                    other.kebab_name()
+                ),
+            },
         }
     }
     for feature in PREVIEW_FEATURES {
         let name = feature.kebab_name();
-        let sites = feature.gate_sites();
-        let parse_gated = sites.contains(&GateSite::Lexer) || sites.contains(&GateSite::Parser);
         let changed = parse_options(PreviewFeatures::none().with_feature(*feature))
             != relate_parser::lexer::ParseOptions::default();
+        let parse_gated = feature
+            .gate_sites()
+            .iter()
+            .any(|site| matches!(site, GateSite::ParseOption(_)));
         assert_eq!(parse_gated, changed, "{name}: parse-site mismatch");
-        let probed = match probe(*feature) {
-            Some(src) => {
-                // The canonical options with the feature enabled, so a
-                // probe that needs a parse-time gate still parses.
-                let options = parse_options(PreviewFeatures::none().with_feature(*feature));
-                let stmt = parse_sized_with_options(src, options).expect("probe parses");
-                let gates = validate::statement_graph_type_gates(&stmt).expect("gate walk");
-                assert!(
-                    statement_uses_feature(*feature, &stmt, &gates).expect("detector runs"),
-                    "{name}: detector did not fire on {src}"
-                );
-                true
-            }
-            None => false,
-        };
-        assert_eq!(
-            sites.contains(&GateSite::AstDetector),
-            probed,
-            "{name}: AstDetector site disagrees with the detector"
-        );
+        for site in feature.gate_sites() {
+            let kind = match site {
+                GateSite::AstDetector(kind) => kind,
+                // Covered above (parse sites) or by the consumer test in
+                // `relate/src/tests/preview.rs`; a new site kind must say here
+                // whether the front checks it.
+                GateSite::ParseOption(_)
+                | GateSite::NameAdmission
+                | GateSite::ProcedureDispatch
+                | GateSite::Namespace => continue,
+            };
+            let src = probe(*kind, *feature);
+            // The canonical options with the feature enabled, so a probe
+            // that needs a parse-time gate still parses.
+            let options = parse_options(PreviewFeatures::none().with_feature(*feature));
+            let stmt = parse_sized_with_options(src, options).expect("probe parses");
+            let gates = validate::statement_graph_type_gates(&stmt).expect("gate walk");
+            assert!(
+                detector_uses(*kind, *feature, &stmt, &gates).expect("detector runs"),
+                "{name}: {kind:?} detector did not fire on {src}"
+            );
+        }
     }
 }
 

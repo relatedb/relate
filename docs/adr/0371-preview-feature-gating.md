@@ -114,6 +114,7 @@ knobs, fail-closed on a bad value).
 
 ## Later references
 
+- [ADR-0662](./0662-preview-gate-sites.md) records each registry row's gate sites and has the front derive its checks from them.
 - [ADR-0593](./0593-system-ontologies-visibility-preview-gate.md) records a third gate class inside [ADR-0378](./0378-ontology-procedures-preview-gate.md)'s exception family:
   a fixed namespace's visibility gates through a namespace-registry
   mapping (the namespace twin of the procedure mapping), and its disabled

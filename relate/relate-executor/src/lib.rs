@@ -188,7 +188,7 @@ pub use procedure_gate::procedure_preview_feature;
 pub use procedure_registry::{
     builtin_procedure_deprecation, builtin_procedure_signature, call_is_write,
     is_ontology_procedure, is_ontology_store_op, is_ontology_write_procedure, is_void_procedure,
-    value_matches_proc_type, ProcSignature,
+    value_matches_proc_type, ProcSignature, BUILTIN_PROCEDURE_SIGNATURES,
 };
 pub use redo::{
     legacy_property_encoding, props_from_json, split_legacy_property_encoding, IndexDetailSpec,
