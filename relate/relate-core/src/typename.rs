@@ -179,17 +179,31 @@ fn retain_not_subsumed(types: Vec<ElementType>) -> Vec<ElementType> {
 /// name at comparison time).
 struct ElementType {
     name: String,
-    members: Option<HashSet<(String, bool)>>,
+    members: MemberShape,
     /// The CIP-100 rank and member count of `name`, read once from the
     /// one rank table ([`value_type_sort_key`]) at classification.
     rank: u8,
     member_count: usize,
 }
 
+/// The member classification of one element, one variant per state the
+/// union merge distinguishes.
+enum MemberShape {
+    /// A nested list (a member that is itself a list or byte array
+    /// renders an inner `LIST<`) or a non-list element: skips the
+    /// subsumption step.
+    NotAList,
+    /// An empty sequence (empty bytes or an empty list): no members at
+    /// all, elided by the multi-element union.
+    EmptySequence,
+    /// A flat list's non-empty member rows: (member name, not-null).
+    Rows(HashSet<(String, bool)>),
+}
+
 impl ElementType {
     /// The one construction path: classify the rank/member-count pair
     /// from the rendered name once, beside the member rows.
-    fn classified(name: String, members: Option<HashSet<(String, bool)>>) -> ElementType {
+    fn classified(name: String, members: MemberShape) -> ElementType {
         let (rank, member_count) = value_type_sort_key(&name);
         ElementType {
             name,
@@ -203,37 +217,33 @@ impl ElementType {
     /// value in this pure constructor: the rendered name (the union's
     /// join applies the outer null-sibling strip, where the parent's
     /// null fact lives) plus the member rows a flat list union
-    /// contributes to the subsumption merge. The empty row set marks an
-    /// empty sequence (empty bytes or an empty list); non-empty bytes
-    /// are a flat INTEGER list; an all-null list keeps its null
-    /// member's NULL row. A byte-array element's own suffix sits inside
-    /// the brackets and never strips (ADR-0327). `None` member rows — a
+    /// contributes to the subsumption merge. Empty bytes and an empty
+    /// list are [`MemberShape::EmptySequence`]; non-empty bytes are a
+    /// flat INTEGER list; an all-null list keeps its null member's NULL
+    /// row. A byte-array element's own suffix sits inside the brackets
+    /// and never strips (ADR-0327). [`MemberShape::NotAList`] — a
     /// nested list (a member that is itself a list or byte array
-    /// renders an inner `LIST<`) or a non-list element — skip the
+    /// renders an inner `LIST<`) or a non-list element — skips the
     /// subsumption step.
     fn of(v: &Value) -> ElementType {
         let name = value_type_name(v);
         let members = match v {
-            // An empty sequence has no members at all: the empty row set
-            // is the marker `is_empty_sequence` reads.
-            Value::Bytes(b) if b.is_empty() => Some(HashSet::new()),
-            Value::Bytes(_) => Some([("INTEGER".to_string(), true)].into()),
+            Value::Bytes(b) if b.is_empty() => MemberShape::EmptySequence,
+            Value::Bytes(_) => {
+                MemberShape::Rows([(LiteralValueKind::Integer.name().to_string(), true)].into())
+            }
+            Value::List(items) if items.is_empty() => MemberShape::EmptySequence,
             Value::List(items) => {
                 // The non-null members, collected once: their count is
-                // the element's own not-null flag. An empty collection
-                // is an empty list (no members) or an all-null list
-                // (whose one member is the null literal — its row
-                // renders NULL and survives the union: live 2026.10.1
-                // types valueType([[null],[1]]) as
+                // the element's own not-null flag. A list of only nulls
+                // is an all-null list (whose one member is the null
+                // literal — its row renders NULL and survives the union:
+                // live 2026.10.1 types valueType([[null],[1]]) as
                 // LIST<LIST<NULL> NOT NULL | LIST<INTEGER NOT NULL>>).
                 let non_null: Vec<&Value> = items.iter().filter(|it| !it.is_null()).collect();
                 let not_null = non_null.len() == items.len();
                 if non_null.is_empty() {
-                    Some(if items.is_empty() {
-                        HashSet::new()
-                    } else {
-                        [("NULL".to_string(), false)].into()
-                    })
+                    MemberShape::Rows([(LiteralValueKind::Null.name().to_string(), false)].into())
                 } else {
                     // One walk builds the rows and answers the nested-list
                     // question: a list/byte-array member yields `None` and
@@ -247,10 +257,11 @@ impl ElementType {
                                 not_null,
                             )),
                         })
-                        .collect()
+                        .collect::<Option<HashSet<_>>>()
+                        .map_or(MemberShape::NotAList, MemberShape::Rows)
                 }
             }
-            _ => None,
+            _ => MemberShape::NotAList,
         };
         ElementType::classified(name, members)
     }
@@ -261,7 +272,10 @@ impl ElementType {
     /// subsumption step; the union's elision owns it). The one read
     /// path for the member classification.
     fn member_rows(&self) -> Option<&HashSet<(String, bool)>> {
-        self.members.as_ref().filter(|rows| !rows.is_empty())
+        match &self.members {
+            MemberShape::Rows(rows) => Some(rows),
+            MemberShape::NotAList | MemberShape::EmptySequence => None,
+        }
     }
 
     /// A flat list union element — one that carries member rows; a
@@ -269,7 +283,7 @@ impl ElementType {
     /// classified shape, so the sort key can never drift from the
     /// classifier and names stay render-only.
     fn flat(&self) -> bool {
-        self.members.is_some()
+        !matches!(self.members, MemberShape::NotAList)
     }
 
     /// The union's CIP-100 order, stated once as the element's own
@@ -302,10 +316,10 @@ impl ElementType {
     /// An empty sequence element — empty bytes or an empty list — the
     /// row the multi-element union elides (live 2026.10.1:
     /// valueType([[],[1]]) keeps only LIST<INTEGER NOT NULL>). The
-    /// empty member-row set is the marker; an all-null list is not
+    /// [`MemberShape::EmptySequence`] is the marker; an all-null list is not
     /// empty — its null member renders NULL and survives.
     fn is_empty_sequence(&self) -> bool {
-        self.members.as_ref().is_some_and(|rows| rows.is_empty())
+        matches!(self.members, MemberShape::EmptySequence)
     }
 }
 
