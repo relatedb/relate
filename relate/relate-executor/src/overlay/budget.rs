@@ -274,6 +274,13 @@ impl<'a> ExecGraph<'a> {
         self.retain_bytes(crate::workspace::value_buffer_bytes(slots))
     }
 
+    /// Start a retaining map container of `len` entries: charge the map
+    /// entry-storage figure (derived once) and hold its running retained
+    /// total — the map twin of [`Self::retain_slots`].
+    pub(crate) fn retain_map_entries(&self, len: usize) -> Result<RetainedTotal> {
+        self.retain_bytes(crate::workspace::map_entries_bytes(len))
+    }
+
     /// Start a retaining string/byte container from `bytes` already built
     /// (0 for an empty accumulator).
     pub(crate) fn retain_bytes(&self, bytes: u64) -> Result<RetainedTotal> {
@@ -324,6 +331,22 @@ impl RetainedTotal {
     #[inline]
     pub(crate) fn add_owned(&mut self, graph: &ExecGraph<'_>, value: &Value) -> Result<()> {
         self.add_bytes(graph, crate::workspace::owned_heap(value))
+    }
+
+    /// Land one map entry: the key's string bytes plus the value's owned
+    /// payload — the one spelling of the map-entry figure the map literal
+    /// and the map comprehension's projections both bill.
+    #[inline]
+    pub(crate) fn add_map_entry(
+        &mut self,
+        graph: &ExecGraph<'_>,
+        key: &str,
+        value: &Value,
+    ) -> Result<()> {
+        self.add_bytes(
+            graph,
+            relate_core::str_logical_bytes(key).saturating_add(crate::workspace::owned_heap(value)),
+        )
     }
 
     /// The retained total so far — the enforced figure a PROFILE terminal

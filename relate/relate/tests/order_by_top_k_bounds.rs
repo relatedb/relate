@@ -11,7 +11,7 @@
 
 mod common;
 
-use relate::{OpenOptions, Value};
+use relate::Value;
 
 /// The workspace budget the bounded shape must fit inside: generous for
 /// five retained rows, impossible for the full input at the sizes below.
@@ -177,10 +177,7 @@ fn a_match_fed_window_limit_zero_answers_nothing_without_collecting() {
 /// container is the only thing that can cross the cap.
 #[test]
 fn a_large_ordered_window_is_refused_without_a_workspace_ledger() {
-    let mut c = common::connection_with(OpenOptions {
-        expression_memory_limit: Some(1 << 20),
-        ..Default::default()
-    });
+    let mut c = common::expression_capped(1 << 20);
     // Each projected row carries one ~128 KB list — every single
     // allocation stays under the cap, so the only quantity that can cross
     // it is the window's live total over fifty entries.

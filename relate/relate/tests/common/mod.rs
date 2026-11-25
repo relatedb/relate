@@ -126,6 +126,17 @@ pub fn workspace_capped(limit: u64) -> relate::Connection {
     })
 }
 
+/// A fresh connection on an expression-budget-capped in-memory store —
+/// the expression-cap twin of [`workspace_capped`], the one construction
+/// the per-allocation memory-shape tests share, each filling only its own
+/// limit.
+pub fn expression_capped(limit: u64) -> relate::Connection {
+    connection_with(relate::OpenOptions {
+        expression_memory_limit: Some(limit),
+        ..Default::default()
+    })
+}
+
 /// The one typed decode of "the refusal is the expression allocation
 /// cap": the statement must fail with the expression-capacity variant,
 /// never matched off the rendered text.
@@ -163,8 +174,43 @@ pub fn refused_workspace_limit(conn: &mut relate::Connection, statement: &str) -
 /// Build `statements` into a fresh store unlimited, then reopen it under
 /// `pool` bytes of concurrent logical workspace. The memory-shape tests' one
 /// fixture: the write batch holds its rows too, and that hold is not their
-/// subject.
+/// subject. The options-general form is [`reopened_with`].
 pub fn reopened_under(pool: u64, statements: &[&str]) -> (tempfile::TempDir, relate::Connection) {
+    reopened_with(
+        relate::OpenOptions {
+            concurrent_logical_workspace_limit: Some(pool),
+            ..Default::default()
+        },
+        statements,
+    )
+}
+
+/// Build `statements` into a fresh store unlimited, then reopen it under
+/// `limit` bytes of per-allocation expression budget —
+/// [`expression_capped`]'s reopen sibling, the one fixture for the
+/// memory-shape tests whose capped meter is the expression budget on a
+/// store the fixture itself builds.
+pub fn reopened_expression_capped(
+    limit: u64,
+    statements: &[&str],
+) -> (tempfile::TempDir, relate::Connection) {
+    reopened_with(
+        relate::OpenOptions {
+            expression_memory_limit: Some(limit),
+            ..Default::default()
+        },
+        statements,
+    )
+}
+
+/// Build `statements` into a fresh store unlimited, then reopen it with
+/// `options` — [`reopened_under`]'s general form, for the memory-shape
+/// tests whose capped meter is not the workspace pool (the per-allocation
+/// expression budget).
+pub fn reopened_with(
+    options: relate::OpenOptions,
+    statements: &[&str],
+) -> (tempfile::TempDir, relate::Connection) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("db");
     let uri = relate_test_support::uri(&path);
@@ -175,13 +221,7 @@ pub fn reopened_under(pool: u64, statements: &[&str]) -> (tempfile::TempDir, rel
             run(&mut connection, statement);
         }
     }
-    let db = env_seam::open(
-        uri,
-        relate::OpenOptions {
-            concurrent_logical_workspace_limit: Some(pool),
-            ..Default::default()
-        },
-    );
+    let db = env_seam::open(uri, options);
     (dir, db.connect().unwrap())
 }
 

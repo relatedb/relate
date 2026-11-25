@@ -1,4 +1,7 @@
-//! `UNWIND` row carry.
+//! `UNWIND` row carry: the strip decision and the feed wiring. The
+//! element sources themselves (the `range()` counter, the walked list,
+//! the per-element comprehension pull) live in the eval layer
+//! (`crate::eval::items`, REL8-1372).
 //!
 //! Expanding a list copies the input row once per element. When that row
 //! still holds the list (`UNWIND file.symbols AS row` while `file` contains
@@ -8,7 +11,6 @@
 //! A later read of the list keeps the copy, so `RETURN file.symbols` is
 //! unchanged.
 
-use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use relate_core::{Result, Value};
@@ -16,8 +18,7 @@ use relate_ir::{var_prop_owned, walk_clauses, Clause, Expr, MapProjectionItem};
 use relate_names::SmallName;
 
 use crate::ctx::ExecCtx;
-use crate::eval::{eval, into_items, lazy_range, Items, RangeValues};
-use crate::overlay::ExecGraph;
+use crate::eval::{open_source, Elements};
 use crate::row::Row;
 
 use super::feed::StreamedFeed;
@@ -193,63 +194,6 @@ fn note_base(expr: &Expr, var: &str, hits: &mut Hits) -> bool {
     }
 }
 
-/// The elements one input row's `UNWIND` source yields, walked one at a
-/// time: a `range(...)` call is a counter (no list is ever built), an
-/// evaluated list moves or clones its elements as the walk reaches them, and
-/// a non-list scalar is its own single element.
-pub(super) enum Elements {
-    Range(RangeValues),
-    List(Items),
-    One(Option<Value>),
-}
-
-impl Elements {
-    /// Elements not yet yielded.
-    pub(super) fn remaining(&self) -> Result<usize> {
-        match self {
-            Elements::Range(range) => range.remaining(),
-            Elements::List(items) => Ok(items.len()),
-            Elements::One(value) => Ok(usize::from(value.is_some())),
-        }
-    }
-}
-
-impl Iterator for Elements {
-    type Item = Result<Value>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        match self {
-            Elements::Range(range) => range.next(),
-            Elements::List(items) => items.next().map(Ok),
-            Elements::One(value) => value.take().map(Ok),
-        }
-    }
-}
-
-/// Evaluate `expression` for one input row without materializing a
-/// generator source: `range(...)` becomes a counter, everything else is
-/// evaluated once (a list is then walked, never copied wholesale).
-pub(super) fn open_source(
-    graph: &ExecGraph<'_>,
-    row: &Row,
-    expression: &Expr,
-    params: &BTreeMap<String, Value>,
-) -> Result<Elements> {
-    if let Expr::Function { name, args, .. } = expression {
-        let plan = name.with_str(|text| lazy_range(graph, row, params, text, args))?;
-        if let Some(plan) = plan {
-            return Ok(Elements::Range(plan.values()));
-        }
-    }
-    Ok(match eval(graph, row, expression, params)? {
-        Value::List(xs) => Elements::List(into_items(xs)),
-        // A null source yields no rows; any other scalar is its own
-        // single element.
-        Value::Null => Elements::One(None),
-        other => Elements::One(Some(other)),
-    })
-}
-
 /// The `UNWIND` producer: the [`FeedSource`](super::feed::FeedSource) the
 /// shared spine drives — the generator form of the clause, its rows
 /// produced one at a time and never retained, so a consumer that folds
@@ -262,8 +206,10 @@ pub(crate) struct UnwindSource<'a> {
     expression: &'a Expr,
     alias: &'a SmallName,
     strip: Option<Source>,
-    /// The input row being expanded, with its remaining elements.
-    current: Option<(Row, Elements)>,
+    /// The input row being expanded, with its remaining elements. The
+    /// elements borrow the comprehension's fields out of `expression`'s
+    /// pointee (`'a`), never out of `self`.
+    current: Option<(Row, Elements<'a>)>,
 }
 
 impl<'a> UnwindSource<'a> {
@@ -297,29 +243,26 @@ impl super::feed::FeedSource for UnwindSource<'_> {
             .current
             .as_ref()
             .expect("charge_facts is read on an open source");
-        Ok((elements.remaining()?, template.len().saturating_add(1)))
+        Ok((elements.pending_bound()?, template.len().saturating_add(1)))
     }
 
     fn pull(&mut self, ctx: ExecCtx<'_>) -> Result<Option<Row>> {
         let Some((template, elements)) = self.current.as_mut() else {
             return Ok(None);
         };
-        match elements.next() {
-            Some(Ok(value)) => {
-                ctx.graph.cancel_tick()?;
-                let mut row = template.clone();
-                row.insert(self.alias.to_string(), value);
-                Ok(Some(row))
-            }
-            Some(Err(error)) => {
+        let value = match elements.next(ctx, template) {
+            Ok(Some(value)) => value,
+            // Exhausted or failed: the source is spent either way, so a
+            // later pull answers `None` rather than re-driving it.
+            spent => {
                 self.current = None;
-                Err(error)
+                return spent.map(|_| None);
             }
-            None => {
-                self.current = None;
-                Ok(None)
-            }
-        }
+        };
+        ctx.graph.cancel_tick()?;
+        let mut row = template.clone();
+        row.insert(self.alias.to_string(), value);
+        Ok(Some(row))
     }
 }
 

@@ -1,7 +1,6 @@
 //! List quantifiers (`all`/`any`/`none`/`single`) and reduce expressions.
 
 use std::collections::BTreeMap;
-use std::sync::Arc;
 
 use relate_core::{Error, Result, Value};
 use relate_ir::{Expr, QuantifierKind};
@@ -11,21 +10,8 @@ use crate::ctx::EvalCtx;
 use crate::overlay::ExecGraph;
 use crate::row::Row;
 
+use super::items::list_argument;
 use super::{bool_or_null, eval, fold_quantifier, into_items};
-
-/// The one list-argument triage, shared by every form that iterates a
-/// evaluated list argument — the four quantifier spellings, `reduce()`,
-/// `allReduce()` and the list comprehension: the evaluated source's
-/// elements, `None` for a null source (the whole form is null), or the
-/// typed shape error naming `what`. One spelling, so null handling and
-/// the shape rejection cannot drift between the forms.
-pub(super) fn list_argument(value: Value, what: &str) -> Result<Option<Arc<Vec<Value>>>> {
-    match value {
-        Value::List(items) => Ok(Some(items)),
-        Value::Null => Ok(None),
-        _ => Err(Error::ty(what)),
-    }
-}
 
 /// Whether `expression` is exactly `[<accumulator>]` — the canonical wrap
 /// whose container depth grows by exactly one per iteration. The reduce

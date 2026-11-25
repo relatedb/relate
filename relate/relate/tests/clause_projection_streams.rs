@@ -11,7 +11,7 @@
 
 mod common;
 
-use relate::{OpenOptions, Value};
+use relate::Value;
 
 /// A per-allocation cap generous for a small answer and impossible for the
 /// two-million-row input these statements generate: only a stream that
@@ -22,16 +22,9 @@ const CAP: u64 = 1 << 20;
 const LARGE: i64 = 2_000_000;
 const SMALL: i64 = 10_000;
 
-fn capped_db() -> relate::Connection {
-    common::connection_with(OpenOptions {
-        expression_memory_limit: Some(CAP),
-        ..Default::default()
-    })
-}
-
 /// The first column of `query` over a fresh capped store.
 fn first_column(query: &str) -> Vec<Value> {
-    let mut connection = capped_db();
+    let mut connection = common::expression_capped(CAP);
     common::first_column(&common::run(&mut connection, query))
 }
 
@@ -165,7 +158,7 @@ fn the_ordered_limit_window_keeps_its_bounded_heap() {
 /// breaker into a stream.
 #[test]
 fn an_unlimited_order_by_stays_a_state_holder() {
-    let mut connection = capped_db();
+    let mut connection = common::expression_capped(CAP);
     common::refused_expression_cap(
         &mut connection,
         &format!("UNWIND range(1, {LARGE}) AS i WITH i AS v ORDER BY v RETURN v LIMIT 5"),
