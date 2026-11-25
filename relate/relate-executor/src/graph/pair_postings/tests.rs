@@ -98,10 +98,12 @@ fn an_ascending_bulk_post_appends_and_matches_a_shuffled_one() {
 }
 
 #[test]
-fn a_bucket_entry_is_no_wider_than_a_vec_and_a_word() {
-    // The inline form is the point: a singleton must not pay a table.
-    assert!(std::mem::size_of::<IdBag>() <= 32);
-    assert_eq!(IdBag::One(1).as_slice(), &[1]);
+fn a_bucket_entry_is_a_key_word_and_a_slot_word() {
+    // The point of the slot: a unique key pays no `Vec` header.
+    assert_eq!(std::mem::size_of::<Slot>(), 8);
+    assert_eq!(std::mem::size_of::<(i64, Slot)>(), 16);
+    let slab = Slab::default();
+    assert_eq!(Slot::one(1).ids(&slab), &[1]);
 }
 
 #[test]
@@ -116,10 +118,98 @@ fn shrinking_after_a_build_keeps_every_bucket_and_leaves_no_slack() {
     p.shrink_to_fit();
     assert_eq!(p.ids(&many).len(), 100);
     assert_eq!(p.ids(&one), &[7]);
-    match p.ints.0.get(&1) {
-        Some(IdBag::Many(ids)) => assert_eq!(ids.capacity(), ids.len()),
-        other => panic!("expected a Many bucket, got {other:?}"),
+    let Some(SlotKind::Many(index)) = p.ints.map.get(&1).map(|s| s.kind()) else {
+        panic!("expected a Many bucket");
+    };
+    let list = &p.ints.slab.lists[index];
+    assert_eq!(list.capacity(), list.len());
+}
+
+#[test]
+fn a_demoted_bucket_returns_its_slab_slot_for_the_next_many_bucket() {
+    let mut p = PairPostings::default();
+    let (a, b) = (key(Value::Int(1)), key(Value::Int(2)));
+    for id in [4, 8] {
+        p.post(&a, id);
     }
+    assert_eq!(p.ints.slab.lists.len(), 1);
+    p.unpost(&a, 4);
+    assert_eq!(p.ints.slab.free, vec![0], "the singleton freed its list");
+    for id in [1, 2] {
+        p.post(&b, id);
+    }
+    assert_eq!(p.ints.slab.lists.len(), 1, "the freed slot is reused");
+    assert!(p.ints.slab.free.is_empty());
+    assert_eq!(p.ids(&a), &[8]);
+    assert_eq!(p.ids(&b), &[1, 2]);
+}
+
+#[test]
+fn id_zero_and_a_large_id_stay_inline() {
+    let mut p = PairPostings::default();
+    let (z, big) = (key(Value::Int(0)), key(Value::Int(1)));
+    p.post(&z, 0);
+    p.post(&big, i64::MAX - 1);
+    assert_eq!(p.ids(&z), &[0]);
+    assert_eq!(p.ids(&big), &[i64::MAX - 1]);
+    assert!(
+        p.ints.slab.lists.is_empty(),
+        "singletons never touch the slab"
+    );
+}
+
+#[test]
+#[should_panic(expected = "non-negative")]
+fn a_virtual_negative_id_is_never_posted() {
+    PairPostings::default().post(&key(Value::Int(1)), -3);
+}
+
+#[test]
+#[should_panic(expected = "non-negative")]
+fn a_negative_id_is_refused_into_an_existing_many_bucket() {
+    let mut p = PairPostings::default();
+    let k = key(Value::Int(1));
+    p.post(&k, 4);
+    p.post(&k, 9);
+    p.post(&k, -3);
+}
+
+#[test]
+fn a_nearly_unique_prefix_reserves_for_the_rest_of_the_build() {
+    let mut p = PairPostings::default();
+    for id in 0..PRESIZE_PREFIX as i64 {
+        p.post(&key(Value::Int(id)), id);
+    }
+    let before = p.ints.map.capacity();
+    p.presize(PRESIZE_PREFIX, 100_000);
+    assert!(
+        p.ints.map.capacity() >= 100_000,
+        "a unique key reserves the remaining candidates: {before} -> {}",
+        p.ints.map.capacity()
+    );
+    assert_eq!(p.others.map.capacity(), 0, "the other table is untouched");
+}
+
+#[test]
+fn a_low_cardinality_prefix_reserves_nothing() {
+    let mut p = PairPostings::default();
+    for id in 0..PRESIZE_PREFIX as i64 {
+        p.post(&key(Value::Int(id % 5)), id);
+    }
+    let before = p.ints.map.capacity();
+    p.presize(PRESIZE_PREFIX, 10_000_000);
+    assert_eq!(p.ints.map.capacity(), before);
+}
+
+#[test]
+fn a_string_keyed_prefix_reserves_the_general_table_only() {
+    let mut p = PairPostings::default();
+    for id in 0..PRESIZE_PREFIX as i64 {
+        p.post(&key(Value::String(format!("u{id}").into())), id);
+    }
+    p.presize(PRESIZE_PREFIX, 50_000);
+    assert!(p.others.map.capacity() >= 50_000);
+    assert_eq!(p.ints.map.capacity(), 0);
 }
 
 #[test]
