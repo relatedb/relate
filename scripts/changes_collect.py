@@ -22,15 +22,18 @@ module is its one enforcement):
     the entry text verbatim, as it lands in the changelog — and nothing
     else; a section appears at most once per fragment and is never empty
 
-The existing [Unreleased] body passes through untouched — scanned for
-its section headings, never re-parsed, so a first-release body carrying
-headings outside the fragment vocabulary still collects; fragment blocks
-are appended at its end in canonical section order. A fragment section
-whose heading already exists in that body is a refusal — the transition
-window where both channels carry content ends loudly, never as two
-headings in one released section. A link-ref line or a `## [` section
-heading ends the body (the first-release shape carries no version
-section below it).
+The existing [Unreleased] body passes through with one change: a
+fragment section whose heading the body already carries merges into it
+— its entries land under that heading, idempotently (an entry the
+section already carries verbatim is skipped) — because post-ADR-0627
+the changelog is tooling-written only (CI refuses every CHANGELOG diff
+in a pull request), a same-heading collision is a tagless re-cut's
+parked prior collection, never hand-filed content. Sections the body
+does not carry are appended at its end in canonical section order,
+untouched body lines passing through verbatim (a first-release body may
+carry headings outside the fragment vocabulary). A link-ref line or a
+`## [` section heading ends the body (the first-release shape carries
+no version section below it).
 
 Refusals accumulate: every invalid fragment and every body/fragment
 section collision is named before one refusal, and all of them surface
@@ -65,28 +68,29 @@ from atomic_write import atomic_write
 # through scripts/lib/changelog.py, the one spelling. This module is the
 # one enforcement of the fragment content grammar and the pool policy.
 from changelog import (
+    BULLET,
     CHANGES_DIR,
+    UnreleasedRegion,
     FragmentCause,
+    SECTIONS,
+    SECTION_HEADING,
+    Entry,
+    Sections,
+    append_entries,
     fragment_cause,
     fragment_number,
+    parse_sections,
+    render_sections,
+    section_name,
     unreleased_region,
 )
 
-# The section vocabulary and canonical order: the Keep a Changelog
-# sections, plus Notes last (ADR-0618 §4 — maintainer record, Internal-
-# rollup source only, never release-notes material).
-SECTIONS = ("Added", "Changed", "Deprecated", "Removed", "Fixed", "Security", "Notes")
+# The section vocabulary and canonical order, the fragment body's model
+# and the grammar parser/render/merge helpers live in scripts/lib/
+# changelog.py — the one spelling, shared with the rotation (which
+# merges a re-cut's parked [Unreleased] into an existing version
+# section through the same append_entries).
 
-SECTION_HEADING = "### "
-BULLET = "- "
-
-# The fragment body's model, named once — the invariant "the innermost
-# list is one entry's lines, never a section" lives in the type, not in
-# prose re-derived at every boundary: an Entry is one bullet and its
-# wrapped continuation lines; a fragment's parsed content is a Sections
-# mapping; the validated pool is one record per fragment.
-Entry = list[str]
-Sections = dict[str, list[Entry]]
 PoolRecord = tuple[Path, Sections]
 Pool = list[PoolRecord]
 
@@ -94,85 +98,6 @@ Pool = list[PoolRecord]
 class CollectError(Exception):
     """A refusal: the pool or the changelog does not carry what a
     collection needs."""
-
-
-def section_name(line: str) -> str | None:
-    """A section heading's name — the text after `### ` — or None when
-    the line is not a section heading. The one spelling of the
-    extraction: the parser and the existing-body scan both read it, so
-    the name the parser accepts and the name the collision check
-    compares cannot drift."""
-    if not line.startswith(SECTION_HEADING):
-        return None
-    return line[len(SECTION_HEADING):].strip()
-
-
-def parse_sections(lines: list[str], context: str) -> Sections:
-    """Parse one fragment body into {section name: [entry, ...]}, an
-    entry being its bullet and continuation lines, newline-stripped,
-    verbatim. Everything outside the grammar is a CollectError naming
-    the file: an unknown section heading, a repeated section, an empty
-    section, content before the first heading, an indented line with no
-    bullet to continue, no section heading at all, or a line that is
-    neither a bullet, an indented continuation, nor a heading. Blank
-    lines end an entry and may separate entries (rendered adjacent)."""
-    sections: Sections = {}
-    current: str | None = None
-    entry: list[str] | None = None
-    for lineno, raw in enumerate(lines, 1):
-        line = raw.rstrip("\n")
-        where = f"{context}:{lineno}"
-        name = section_name(line)
-        if name is not None:
-            if name not in SECTIONS:
-                raise CollectError(
-                    f"changes_collect: {where}: unknown section heading"
-                    f" '### {name}' — the sections are"
-                    f" {', '.join(SECTIONS)}"
-                )
-            if name in sections:
-                raise CollectError(
-                    f"changes_collect: {where}: section '{name}' appears"
-                    " twice — one block per section"
-                )
-            sections[name] = []
-            current = name
-            entry = None
-            continue
-        if not line.strip():
-            entry = None
-            continue
-        if current is None:
-            raise CollectError(
-                f"changes_collect: {where}: content before the first"
-                " '### ' section heading"
-            )
-        if line.startswith(BULLET):
-            entry = [line]
-            sections[current].append(entry)
-        elif line[:1].isspace():
-            if entry is None:
-                raise CollectError(
-                    f"changes_collect: {where}: an indented line with no"
-                    " bullet to continue"
-                )
-            entry.append(line)
-        else:
-            raise CollectError(
-                f"changes_collect: {where}: a line that is neither a"
-                " '- ' bullet, an indented continuation, nor a section"
-                " heading"
-            )
-    for name, entries in sections.items():
-        if not entries:
-            raise CollectError(
-                f"changes_collect: {context}: section '{name}' is empty"
-            )
-    if not sections:
-        raise CollectError(
-            f"changes_collect: {context}: no '### ' section heading found"
-        )
-    return sections
 
 
 def fragment_sort_key(path: Path) -> tuple[int, str]:
@@ -326,25 +251,35 @@ def read_pool(
                     ),
                 )
             )
-        except CollectError as exc:
-            findings.append(str(exc))
+        except ValueError as exc:
+            # The shared grammar parser refuses through ValueError; the
+            # collector owns the failure surface — the channel prefix and
+            # the refusal type — so the message lands as one CollectError,
+            # byte-identical to the pre-shared spelling.
+            findings.append(f"changes_collect: {exc}")
     return pool, findings
 
 
 def splice_unreleased(
-    lines: list[str], end_idx: int, contributed: Sections
+    lines: list[str], region: UnreleasedRegion, merges: Sections, contributed: Sections
 ) -> list[str]:
-    """The changelog's new lines: the [Unreleased] body through end_idx
-    passes through verbatim (a separating blank line added when it does
-    not end with one), the contributed blocks land under it in canonical
-    section order, and the remainder follows unchanged. The whole block
-    layout — pass-through, separator, blocks — lives here; collect
-    orchestrates."""
-    out = lines[:end_idx]
+    """The changelog's new lines: the [Unreleased] body passes through
+    with one change — each merged section's entries land under its
+    existing heading, idempotently, completing a tagless re-cut's parked
+    prior collection. A separating blank line is added when the body
+    does not end with one, the contributed blocks land under it in
+    canonical section order, and the remainder follows unchanged. The
+    whole block layout — pass-through, merges, separator, blocks —
+    lives here; collect orchestrates."""
+    body = list(lines[region.heading_idx + 1 : region.end_idx])
+    for name in SECTIONS:
+        if name in merges:
+            body = append_entries(body, name, merges[name])
+    out = lines[: region.heading_idx + 1] + body
     if out[-1].strip():
         out.append("\n")
-    out.extend(render(contributed))
-    out.extend(lines[end_idx:])
+    out.extend(render_sections(contributed))
+    out.extend(lines[region.end_idx:])
     return out
 
 
@@ -361,23 +296,6 @@ def existing_headings(body: list[str]) -> set[str]:
         if name is not None:
             headings.add(name)
     return headings
-
-
-def render(merged: Sections) -> list[str]:
-    """The merged section blocks: canonical section order, entries
-    adjacent bullets, one blank line around each block and a trailing
-    blank before whatever ends the section."""
-    out: list[str] = []
-    for name in SECTIONS:
-        entries = merged.get(name)
-        if not entries:
-            continue
-        out.append(f"{SECTION_HEADING}{name}\n")
-        out.append("\n")
-        for entry in entries:
-            out.extend(line + "\n" for line in entry)
-        out.append("\n")
-    return out
 
 
 def refuse(findings: list[str]) -> None:
@@ -420,31 +338,33 @@ def collect(changelog: Path, changes_dir: Path) -> int:
     )
     existing = existing_headings(lines[region.heading_idx + 1 : region.end_idx])
 
-    collisions: list[str] = []
+    # A fragment section the [Unreleased] body already carries merges
+    # into it — the tagless re-cut's parked prior collection completing,
+    # not a refusal: post-ADR-0627 the changelog is tooling-written only
+    # (CI refuses every CHANGELOG diff in a pull request), so a
+    # same-heading collision can only be a prior cut's own output. The
+    # merge is idempotent — append_entries skips entries the section
+    # already carries verbatim — so a re-run after a crashed collection
+    # (entries written, fragments not deleted) adds nothing.
+    merges: Sections = {}
     contributed: Sections = {}
     for fragment, sections in pool:
         for name, entries in sections.items():
             if name in existing:
-                collisions.append(
-                    f"changes_collect: {log_name(fragment.name)}"
-                    f" contributes a '{name}' section [Unreleased] already"
-                    " carries — move the entries into fragments before the"
-                    " cut"
-                )
+                merges.setdefault(name, []).extend(entries)
             else:
                 contributed.setdefault(name, []).extend(entries)
-    refuse(collisions)
 
     atomic_write(
         changelog,
-        "".join(splice_unreleased(lines, region.end_idx, contributed)),
+        "".join(splice_unreleased(lines, region, merges, contributed)),
     )
 
     # The deletion half of the collection: every unlink failure is named
     # in one refusal — the changelog already carries the entries, so the
     # named files must go by hand (the release sweep's rollback restores
-    # both sides through git; a re-run refuses through the
-    # section-collision check, never double-collecting).
+    # both sides through git; a re-run merges idempotently — entries the
+    # section already carries are skipped — never double-collecting).
     undeleted: list[Path] = []
     for fragment, _ in pool:
         try:
@@ -461,8 +381,11 @@ def collect(changelog: Path, changes_dir: Path) -> int:
             ]
         )
     entries = sum(len(section) for _, sections in pool for section in sections.values())
+    merged = sum(len(section) for section in merges.values())
+    merged_note = f", {merged} merged into existing sections" if merged else ""
     print(
-        f"changes_collect: {len(pool)} fragments ({entries} entries)"
+        f"changes_collect: {len(pool)} fragments ({entries} entries"
+        f"{merged_note})"
         f" collected into [Unreleased]; {changes_dir} cleared"
     )
     return 0
