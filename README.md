@@ -294,7 +294,7 @@ quickest try is a [JBang](https://www.jbang.dev/) script — save it as
 
 ```java
 ///usr/bin/env jbang "$0" "$@" ; exit $?
-//DEPS ai.relatedb:relate:1.2.0
+//DEPS ai.relatedb:relate:1.3.0
 //RUNTIME_OPTIONS --enable-native-access=ALL-UNNAMED
 
 import ai.relatedb.Database;
