@@ -1,14 +1,18 @@
 #!/bin/sh
 # Hermetic suite for the x86-64 baseline ISA gate
 # (scripts/check-linux-isa.sh): the baseline-only pass, a higher ISA level
-# in the ELF property note, and an ELF file with no "x86 ISA needed" note.
-# A fake readelf on PATH serves the canned `-n` report, so the suite needs
-# no ELF binary and runs on any host.
+# in the ELF property note, a note section without the ISA line and an
+# ELF file with no GNU property note section at all (the pinned
+# rust:1.99-bookworm container's native build — the state the release
+# lane's binary actually carries, accepted only under --pinned-toolchain),
+# a note the classifier cannot parse, and the argument contract. A fake
+# readelf on PATH serves the canned `-n` report, so the suite needs no
+# ELF binary and runs on any host.
 # Output and exit contract: scripts/tests/lib/tap.sh.
 
 set -u
 
-ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
+ROOT=$(CDPATH= cd -- "$(dirname "$0")/../.." && pwd)
 GATE="$ROOT/scripts/check-linux-isa.sh"
 
 . "$ROOT/scripts/tests/lib/tap.sh"
@@ -35,75 +39,130 @@ run_gate() { # $1 = description; rest = gate arguments
   tap_status=$?
 }
 
-# --- pass: the note lists the baseline ISA only ------------------------
-
-baseline="$sandbox/baseline"
-: >"$baseline"
-cat >"$baseline.notes" <<'REPORT'
+# One fixture writer: every property-note case shares this readelf -n
+# preamble; only the Properties line differs.
+notes_fixture() { # $1 = tag, $2 = the value after "Properties: "
+	fixture=$sandbox/$1
+	: >"$fixture"
+	{
+		cat <<'PREAMBLE'
 ELF Header:
   Class:                             ELF64
 Displaying notes found in: .note.gnu.property
   Owner                Data size 	Description
   GNU                  0x00000010	NT_GNU_PROPERTY_TYPE_0
-      Properties: x86 ISA needed: x86-64-baseline
-REPORT
-run_gate "a baseline-ISA binary passes" "$baseline"
-tap_check "the gate passes a baseline-ISA binary" "$tap_status"
-assert_same "the pass line names the baseline ISA" \
-	"$(cat "$sandbox/out")" "check-linux-isa: $baseline: x86-64-baseline only"
+PREAMBLE
+		printf '      Properties: %s\n' "$2"
+	} >"$fixture.notes"
+}
+
+# One case runner: the gate over a fixture, with the expected outcome and
+# the exact expected line stated once — an empty line asserts the status
+# only.
+gate_case() { # $1 = description, $2 = pass|refusal, $3 = expected line (empty = status only); rest = gate arguments
+	gc_desc=$1
+	gc_want=$2
+	gc_line=$3
+	shift 3
+	run_gate "$gc_desc" "$@"
+	case "$gc_want" in
+		pass) gc_assert=tap_check; gc_stream=out ;;
+		refusal) gc_assert=tap_check_refusal; gc_stream=err ;;
+		*)
+			echo "gate_case: unknown outcome: $gc_want" >&2
+			exit 2
+			;;
+	esac
+	"$gc_assert" "$gc_desc" "$tap_status"
+	if [ -n "$gc_line" ]; then
+		assert_same "the $gc_want line is exact: $gc_desc" \
+			"$(cat "$sandbox/$gc_stream")" "$gc_line"
+	fi
+}
+
+# --- pass: the note lists the baseline ISA only ------------------------
+
+notes_fixture baseline 'x86 ISA needed: x86-64-baseline'
+gate_case "the gate passes a baseline-ISA binary" pass \
+	"check-linux-isa: $sandbox/baseline: x86-64-baseline only" \
+	"$sandbox/baseline"
 
 # --- higher ISA level --------------------------------------------------
 
-v3="$sandbox/v3"
-: >"$v3"
-cat >"$v3.notes" <<'REPORT'
-ELF Header:
-  Class:                             ELF64
-Displaying notes found in: .note.gnu.property
-  Owner                Data size 	Description
-  GNU                  0x00000010	NT_GNU_PROPERTY_TYPE_0
-      Properties: x86 ISA needed: x86-64-baseline, x86-64-v3
-REPORT
-run_gate "a binary needing x86-64-v3" "$v3"
-if [ "$tap_status" -ne 0 ]; then
-	tap_ok "the gate fails a binary needing a higher ISA level"
-else
-	tap_not_ok "the gate fails a binary needing a higher ISA level"
-fi
-assert_same "the refusal names the higher level" \
-	"$(cat "$sandbox/err")" \
-	"check-linux-isa: $v3: requires x86-64-v3; build at the x86-64 baseline ISA"
+notes_fixture v3 'x86 ISA needed: x86-64-baseline, x86-64-v3'
+gate_case "the gate fails a binary needing a higher ISA level" refusal \
+	"check-linux-isa: $sandbox/v3: requires x86-64-v3; build at the x86-64 baseline ISA" \
+	"$sandbox/v3"
+
+# The refusal is unconditional: the vouch never lifts it.
+gate_case "the gate fails a higher ISA level even under --pinned-toolchain" refusal "" \
+	--pinned-toolchain "$sandbox/v3"
 
 # --- no "x86 ISA needed" note ------------------------------------------
 
-no_note="$sandbox/no-note"
-: >"$no_note"
-cat >"$no_note.notes" <<'REPORT'
+notes_fixture no-note 'x86 feature: IBT, SHSTK'
+
+# Fail-closed by default: a note-less binary is also what a raised
+# target-cpu build would look like, so only the lane's vouch accepts it.
+gate_case "the gate refuses a note-less binary without the vouch" refusal \
+	"check-linux-isa: $sandbox/no-note: no 'x86 ISA needed' GNU property note (the pinned rust:1.99-bookworm link emits none at baseline — pass --pinned-toolchain to accept that state)" \
+	"$sandbox/no-note"
+
+gate_case "the gate passes a note-less binary under --pinned-toolchain" pass \
+	"check-linux-isa: $sandbox/no-note: no 'x86 ISA needed' note (nothing beyond x86-64-baseline; accepted under --pinned-toolchain)" \
+	--pinned-toolchain "$sandbox/no-note"
+
+# --- no .note.gnu.property section at all (the pinned container) -------
+
+no_section="$sandbox/no-section"
+: >"$no_section"
+cat >"$no_section.notes" <<'REPORT'
 ELF Header:
   Class:                             ELF64
-Displaying notes found in: .note.gnu.property
+Displaying notes found in: .note.ABI-tag
   Owner                Data size 	Description
-  GNU                  0x00000010	NT_GNU_PROPERTY_TYPE_0
-      Properties: x86 feature: IBT, SHSTK
-REPORT
-run_gate "a binary without the x86 ISA note" "$no_note"
-if [ "$tap_status" -ne 0 ]; then
-	tap_ok "the gate fails a binary without the x86 ISA note"
-else
-	tap_not_ok "the gate fails a binary without the x86 ISA note"
-fi
-assert_same "the refusal names the missing note" \
-	"$(cat "$sandbox/err")" \
-	"check-linux-isa: $no_note: no 'x86 ISA needed' GNU property note"
+  GNU                  0x00000010	NT_GNU_ABI_TAG (ABI version tag)
+    OS: Linux, ABI: 3.2.0
 
-# --- usage -------------------------------------------------------------
+Displaying notes found in: .note.gnu.build-id
+  Owner                Data size 	Description
+  GNU                  0x00000014	NT_GNU_BUILD_ID (unique build ID bitstring)
+    Build ID: 81bbf74720a2875dcdfd756a0b3e0d293471ed57
+REPORT
+
+gate_case "the gate refuses a note-section-less binary without the vouch" refusal "" \
+	"$no_section"
+gate_case "the gate passes a note-section-less binary under --pinned-toolchain" pass \
+	"check-linux-isa: $no_section: no 'x86 ISA needed' note (nothing beyond x86-64-baseline; accepted under --pinned-toolchain)" \
+	--pinned-toolchain "$no_section"
+
+# --- a note the classifier cannot parse --------------------------------
+
+notes_fixture weird 'x86 ISA needed: x86-64-future'
+gate_case "the gate refuses a note whose level it cannot classify" refusal \
+	"check-linux-isa: $sandbox/weird:       Properties: x86 ISA needed: x86-64-future" \
+	"$sandbox/weird"
+
+# An unknown level beside baseline is equally unclassifiable: the whole
+# list is judged, not probed for a substring.
+notes_fixture mixed 'x86 ISA needed: x86-64-baseline, x86-64-future'
+gate_case "the gate refuses baseline mixed with an unknown level" refusal \
+	"check-linux-isa: $sandbox/mixed:       Properties: x86 ISA needed: x86-64-baseline, x86-64-future" \
+	"$sandbox/mixed"
+
+# --- usage --------------------------------------------------------------
 
 run_gate "no binary"
 assert_same "the gate refuses to run without a binary (exit 2)" "$tap_status" 2
-assert_same "the usage line names the argument" \
-	"$(cat "$sandbox/err")" "usage: $GATE BINARY"
+assert_same "the usage line names the flag and the argument" \
+	"$(cat "$sandbox/err")" "usage: $GATE [--pinned-toolchain] BINARY"
 
-run_gate "a second argument" "$baseline" extra
+run_gate "a second argument" "$sandbox/baseline" extra
 assert_same "the gate refuses a second argument (exit 2)" "$tap_status" 2
+
+run_gate "an unknown flag" --nope "$sandbox/baseline"
+assert_same "the gate refuses an unknown flag (exit 2)" "$tap_status" 2
+assert_same "the refusal names the unknown flag" \
+	"$(cat "$sandbox/err")" "check-linux-isa: unknown flag: --nope"
 
 tap_done

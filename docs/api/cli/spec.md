@@ -18,10 +18,16 @@ arm64) and Windows (x86-64).
 floor is whatever the artifact's symbol versions require, never above the
 `GLIBC_2.35` cap, and the kernel its ELF ABI tag names. It is built in the
 pinned `rust:1.99-bookworm`
-container (Debian 12 with glibc 2.36) for the x86-64 baseline ISA:
-`readelf -n` lists `x86 ISA needed: x86-64-baseline` only, so it needs no
-x86-64-v2/v3 CPU feature. `scripts/check-linux-isa.sh relate-linux-amd64`
-gates the release artifact on that note, and
+container (Debian 12 with glibc 2.36) for the x86-64 baseline ISA — the
+build pins `-C target-cpu=x86-64` in `.cargo/config.toml` (reviewed
+beside the vouch), and the pinned container's
+link declares no `x86 ISA needed` GNU property note at all (only link
+inputs that ask for more than baseline produce one), so it needs no
+x86-64-v2/v3 CPU feature.
+`scripts/check-linux-isa.sh --pinned-toolchain relate-linux-amd64`
+gates the release artifact on that promise — the lane's vouch accepts the
+container's note-less link (or a note listing baseline only), while a
+note listing x86-64-v2/v3/v4 fails the release with or without it — and
 `scripts/check-glibc-floor.sh relate-linux-amd64` derives the artifact's
 floor from its `readelf --version-info` symbol versions, fails the release
 when it exceeds `GLIBC_2.35`, and hands the derived value to the APT and
