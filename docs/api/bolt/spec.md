@@ -496,7 +496,7 @@ The server's own failures:
 | A HELLO without a non-empty string `user_agent` (ADR-0313, ADR-0342), or — at 5.4 — without a valid `bolt_agent` map (ADR-0484) | `Neo.ClientError.Request.Invalid` |
 | A protocol breach ([Protocol breaches](#protocol-breaches-adr-0314)) | `Neo.ClientError.Request.Invalid` |
 | A PULL or DISCARD whose `qid` names no open result (ADR-0311) | `Neo.ClientError.Request.Invalid` |
-| A result over `--max-result-bytes` (`query result exceeds max-result-bytes limit of <N> bytes`) | `Neo.ClientError.General.TransactionOutOfMemoryError` |
+| A result over `--max-result-bytes` (`query result exceeds max-result-bytes limit of <N> bytes`), or a streamed batch over it (ADR-0682) | `Neo.ClientError.General.TransactionOutOfMemoryError` |
 | A failed or missing auth token — in the HELLO at 4.4, in LOGON at 5.4 (ADR-0126, ADR-0484) | `Neo.ClientError.Security.Unauthorized` |
 
 A message that is not a request the negotiated version speaks (not a
@@ -1172,7 +1172,17 @@ defaults apply on every serve-run Bolt surface.
   the planned statement executes (ADR-0319). The connection — and its engine
   `Connection` — survive, so the session stays usable after a `RESET`.
   `BEGIN`/`COMMIT`/`ROLLBACK` are not bounded; the timeout applies to `RUN`
-  only.
+  only. For a streamed result (ADR-0682) the bound applies to each wait on
+  the statement — the RUN's, and each PULL's wait for its next batch — not
+  to the time between PULLs.
+- **PULL idle timeout** (default: the idle read timeout, library-level
+  `ConnLimits::pull_idle_timeout`, not a command-line flag): a streamed
+  statement waits for the PULL that wants its next batch; after this long
+  without one the server stops the statement and frees its engine state.
+  Rows already delivered still page out; the PULL that needs more answers
+  FAILURE `Neo.ClientError.Transaction.TransactionTimedOut`
+  (`result stream abandoned: no PULL arrived within the idle timeout`) and
+  the failed state. `None` waits indefinitely.
 - **Keep-alive** (60 s, not configurable from the command line): HELLO
   SUCCESS advertises `hints: {"connection.recv_timeout_seconds": 120}`,
   twice the interval, and while a RUN's execution or a COMMIT has gone one
@@ -1185,9 +1195,21 @@ defaults apply on every serve-run Bolt surface.
 
 ### Results and summaries (ADR-0309, ADR-0311)
 
-`RUN` executes the statement and buffers its result (ADR-0110); true
-executor streaming remains deferred per ADR-0082. In auto-commit there is
-one open result: a new `RUN` replaces it. Inside an explicit transaction
+An auto-commit `RUN` **streams** its result (ADR-0682): the statement runs on
+a worker that owns the engine connection and hands the session bounded
+batches (at most 1024 rows) as `PULL` asks for them, so a result of any row
+count is never held whole. The RUN SUCCESS waits for the columns and the
+first batch (its first row stamps `columnTypes`, ADR-0224) or the
+statement's end. A `PULL {n}` is served from the batch in hand and fetches
+the next only while it wants more; once a batch is spent the server learns
+whether the result has more, so the page that takes the last row carries the
+ending summary. `DISCARD` of the rest lets the statement finish without
+encoding or sending a row. A `RUN`, `RESET`, `BEGIN` or any other message
+that needs the connection stops an unfinished stream and takes the
+connection back. A statement inside an explicit transaction, and every
+statement of a pipelined write batch (ADR-0642), runs whole and buffers its
+result (ADR-0110). In auto-commit there is one open result: a new `RUN`
+replaces it. Inside an explicit transaction
 every `RUN` opens its own result under a `qid` — 0 for the first RUN after
 BEGIN, one more per RUN — and a later RUN never discards an earlier one.
 `PULL {n, qid}` and `DISCARD {n, qid}` address the result with that `qid`;
@@ -1365,7 +1387,11 @@ flag; embed `relate_bolt::serve` to change the 256 MiB default).
 
 When a `RUN` query finishes, the server checks its result against
 `--max-result-bytes` (default 256 MiB) on the connection's own thread, in
-the same thread as the query. The cap bounds the sum of every result open on
+the same thread as the query. A streamed result (ADR-0682) is never held
+whole, so the cap bounds what it retains: each delivered batch of at most
+1024 rows — the first at the RUN, each later one as it arrives at a PULL —
+is held to the cap, and an over-cap batch fails the RUN or that PULL with
+the same FAILURE. The cap bounds the sum of every result open on
 the connection (ADR-0311): inside an explicit transaction a RUN whose result
 would push the open results past the cap fails. The check adds
 up `Value::logical_bytes()` row by row and stops as soon as the running total

@@ -10,6 +10,7 @@ use std::time::Duration;
 use relate::QueryResult;
 
 use crate::fields::NotificationConfig;
+use crate::stream::{StreamBody, StreamHandle};
 
 /// Where an open result's rows stand.
 pub(crate) enum Body {
@@ -20,6 +21,9 @@ pub(crate) enum Body {
         result: Box<QueryResult>,
         cursor: usize,
     },
+    /// A statement streaming from its worker (ADR-0682): holds at most one
+    /// batch, never the result.
+    Stream(Box<StreamBody>),
     /// An execution failure, reported at the first PULL or DISCARD
     /// (ADR-0319).
     Failed(relate::Error),
@@ -44,9 +48,15 @@ pub(crate) struct OpenResult {
 }
 
 /// A result that does not fit the connection's `--max-result-bytes` budget
-/// (ADR-0110): the store is left untouched.
-#[derive(Debug)]
-pub(crate) struct OverCap;
+/// (ADR-0110): the store is left untouched and the refused body comes back
+/// to the caller (a streamed one holds the session's connection).
+pub(crate) struct OverCap(pub(crate) Body);
+
+impl std::fmt::Debug for OverCap {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("OverCap")
+    }
+}
 
 /// The session's open results (ADR-0311): one per RUN in an explicit
 /// transaction, at most one in auto-commit. Cleared by COMMIT, ROLLBACK,
@@ -103,15 +113,25 @@ impl OpenResults {
         // checked, so a statement alone over the budget is the same
         // failure, stated once.
         let statement_bytes = statement.len() as u64;
-        let rows_budget = budget.checked_sub(statement_bytes).ok_or(OverCap)?;
-        let bytes = match &body {
-            Body::Rows { result, .. } => {
-                statement_bytes
-                    + relate_core::logical_bytes_within(result.rows.iter().flatten(), rows_budget)
-                        .ok_or(OverCap)?
-            }
-            Body::Failed(_) => statement_bytes,
+        let Some(rows_budget) = budget.checked_sub(statement_bytes) else {
+            return Err(OverCap(body));
         };
+        // The rows the body holds now: the whole buffered result, or the
+        // first batch of a streamed one (later batches are held to the same
+        // cap as they arrive).
+        let held = match &body {
+            Body::Rows { result, .. } => {
+                relate_core::logical_bytes_within(result.rows.iter().flatten(), rows_budget)
+            }
+            Body::Stream(stream) => {
+                relate_core::logical_bytes_within(stream.rows.iter().flatten(), rows_budget)
+            }
+            Body::Failed(_) => Some(0),
+        };
+        let Some(held) = held else {
+            return Err(OverCap(body));
+        };
+        let bytes = statement_bytes + held;
         let qid = self.next_qid;
         self.next_qid += 1;
         self.open.push(OpenResult {
@@ -143,6 +163,15 @@ impl OpenResults {
     pub(crate) fn take(&mut self, qid: i64) -> Option<OpenResult> {
         let index = self.find(qid)?;
         Some(self.open.remove(index))
+    }
+
+    /// Take the live worker of the streamed result out of the store, for
+    /// the session to stop it and get its connection back (ADR-0682).
+    pub(crate) fn take_stream_handle(&mut self) -> Option<StreamHandle> {
+        self.open.iter_mut().find_map(|open| match &mut open.body {
+            Body::Stream(body) => body.handle.take(),
+            _ => None,
+        })
     }
 
     /// Put a taken result back, still open.
