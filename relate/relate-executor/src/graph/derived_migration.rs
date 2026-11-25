@@ -251,11 +251,12 @@ fn plan_derived_migration(
         .iter()
         .map(|def| def.name.as_str())
         .collect();
+    let held = HeldRows::of(catalog, &retired);
     for record in derived.values() {
         // The decision sees the rows the plan already decided to install,
         // so a derived set conflicting with itself refuses here instead
         // of installing both halves of the conflict.
-        if let Some(install) = planned_install(catalog, &retired, &migration.installs, record)? {
+        if let Some(install) = planned_install(&held, &migration.installs, record)? {
             migration.installs.push(install);
         }
     }
@@ -273,20 +274,19 @@ fn record_def(record: &relate_model::Constraint) -> Result<ConstraintDef> {
 /// The definition a fresh re-derived record owns a catalog row for —
 /// the install decision's one home: the row's definition with its
 /// resolved backing pair. `None` when the record's row pair is already
-/// held ([`own_pair_held`]) or an equivalent rule already holds the
+/// held ([`HeldRows::holds_pair_of`]) or an equivalent rule already holds the
 /// schema (the same skip `sync_derived_constraints` makes at statement
 /// time), an error when a conflicting rule — or an install this plan
 /// already decided, or the cross-kind backing claim — refuses it. Run
 /// at plan time; the apply passes write what this returns, and only
 /// that.
 fn planned_install(
-    catalog: &Catalog,
-    retired: &BTreeSet<&str>,
+    held: &HeldRows<'_>,
     planned: &[PlannedInstall],
     record: &relate_model::Constraint,
 ) -> Result<Option<PlannedInstall>> {
     let def = record_def(record)?;
-    if own_pair_held(catalog, retired, record, &def) {
+    if held.holds_pair_of(record, &def) {
         return Ok(None);
     }
     // The live rules the disposition asks over: everything the plan does
@@ -296,13 +296,13 @@ fn planned_install(
     // plan already decided, so the set cannot conflict with itself.
     // Every install decision — the heal included — runs the one
     // disposition, so the cross-kind backing claim is never skipped.
-    let mut live: Vec<&ConstraintDef> = catalog
+    let live = held
         .constraints
         .values()
-        .filter(|held| held.name != def.name && !retired.contains(held.name.as_str()))
-        .collect();
-    live.extend(planned.iter().map(|install| &install.def));
-    match derived_install_disposition(&live, &def) {
+        .copied()
+        .filter(|row| row.name != def.name)
+        .chain(planned.iter().map(|install| &install.def));
+    match derived_install_disposition(live, &def) {
         RuleDisposition::Equivalent(_) => Ok(None),
         RuleDisposition::Conflicts => Err(Error::storage(
             "graph type derived constraint conflicts with an existing constraint",
@@ -314,35 +314,55 @@ fn planned_install(
     }
 }
 
-/// Whether the record's own row pair is already held — the install
-/// decision's held test. A row the plan retires frees both slots for its
-/// own replacement (the `NOT NULL` split); a pair-keyed retirement (a
-/// committed file index on the same pair, ADR-0649 §6) drops the backing
-/// row while the constraint row survives, and the held-row identity
-/// rides ADR-0450's legacy resolution
-/// ([`super::resolve_enforced_label`]): a field-less row under the
-/// record's name resolves its enforced label from the record — its
-/// current-shape twin — before the rows are compared, so an upgraded
-/// store's legacy twin counts as the record's own row instead of
-/// mismatching into the catalog's duplicate gate. A row carrying a
-/// different label or rule is the duplicate gate's to refuse at the
-/// write, never a silent skip.
-fn own_pair_held(
-    catalog: &Catalog,
-    retired: &BTreeSet<&str>,
-    record: &relate_model::Constraint,
-    def: &ConstraintDef,
-) -> bool {
-    let freed = retired.contains(def.name.as_str());
-    let row_held = !freed
-        && catalog.constraints.get(&def.name).is_some_and(|held| {
-            let mut resolved = held.clone();
+/// The catalog rows a plan reads its install decisions against: every
+/// constraint row and backing-index name the plan does not retire. One
+/// view, built once per plan, so a retired name is absent from both
+/// halves by construction and no decision re-spells the retirement.
+struct HeldRows<'a> {
+    constraints: BTreeMap<&'a str, &'a ConstraintDef>,
+    indexes: BTreeSet<&'a str>,
+}
+
+impl<'a> HeldRows<'a> {
+    fn of(catalog: &'a Catalog, retired: &BTreeSet<&str>) -> Self {
+        Self {
+            constraints: catalog
+                .constraints
+                .iter()
+                .filter(|(name, _)| !retired.contains(name.as_str()))
+                .map(|(name, row)| (name.as_str(), row))
+                .collect(),
+            indexes: catalog
+                .indexes
+                .keys()
+                .filter(|name| !retired.contains(name.as_str()))
+                .map(String::as_str)
+                .collect(),
+        }
+    }
+
+    /// Whether the record's own row pair is already held — the install
+    /// decision's held test. A row the plan retires frees both slots for its
+    /// own replacement (the `NOT NULL` split); a pair-keyed retirement (a
+    /// committed file index on the same pair, ADR-0649 §6) drops the backing
+    /// row while the constraint row survives, and the held-row identity
+    /// rides ADR-0450's legacy resolution
+    /// ([`super::resolve_enforced_label`]): a field-less row under the
+    /// record's name resolves its enforced label from the record — its
+    /// current-shape twin — before the rows are compared, so an upgraded
+    /// store's legacy twin counts as the record's own row instead of
+    /// mismatching into the catalog's duplicate gate. A row carrying a
+    /// different label or rule is the duplicate gate's to refuse at the
+    /// write, never a silent skip.
+    fn holds_pair_of(&self, record: &relate_model::Constraint, def: &ConstraintDef) -> bool {
+        let row_held = self.constraints.get(def.name.as_str()).is_some_and(|held| {
+            let mut resolved = (*held).clone();
             super::resolve_enforced_label(&mut resolved, record.enforced_label.as_deref());
             resolved == *def
         });
-    let backing_held =
-        !def.is_index_backed() || (!freed && catalog.indexes.contains_key(&def.name));
-    row_held && backing_held
+        let backing_held = !def.is_index_backed() || self.indexes.contains(def.name.as_str());
+        row_held && backing_held
+    }
 }
 
 impl DerivedMigration {

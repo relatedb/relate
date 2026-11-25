@@ -37,7 +37,8 @@ fn push_encoded_list(name: &mut String, parts: &[String]) {
 /// encodes the first constrained property with the shared legacy encoder.
 /// The pair itself — the row and its seek-postings detail — is
 /// [`crate::redo::constraint_backing_pair`], the one construction the
-/// derived-migration install shares; this fn owns the DDL half only: the
+/// derived-migration install shares and the caller builds before the
+/// constraint's def moves into its row; this fn owns the DDL half only: the
 /// detail push through [`push_index_detail`] and the encoded
 /// `CreateIndex` redo. A relationship constraint's backing detail
 /// records the flag truthfully (SHOW INDEXES reports it as a
@@ -46,11 +47,8 @@ fn push_encoded_list(name: &mut String, parts: &[String]) {
 /// materialized.
 pub(crate) fn create_constraint_backing_index(
     graph: &ExecGraph<'_>,
-    def: &ConstraintDef,
+    (row, detail): (relate_catalog::IndexDef, crate::redo::IndexDetailSpec),
 ) -> Result<()> {
-    let Some((row, detail)) = crate::redo::constraint_backing_pair(def)? else {
-        return Ok(());
-    };
     // The catalog detail is what materializes the backing index's seek
     // postings (`RedoOp::CatalogIndexDetail` → `materialize_detail` — the
     // same path `exec_create_index` takes through
@@ -480,10 +478,10 @@ pub(crate) fn create_constraint_core(
     def: ConstraintDef,
     derived: Option<relate_model::Constraint>,
 ) -> Result<()> {
-    let index_backed = def.is_index_backed();
     let name = def.name.clone();
-    // The backing pair needs the def's fields after it moves into its row.
-    let held = def.clone();
+    // The backing pair reads the def's fields, so it is built before the
+    // def moves into its row.
+    let backing = crate::redo::constraint_backing_pair(&def)?;
     graph.create_named_constraint(def)?;
     if let Some(constraint) = derived {
         graph.push_catalog_redo(RedoOp::CatalogDerivedConstraint { constraint });
@@ -491,8 +489,10 @@ pub(crate) fn create_constraint_core(
     // An index-backed constraint (unique/key) owns a range backing index
     // under the same effective name; an index already holding the name is
     // left alone.
-    if index_backed && graph.named_index(&name).is_none() {
-        create_constraint_backing_index(graph, &held)?;
+    if let Some(pair) = backing {
+        if graph.named_index(&name).is_none() {
+            create_constraint_backing_index(graph, pair)?;
+        }
     }
     Ok(())
 }
@@ -567,8 +567,7 @@ pub(crate) fn sync_derived_constraints(
         // (a KEY and a UNIQUE on the same subject) cannot exist in one
         // path and not the other.
         let existing = graph.effective_constraints()?;
-        let live: Vec<&ConstraintDef> = existing.iter().collect();
-        match derived_install_disposition(&live, &def) {
+        match derived_install_disposition(existing.iter(), &def) {
             RuleDisposition::Equivalent(_) => continue,
             RuleDisposition::Conflicts => return Err(Error::syntax("ConstraintConflict")),
             RuleDisposition::New => {}

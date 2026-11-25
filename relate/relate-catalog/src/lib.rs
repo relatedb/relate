@@ -267,13 +267,33 @@ impl ConstraintSchema {
     /// property type — [`ConstraintDef::conflicts_with`]'s rule, asked of a
     /// declaration that carries no name.
     pub fn conflicts_with(&self, other: ConstraintSchemaView<'_>) -> bool {
-        let own = self.view();
-        own.relationship == other.relationship
-            && own.label == other.label
-            && own.properties == other.properties
-            && own.kind == other.kind
-            && own.enforced_label == other.enforced_label
-            && own.property_type != other.property_type
+        self.view().conflicts_with(other)
+    }
+}
+
+impl ConstraintSchemaView<'_> {
+    /// Whether `other` names the same subject and kind with a different
+    /// property type — the one conflict rule, read by every owner of a
+    /// schema ([`ConstraintSchema`], [`ConstraintDef`]) through its view.
+    pub fn conflicts_with(self, other: ConstraintSchemaView<'_>) -> bool {
+        self.relationship == other.relationship
+            && self.label == other.label
+            && self.properties == other.properties
+            && self.kind == other.kind
+            && self.enforced_label == other.enforced_label
+            && self.property_type != other.property_type
+    }
+}
+
+impl<'a> From<&'a ConstraintSchema> for ConstraintSchemaView<'a> {
+    fn from(schema: &'a ConstraintSchema) -> Self {
+        schema.view()
+    }
+}
+
+impl<'a> From<&'a ConstraintDef> for ConstraintSchemaView<'a> {
+    fn from(def: &'a ConstraintDef) -> Self {
+        def.schema_view()
     }
 }
 
@@ -322,45 +342,53 @@ pub enum RuleDisposition<'a> {
 /// cannot exist in one path and not the other. `live` is the caller's
 /// view of the rows still held.
 pub fn derived_install_disposition<'a>(
-    live: &[&'a ConstraintDef],
+    live: impl IntoIterator<Item = &'a ConstraintDef>,
     declaration: &ConstraintDef,
 ) -> RuleDisposition<'a> {
-    match rule_disposition(live.iter().copied(), &declaration.schema()) {
-        RuleDisposition::New => {
-            // The cross-kind backing-index claim: a KEY and a UNIQUE on
-            // the same subject cannot coexist, whether the second arrives
-            // through the same graph type or an independent
-            // `CREATE CONSTRAINT`. `rule_disposition` misses it because
-            // the kinds differ; `claims_backing_subject_of` is the one
-            // predicate for the rule.
-            if live
-                .iter()
-                .any(|rule| declaration.claims_backing_subject_of(rule))
-            {
-                return RuleDisposition::Conflicts;
-            }
-            RuleDisposition::New
-        }
-        found => found,
-    }
+    // The cross-kind backing-index claim: a KEY and a UNIQUE on the same
+    // subject cannot coexist, whether the second arrives through the same
+    // graph type or an independent `CREATE CONSTRAINT`. The kinds differ,
+    // so `conflicts_with` misses it; `claims_backing_subject_of` is the one
+    // predicate for the rule, folded into the same single pass.
+    disposition(live, declaration.schema_view(), |rule| {
+        declaration.schema_view().conflicts_with(rule.schema_view())
+            || declaration.claims_backing_subject_of(rule)
+    })
 }
 
 /// The disposition of `declaration` against `existing`: the
 /// schema-equivalence probe first, then the conflict probe, in one place.
-/// The declaration is its name-free [`ConstraintSchema`], so an unnamed
-/// `CREATE CONSTRAINT` asks the same question without a sentinel name.
+/// The declaration is its name-free schema — a [`ConstraintSchemaView`],
+/// built borrowed from a [`ConstraintSchema`] or a [`ConstraintDef`] — so an
+/// unnamed `CREATE CONSTRAINT` asks the same question without a sentinel
+/// name and no caller allocates to ask it.
 /// `existing` is an iterator (a slice, a catalog map's values) so every
 /// caller hands over the constraints it already holds.
-pub fn rule_disposition<'a>(
+pub fn rule_disposition<'a, 'd>(
     existing: impl IntoIterator<Item = &'a ConstraintDef>,
-    declaration: &ConstraintSchema,
+    declaration: impl Into<ConstraintSchemaView<'d>>,
+) -> RuleDisposition<'a> {
+    let declaration = declaration.into();
+    disposition(existing, declaration, |rule| {
+        declaration.conflicts_with(rule.schema_view())
+    })
+}
+
+/// The single pass behind both dispositions: equivalence outranks conflict
+/// and is order-independent, so an equivalent rule returns at once and a
+/// conflict (as `conflict` decides it) is only reported once the scan ends
+/// without one.
+fn disposition<'a>(
+    existing: impl IntoIterator<Item = &'a ConstraintDef>,
+    declaration: ConstraintSchemaView<'_>,
+    conflict: impl Fn(&'a ConstraintDef) -> bool,
 ) -> RuleDisposition<'a> {
     let mut conflicts = false;
     for rule in existing {
-        if declaration.matches(rule.schema_view()) {
+        if declaration == rule.schema_view() {
             return RuleDisposition::Equivalent(rule);
         }
-        conflicts |= declaration.conflicts_with(rule.schema_view());
+        conflicts |= conflict(rule);
     }
     if conflicts {
         RuleDisposition::Conflicts
@@ -480,7 +508,7 @@ impl Catalog {
         let legacy_identity = kind.is_enforced_label_kind() && def.enforced_label.is_none();
         // The one equivalence-then-conflict disposition the executor's
         // `CREATE CONSTRAINT` gate and graph-type sync read too.
-        match rule_disposition(self.constraints.values(), &def.schema()) {
+        match rule_disposition(self.constraints.values(), &def) {
             // The legacy row's identity is unknown, so the pre-field policy
             // applies: never declared equivalent.
             RuleDisposition::Equivalent(_) if legacy_identity => {}
@@ -851,5 +879,52 @@ mod tests {
             ..legacy("probe")
         })
         .unwrap();
+    }
+
+    /// The declaration is asked borrowed: an owned schema, a def and a
+    /// view all reach the one disposition with the same answer, and the
+    /// derived-install variant takes the caller's iterator directly.
+    #[test]
+    fn disposition_reads_a_declaration_borrowed_from_any_owner() {
+        let held = [def_of("UNIQUENESS")];
+        let same = ConstraintDef {
+            name: "other".into(),
+            ..def_of("UNIQUENESS")
+        };
+        let typed = |t: &str| ConstraintDef {
+            kind: "PROPERTY_TYPE".into(),
+            property_type: Some(t.into()),
+            ..def_of("")
+        };
+        let owned = same.schema();
+        assert!(matches!(
+            rule_disposition(&held, &owned),
+            RuleDisposition::Equivalent(_)
+        ));
+        assert!(matches!(
+            rule_disposition(&held, &same),
+            RuleDisposition::Equivalent(_)
+        ));
+        assert!(matches!(
+            rule_disposition(&held, same.schema_view()),
+            RuleDisposition::Equivalent(_)
+        ));
+        let typed_held = [typed("STRING")];
+        assert!(matches!(
+            rule_disposition(&typed_held, &typed("INTEGER")),
+            RuleDisposition::Conflicts
+        ));
+        assert!(matches!(
+            derived_install_disposition(held.iter(), &same),
+            RuleDisposition::Equivalent(_)
+        ));
+        assert!(matches!(
+            derived_install_disposition(held.iter().chain(&typed_held), &typed("INTEGER")),
+            RuleDisposition::Conflicts
+        ));
+        assert!(matches!(
+            derived_install_disposition(std::iter::empty(), &same),
+            RuleDisposition::New
+        ));
     }
 }
