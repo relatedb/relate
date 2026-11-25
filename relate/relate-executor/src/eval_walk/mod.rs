@@ -1,10 +1,11 @@
 //! The eval-side pattern-walk engine — the walker behind pattern
-//! comprehensions (`[p = (a)-[r]->(b) | …]`), pattern predicates
-//! (`WHERE (a)-[r]->(b)`, the anchored probe and the limit-1 walk), and
-//! the expression-form `shortestPath`/`allShortestPaths` fallback: pattern.rs
-//! is the walk itself, with a collecting and a folding spelling (the
-//! shortest-path arm lives in `exec/shortest_eval.rs` and folds this walk's
-//! rows into its accumulator). The anchored existence probe
+//! predicates (`WHERE (a)-[r]->(b)`, the anchored probe and the limit-1
+//! walk) and the expression-form `shortestPath`/`allShortestPaths`
+//! fallback (a pattern comprehension is no longer this engine's — it
+//! lowers to its `collect { … }` subquery and runs the nested engine,
+//! ADR-0685): pattern.rs is the walk itself, in its folding spelling
+//! (the shortest-path arm lives in `exec/shortest_eval.rs` and folds
+//! this walk's rows into its accumulator). The anchored existence probe
 //! (LABS-193/LABS-249) is not this engine's — it is cross-engine code
 //! answering for this engine's `pattern_exists` and the exec exists
 //! probe alike, so it sits at the shared tier with the rest of the
@@ -36,7 +37,7 @@
 //! (row, the expression core, the property-policy walk) — no shared-
 //! tier module imports an engine. Removing the transitive cycle would
 //! mean the expression core cannot evaluate `PatternPred`/
-//! `PatternComp`/`ShortestPath` expressions at all — a dispatcher
+//! `ShortestPath` expressions at all — a dispatcher
 //! redesign (hooks or pre-resolution at every `eval` call site)
 //! disproportionate to the claim it would buy; the delegation edge is
 //! the established shape instead.
@@ -47,4 +48,4 @@
 
 mod pattern;
 
-pub(crate) use pattern::{collect_pattern_rows, fold_pattern_rows, pattern_exists};
+pub(crate) use pattern::{fold_pattern_rows, pattern_exists};

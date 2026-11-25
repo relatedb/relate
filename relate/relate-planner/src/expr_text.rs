@@ -212,7 +212,6 @@ pub fn expr_text(expr: &Expr) -> String {
         Expr::CountSubquery { .. } => "COUNT { … }".to_string(),
         Expr::CollectSubquery { .. } => "COLLECT { … }".to_string(),
         Expr::PatternPred { .. } => "(pattern)".to_string(),
-        Expr::PatternComp { .. } => "[(pattern) | …]".to_string(),
         Expr::ShortestPath { all, .. } => {
             if *all {
                 "allShortestPaths(…)".to_string()

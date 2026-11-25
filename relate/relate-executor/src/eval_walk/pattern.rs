@@ -57,10 +57,10 @@ impl Collect<'_> {
     }
 }
 
-/// The walk setup `collect_pattern_rows`, `fold_pattern_rows` and
-/// `pattern_exists` share: the [`RowSink`] is the only difference — a kept
-/// sink collects every match (or stops at its `limit`, LABS-246's existence
-/// walk passes `Some(1)`), a fold sink streams each match to the caller.
+/// The walk setup `fold_pattern_rows` and `pattern_exists` share: the
+/// [`RowSink`] is the only difference — a kept sink collects every match
+/// (or stops at its `limit`, LABS-246's existence walk passes `Some(1)`), a
+/// fold sink streams each match to the caller.
 /// The walk's binding-schema ladder is precomputed here, once per walk,
 /// before the candidate loop; every per-candidate bind stamps a rung
 /// instead of rebuilding a schema. The ladder is total over every
@@ -103,29 +103,9 @@ fn walk_collect(
     )
 }
 
-pub(crate) fn collect_pattern_rows(
-    graph: &ExecGraph<'_>,
-    row: &Row,
-    path: &PathPattern,
-    params: &BTreeMap<String, Value>,
-) -> Result<Vec<Row>> {
-    let mut out = Vec::new();
-    walk_collect(
-        graph,
-        row,
-        path,
-        params,
-        RowSink::Keep {
-            out: &mut out,
-            limit: None,
-        },
-    )?;
-    Ok(out)
-}
-
-/// The streaming spelling of [`collect_pattern_rows`] (ADR-0555): each
-/// complete match is handed to `fold` as the walk reaches it, so the
-/// consumer keeps what it needs and the walk retains no row.
+/// The walk's one spelling (ADR-0555): each complete match is handed to
+/// `fold` as the walk reaches it, so the consumer keeps what it needs and
+/// the walk retains no row.
 pub(crate) fn fold_pattern_rows(
     graph: &ExecGraph<'_>,
     row: &Row,
@@ -141,8 +121,8 @@ pub(crate) fn fold_pattern_rows(
 /// limit-1 walk that stops at the first full match for every shape the
 /// probe rejects (multi-hop, var-length, named path, GPM-free or not,
 /// pre-bound rel, no row-bound endpoint). Existence never materializes
-/// more than one row; [`collect_pattern_rows`] is for consumers that
-/// need the matches themselves.
+/// more than one row; [`fold_pattern_rows`] is for consumers that need
+/// the matches themselves.
 pub(crate) fn pattern_exists(
     graph: &ExecGraph<'_>,
     row: &Row,

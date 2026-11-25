@@ -1,8 +1,9 @@
 //! Aggregation in the expression positions that cannot aggregate.
 //!
-//! Neo4j rejects an aggregate in a list/map comprehension projection or
-//! filter, a quantifier predicate, a `reduce()` step expression, an `UNWIND`
-//! source, or a CIP-135 `WHEN` predicate at compile time (42I24 under top-
+//! Neo4j rejects an aggregate in a list/map/pattern comprehension
+//! projection or filter, a quantifier predicate, a `reduce()` step
+//! expression, an `UNWIND` source, or a `WHEN` predicate at compile
+//! time (42I24 under top-
 //! level 42001 — an `InvalidAggregation`/`SyntaxError` here). Relate used
 //! to let several of them reach the executor's scalar-eval backstop, which
 //! both mis-classified the error and (before that backstop ran) could matter
@@ -66,6 +67,17 @@ pub fn validate_expression_slots(expr: &Expr) -> Result<(), EngineError> {
             let slot = "a map comprehension";
             reject_aggregate_in(&comprehension.key_expr, slot)?;
             reject_aggregate_in(&comprehension.value_expr, slot)?;
+            reject_optional_aggregate_in(comprehension.where_expr.as_ref(), slot)
+        }
+        Expr::PatternComprehension(comprehension) => {
+            // A pattern comprehension is the comprehension family's
+            // pattern form: its projection and WHERE evaluate per match,
+            // so an aggregate there is the same 42I24 the list and map
+            // forms reject (ADR-0685 lowers the form to its collect
+            // subquery, whose RETURN would otherwise fold the aggregate
+            // into one element instead of rejecting the spelling).
+            let slot = "a pattern comprehension";
+            reject_aggregate_in(&comprehension.map_expr, slot)?;
             reject_optional_aggregate_in(comprehension.where_expr.as_ref(), slot)
         }
         Expr::Quantifier(quantifier) => {

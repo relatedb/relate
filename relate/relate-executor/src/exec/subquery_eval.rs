@@ -8,6 +8,7 @@ use std::collections::BTreeMap;
 use relate_core::{Error, Result, Value};
 use relate_error::{ErrorKind, COUNT_UNION_MIX_MESSAGE, COUNT_UNION_OMITTED_MESSAGE};
 use relate_ir::{Clause, Query};
+use relate_names::SmallName;
 
 use super::call::execute_query_seeded;
 use super::dispatch::run_nested_clauses;
@@ -62,8 +63,19 @@ fn nested_body(
     graph: &ExecGraph<'_>,
     query: &Query,
     outer: &Row,
+    path_shadow: Option<&SmallName>,
 ) -> (Query, QueryCtx<'static>, Row) {
-    let seed = nested_seed_row(graph, outer);
+    let mut seed = nested_seed_row(graph, outer);
+    // A synthesized comprehension body's path variable shadows any outer
+    // name of the same spelling for the body's whole scope (ADR-0685),
+    // so the name is neither imported nor carried on the seed — the
+    // body's own MATCH binds it, and every reference (a nested subquery's
+    // included) resolves to that binding.
+    if let Some(shadowed) = path_shadow {
+        shadowed.with_str(|text| {
+            seed.shift_remove(text);
+        });
+    }
     let imported: Vec<String> = seed.keys().cloned().collect();
     let query = relate_planner::query_with_persistent_imports(query, &imported);
     let qctx = QueryCtx::new("");
@@ -94,7 +106,7 @@ pub(crate) fn eval_exists_query(
     params: &BTreeMap<String, Value>,
     query: &Query,
 ) -> Result<Value> {
-    let (query, qctx, seed) = nested_body(graph, query, row);
+    let (query, qctx, seed) = nested_body(graph, query, row, None);
     // LABS-193: a pattern-only body between row-bound nodes answers
     // existence without running the subquery engine — and never ticks
     // the budget (ADR-0395).
@@ -165,7 +177,7 @@ pub(crate) fn eval_count_query(
     params: &BTreeMap<String, Value>,
     query: &Query,
 ) -> Result<Value> {
-    let (query, qctx, seed) = nested_body(graph, query, row);
+    let (query, qctx, seed) = nested_body(graph, query, row, None);
     // The parts' explicit-vs-omitted RETURN classification as one count:
     // some-but-not-all is the mix error, zero is the omitted-RETURN path,
     // and every other count takes the seeded statement engine below. Both
@@ -219,8 +231,9 @@ pub(crate) fn eval_collect_query(
     row: &Row,
     params: &BTreeMap<String, Value>,
     query: &Query,
+    path_shadow: Option<&SmallName>,
 ) -> Result<Value> {
-    let (query, qctx, seed) = nested_body(graph, query, row);
+    let (query, qctx, seed) = nested_body(graph, query, row, path_shadow);
     let result = execute_query_seeded(graph, &query, params, vec![seed], qctx)?;
     if result.columns.len() != 1 {
         return Err(Error::syntax(

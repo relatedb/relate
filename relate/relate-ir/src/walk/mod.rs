@@ -37,7 +37,7 @@ impl Expr {
     ///
     /// Uniform traversal used by every walker. Label expressions contribute
     /// the expressions inside their dynamic (`$(…)`) forms. Pattern-bearing
-    /// variants (`PatternPred`, `PatternComp`, `ShortestPath`) and subquery
+    /// variants (`PatternPred`, `ShortestPath`) and subquery
     /// variants (`ExistsSubquery`, `CountSubquery`, `CollectSubquery`)
     /// introduce their own scope and structure, so they report no children;
     /// walkers that need their internals (e.g. [`expr_vars`]) handle those
@@ -183,7 +183,6 @@ impl Expr {
                 }
             }
             Expr::PatternPred { .. }
-            | Expr::PatternComp { .. }
             | Expr::ShortestPath { .. }
             | Expr::ExistsSubquery { .. }
             | Expr::CountSubquery { .. }
@@ -222,8 +221,8 @@ impl Expr {
 
     /// Rebuild the expression with every direct child (the same set
     /// [`children`](Expr::children) reports) replaced by `f`'s result.
-    /// Scope-bearing variants (`PatternPred`, `PatternComp`,
-    /// `ShortestPath`, the subquery forms) carry their own structure and
+    /// Scope-bearing variants (`PatternPred`, `ShortestPath`,
+    /// the subquery forms) carry their own structure and
     /// are returned unchanged, exactly matching `children()`'s skip set —
     /// the exhaustive match here is the rebuild counterpart of that walk,
     /// so a walker recurses over every traversable subtree instead of a
@@ -421,7 +420,6 @@ impl Expr {
             // Scope-bearing variants: `children()` deliberately reports no
             // children for these, so the rebuild keeps them intact.
             Expr::PatternPred { .. }
-            | Expr::PatternComp { .. }
             | Expr::ShortestPath { .. }
             | Expr::ExistsSubquery { .. }
             | Expr::CountSubquery { .. }
@@ -431,22 +429,15 @@ impl Expr {
 
     /// Whether the variant introduces its own scope/structure that
     /// [`children`](Expr::children) deliberately does not flatten: pattern
-    /// predicates/comprehensions, `shortestPath`, and the
-    /// `EXISTS`/`COUNT`/`COLLECT` subquery forms. This is the one
-    /// vocabulary for that class — `children()`'s skip set is the
-    /// compile-forced enumeration; walkers that must refuse or specially
-    /// handle these variants consult this predicate instead of re-listing
-    /// them. A new `Expr` variant fails compilation in `children()` first,
-    /// and the `scope_bearing_variants_match_children_skip_set` test keeps
-    /// the two aligned.
+    /// predicates, `shortestPath`, and the
+    /// `EXISTS`/`COUNT`/`COLLECT` subquery forms. The answer is the one
+    /// payload classification ([`bearing`](Expr::bearing)), so walkers
+    /// that must refuse or specially handle these variants consult this
+    /// predicate — or the payload itself — instead of re-listing the
+    /// variants. The `scope_bearing_variants_match_children_skip_set`
+    /// test keeps it aligned with `children()`'s skip set.
     pub fn is_scope_bearing(&self) -> bool {
-        // The subquery half derives from the one accessor
-        // ([`subquery_body`](Expr::subquery_body)) instead of re-listing
-        // its variants here, so the two vocabularies cannot drift.
-        matches!(
-            self,
-            Expr::PatternPred { .. } | Expr::PatternComp { .. } | Expr::ShortestPath { .. }
-        ) || self.subquery_body().is_some()
+        self.bearing().is_some()
     }
 
     /// Whether the variant binds its own identifiers (a comprehension's or

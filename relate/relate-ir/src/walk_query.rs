@@ -13,6 +13,7 @@ use relate_names::SmallName;
 
 use crate::search::SearchSpec;
 use crate::walk::each_label_expr_child;
+use crate::Bearing;
 use crate::{
     Clause, Expr, LabelExpr, OrderItem, PathPattern, Projection, Query, RemoveItem, SetItem,
 };
@@ -294,35 +295,21 @@ pub(crate) fn walk_expr<'a>(
     // An expression-subquery body is walked as a nested query instead of
     // the generic child descent — the one accessor decides which
     // expressions open one (a new variant extends it, not every walk).
-    if let Some(query) = expr.subquery_body() {
-        walk_query_at(query, true, on_clause, on_expr);
-        return;
-    }
-    match expr {
-        Expr::PatternPred { path } | Expr::ShortestPath { path, .. } => {
+    match expr.bearing() {
+        Some(Bearing::Subquery(query)) => {
+            walk_query_at(query, true, on_clause, on_expr);
+            return;
+        }
+        Some(Bearing::Pattern(path)) => {
             walk_pattern(path, role, on_clause, on_expr);
+            return;
         }
-        Expr::PatternComp {
-            path,
-            predicate,
-            projection,
-        } => {
-            walk_pattern(path, role, on_clause, on_expr);
-            if let Some(predicate) = predicate.as_deref() {
-                walk_expr(predicate, role, on_clause, on_expr);
-            }
-            walk_expr(projection, role, on_clause, on_expr);
-        }
-        // Every scope-bearing variant is matched above; a new one must be
-        // added there, not silently fall through to the flat child walk.
-        other => {
-            debug_assert!(
-                !other.is_scope_bearing(),
-                "scope-bearing variant {other:?} fell through to each_child"
-            );
-            other.each_child(&mut |child| walk_expr(child, role, &mut *on_clause, &mut *on_expr));
-        }
+        None => {}
     }
+    // Every scope-bearing variant is matched above (the classification
+    // and the match read the same `bearing` answer), so what remains is
+    // the flat child walk.
+    expr.each_child(&mut |child| walk_expr(child, role, &mut *on_clause, &mut *on_expr));
 }
 
 /// The shared projection shape of `WITH` and `RETURN`; every position is a

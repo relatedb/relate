@@ -166,18 +166,28 @@ fn a_query_sized_literal_in_an_aggregating_projection_is_refused() {
     common::refused_expression_cap(&mut c, &q);
 }
 
-/// REL8-1372's residual, pinned: a pattern-comprehension source still
-/// materializes — the eval walk enumerates every match before the first
-/// element is projected, and the walk is not resumable, so no pull form
-/// exists yet. This test flips to a completion assertion when the walk
-/// streams (the resumable-walk design recorded on the ticket).
+/// REL8-1372's residual, pinned at its new home: a pattern-comprehension
+/// source still refuses under a tight expression cap — the comprehension
+/// is its `collect { … }` subquery (ADR-0685), so the element list is the
+/// nested engine's final page materialized as one list value, and `UNWIND`
+/// over a list value needs the whole list. Its collect-subquery spelling
+/// refuses identically: the two forms are one evaluation path, and the
+/// folding win is bounded by the same admission both spellings pay.
 #[test]
-fn a_pattern_comprehension_source_still_refuses_under_a_tight_cap() {
+fn a_pattern_comprehension_source_refuses_like_its_collect_subquery() {
     let (_dir, mut c) = common::reopened_expression_capped(
         EXPRESSION_CAP,
         &["CREATE (n:N {id: 1}) WITH n \
            UNWIND range(1, 400_000) AS i CREATE (n)-[:R {v: i}]->(:M {v: i})"],
     );
-    let q = "MATCH (n:N {id: 1}) UNWIND [(n)-[:R]->(m) | m.v] AS x RETURN sum(x)";
-    common::refused_expression_cap(&mut c, q);
+    common::refused_expression_cap(
+        &mut c,
+        "MATCH (n:N {id: 1}) UNWIND [(n)-[:R]->(m) | m.v] AS x RETURN sum(x)",
+    );
+    common::refused_expression_cap(
+        &mut c,
+        "MATCH (n:N {id: 1}) \
+         UNWIND collect { MATCH (n)-[:R]->(m) RETURN m.v } AS x \
+         RETURN sum(x)",
+    );
 }

@@ -13,6 +13,7 @@
 mod common;
 
 mod aggregate_grouping_key_through_scalar_call;
+mod aggregate_in_pattern_comprehension;
 mod aggregate_postfix;
 mod aggregate_transparent_positions;
 mod argument_error_classes;
@@ -95,6 +96,8 @@ mod order_by_top_k_bounds;
 mod parameter_missing;
 mod parquet_wide_format_facade;
 mod parser_syntax_gap_regressions;
+mod pattern_comprehension_collect_equivalence;
+mod pattern_comprehension_path_shadowing;
 mod pattern_predicate_param_map;
 mod pattern_predicates;
 mod pattern_prop_policy;

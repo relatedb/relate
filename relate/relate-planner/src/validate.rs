@@ -29,6 +29,7 @@ use write::{ClausePosition, WriteHistory};
 /// Walk state is not scope state: the 42I25 write history a validation
 /// walk accumulates is the walk's own ([`WriteHistory`], threaded by the
 /// clause and stage loops), never a field here.
+#[derive(Clone)]
 pub(crate) struct Scope {
     /// The bindings the body starts from.
     pub(crate) env: Env,
@@ -61,6 +62,19 @@ impl Scope {
             imports,
             shadowable,
         }
+    }
+
+    /// [`Self::expression_body`] for the body ADR-0685's comprehension
+    /// lowering synthesizes: its path variable is an assignment, not a
+    /// join, so it shadows an outer name of the same spelling whatever
+    /// that name's kind — the name is therefore not an import at all
+    /// (the plan-time twin of the runtime seed's own filter), and the
+    /// body's MATCH binds it freely.
+    pub(crate) fn comprehension_body(mut env: Env, path_shadow: Option<&SmallName>) -> Self {
+        if let Some(name) = path_shadow {
+            env.remove_name(name);
+        }
+        Self::expression_body(env)
     }
 
     /// A `WHEN`/`ELSE` body: it shares the enclosing scope but is a fresh

@@ -44,6 +44,62 @@ fn resolve_vector_metric_arg(lowered_name: &str, args: &mut [mdb::Expr]) {
     }
 }
 
+/// Lower a pattern comprehension to the collect subquery that is its
+/// meaning (ADR-0685): `[(n)-[:R]->(m) WHERE p | f]` becomes
+/// `collect { MATCH (n)-[:R]->(m) WHERE p RETURN f }` — the projection
+/// unaliased, since the collector reads the body's single column and
+/// discards its name. The body and the name its path variable shadows are
+/// built together, so the two cannot be derived apart. The body is
+/// synthesized after the validation battery has read the comprehension
+/// form — one MATCH carrying the pattern with its path variable attached,
+/// one RETURN of the projection. Outer variables import and join (a
+/// pattern element an outer variable names is bound to that value);
+/// variables new to the pattern bind inside; no match is the
+/// empty list. The nested engine plans and bounds the body exactly as a
+/// user-written `collect { … }` (ADR-0685), so the comprehension inherits
+/// its planning and its admission instead of a materializing eval walk.
+fn lower_pattern_comprehension_body(
+    p: &cl::PatternComprehensionExpr,
+) -> Result<(mdb::Query, Option<SmallName>)> {
+    let mut pattern = p.pattern.clone();
+    // The path variable the pattern binds is the name the body shadows —
+    // one value, handed to both ends.
+    let path_shadow = p.path_variable.clone().or(pattern.variable.clone());
+    pattern.variable = path_shadow.clone();
+    let statement = cl::Statement {
+        clauses: vec![
+            cl::Clause::Match(cl::MatchClause {
+                optional: false,
+                // Spelled, not `Default::default()`: the existence
+                // rewrite's recognizer (`lower/existence.rs`) reads this
+                // same spelling, so writer and reader share one fact.
+                match_mode: cl::MatchMode::DifferentRelationships,
+                pattern: vec![pattern],
+                using_scan: Vec::new(),
+                using_index: Vec::new(),
+                using_join: Vec::new(),
+                where_expr: p.where_expr.clone(),
+                search: None,
+            }),
+            cl::Clause::Return(cl::ReturnClause {
+                group_by: None,
+                distinct: false,
+                items: vec![cl::ReturnItem {
+                    expr: p.map_expr.clone(),
+                    alias: None,
+                    all: false,
+                    source_text: None,
+                }],
+                order_by: Vec::new(),
+                skip: None,
+                limit: None,
+            }),
+        ],
+        ..Default::default()
+    };
+    Ok((super::lower_statement_impl(&statement)?, path_shadow))
+}
+
 /// The IR name for a parsed function call: the alias table's lowered
 /// spelling (aggregate display, CIP-128; scalar rename, CIP-245), or the
 /// parsed spelling when the name is not an alias.
@@ -239,15 +295,15 @@ pub fn lower_expr(e: &cl::Expr) -> Result<mdb::Expr> {
             key_expr: Box::new(lower_expr(&mc.key_expr)?),
             value_expr: Box::new(lower_expr(&mc.value_expr)?),
         },
-        cl::Expr::PatternComprehension(p) => mdb::Expr::PatternComp {
-            path: {
-                let mut path = lower_path(&p.pattern)?;
-                path.variable = p.path_variable.clone().or(path.variable);
-                path
-            },
-            predicate: lower_boxed(p.where_expr.as_ref(), lower_expr)?,
-            projection: Box::new(lower_expr(&p.map_expr)?),
-        },
+        cl::Expr::PatternComprehension(p) => {
+            // The body and its shadowed path variable come from the one
+            // builder; the shadow is an assignment, not a join
+            // (ADR-0685), so neither the planner's nested scope nor the
+            // executor's seed imports it, and every reference resolves
+            // to the body's own path.
+            let (query, path_shadow) = lower_pattern_comprehension_body(p)?;
+            mdb::Expr::CollectSubquery { query, path_shadow }
+        }
         cl::Expr::ShortestPath(s) => mdb::Expr::ShortestPath {
             all: s.all,
             path: lower_shortest_expr_path(s)?,
@@ -313,6 +369,10 @@ pub fn lower_expr(e: &cl::Expr) -> Result<mdb::Expr> {
         },
         cl::Expr::CollectSubquery(s) => mdb::Expr::CollectSubquery {
             query: lower_statement_impl(&s.statement)?,
+            // A user-written `collect { … }` shadows nothing: rebinding
+            // an outer name in its body is the ordinary
+            // `VariableAlreadyBound` rejection.
+            path_shadow: None,
         },
         cl::Expr::Reduce(r) => mdb::Expr::Reduce {
             accumulator: r.accumulator.clone(),

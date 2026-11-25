@@ -131,22 +131,10 @@ pub(crate) fn patterns_have_graph_sensitive_expr(patterns: &[PathPattern]) -> bo
 }
 
 pub(crate) fn expr_graph_sensitive(expr: &Expr) -> bool {
-    let mut stack = vec![expr];
-    while let Some(expr) = stack.pop() {
-        if matches!(
-            expr,
-            Expr::ExistsSubquery { .. }
-                | Expr::CountSubquery { .. }
-                | Expr::CollectSubquery { .. }
-                | Expr::PatternComp { .. }
-                | Expr::PatternPred { .. }
-                | Expr::ShortestPath { .. }
-        ) {
-            return true;
-        }
-        stack.extend(expr.children());
-    }
-    false
+    // `is_scope_bearing` owns the vocabulary (pattern-carrying and
+    // subquery forms); consulting it keeps this walk from re-listing the
+    // variants a future `Expr` addition would silently miss.
+    expr.any(&mut |e| e.is_scope_bearing())
 }
 
 pub(crate) fn resolve_creation_labels(

@@ -116,7 +116,7 @@ fn a_prebound_var_length_list_with_a_non_relationship_element_matches_nothing() 
 }
 
 #[test]
-fn a_null_prebound_var_length_rel_matches_nothing_in_the_eval_walk() {
+fn a_null_prebound_var_length_rel_matches_nothing_beside_its_subquery_parity() {
     let g = &chain();
     // A failed OPTIONAL MATCH pre-binds its var-length rel variable to
     // null; the comprehension reconciles against the null — the classic
@@ -130,17 +130,23 @@ fn a_null_prebound_var_length_rel_matches_nothing_in_the_eval_walk() {
         vec![0],
         "a null pre-binding is a mismatch, not a fresh slot"
     );
-    // The join shape the family's single-hop pin uses: a bound start,
-    // the rel variable pre-bound to null — zero trails, where the free
-    // enumeration would have found two.
+    // The var-length slot over a single-rel outer binding is the one
+    // reconciliation shape the collect-subquery meaning does not carry
+    // (ADR-0685): a MATCH var-length rel slot may only rebind an outer
+    // list binding, exactly as a user-written `collect { MATCH … }` —
+    // so the comprehension answers the same plan-time error, not the
+    // old walk's null reconciliation.
+    let error = match crate::exec::test_support::try_exec_cypher(
+        g,
+        "MATCH (x:A) OPTIONAL MATCH (x)-[r:R]->(y:B) WHERE y.id = 99 \
+         RETURN size([(x)-[r*1..2]->(z) | z]) AS c",
+    ) {
+        Err(error) => error.to_string(),
+        Ok(_) => panic!("a var-length slot over a single-rel binding errors"),
+    };
     assert_eq!(
-        counts(
-            "MATCH (x:A) OPTIONAL MATCH (x)-[r:R]->(y:B) WHERE y.id = 99 \
-             RETURN size([(x)-[r*1..2]->(z) | z]) AS c",
-            g,
-        ),
-        vec![0],
-        "the walk must not rebind the null pre-binding"
+        error, "syntax error: GroupVariableReuse: `r` is already bound",
+        "subquery parity: the rebinding is rejected, not reconciled"
     );
     // The single-hop spelling of the same null, unchanged beside the
     // var-length pins: the family's one rule, both trail shapes.

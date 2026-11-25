@@ -25,7 +25,6 @@ use super::items::{
 };
 use super::plain_where_holds;
 use super::{retain_map, retain_values};
-use crate::eval_walk::collect_pattern_rows;
 
 /// The one retaining-projection loop: for each bound row apply the
 /// optional WHERE (the comprehension WHERE gate,
@@ -63,19 +62,6 @@ pub(in crate::eval) fn eval_list_comp(
     };
     let rows = into_items(items).map(move |item| bind_element(row, ident, item));
     retain_projected(graph, params, rows, predicate, projection)
-}
-
-/// Pattern comprehension: collect the pattern matches, filter with the
-/// optional WHERE, project, and build one retaining output container.
-pub(in crate::eval) fn eval_pattern_comp(
-    ctx: EvalCtx<'_>,
-    path: &relate_ir::PathPattern,
-    predicate: Option<&Expr>,
-    projection: &Expr,
-) -> Result<Value> {
-    let EvalCtx { graph, row, params } = ctx;
-    let matches = collect_pattern_rows(graph, row, path, params)?;
-    retain_projected(graph, params, matches.into_iter(), predicate, projection)
 }
 
 /// CIP-272 map comprehension: the source-shape triage, owned beside the
