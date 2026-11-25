@@ -23,7 +23,7 @@ use crate::validate::validate_part_with_env;
 mod function_meta;
 pub(crate) mod shadowing;
 
-use crate::literal::{is_non_integer_literal, is_static_non_bool};
+use crate::literal::is_static_non_bool;
 use function_meta::apply_function_meta;
 use shadowing::{reject_binding_shadowing, reject_projection_shadowing};
 
@@ -153,24 +153,6 @@ pub(crate) fn check_nonneg_int_arg(expr: &Expr) -> Result<()> {
         return Err(Error::syntax(relate_core::negative_page_bound_text()));
     }
     Ok(())
-}
-
-pub(crate) fn check_positive_int_arg(expr: &Expr, what: &str) -> Result<()> {
-    match expr {
-        Expr::Int(i) if *i <= 0 => Err(Error::syntax(format!(
-            "InvalidArgument: {what} must be a positive integer"
-        ))),
-        Expr::Unary {
-            op: UnaryOp::Minus,
-            expr,
-        } if matches!(expr.as_ref(), Expr::Int(_) | Expr::Float(_)) => Err(Error::syntax(format!(
-            "InvalidArgument: {what} must be a positive integer"
-        ))),
-        _ if is_non_integer_literal(expr) => Err(Error::syntax(format!(
-            "InvalidArgumentType: {what} must be an integer"
-        ))),
-        _ => Ok(()),
-    }
 }
 
 /// Whether the expression is non-static for CIP-34 concurrency / CIP-198

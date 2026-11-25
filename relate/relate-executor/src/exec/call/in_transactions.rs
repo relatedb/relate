@@ -15,6 +15,7 @@
 
 use std::collections::BTreeMap;
 
+use relate_core::integer_args::{range_text, TX_BATCH_SIZE, TX_CONCURRENCY};
 use relate_core::tokens::WorkspaceCharge;
 use relate_core::{Error, ErrorKind, Result, Value};
 use relate_ir::{Clause, Query};
@@ -502,43 +503,56 @@ fn per_row_batch_rows(
 
 /// Resolve the call's batch size (rows per transaction) and validate the
 /// concurrency hint. The argument-class rules live in this one unit: a
-/// non-integer is the `TypeError` class, an integer outside the positive
-/// range is the `ArgumentError` class (live Neo4j 2026.10.1 reports 0
-/// under 22003). The concurrency hint is validated, never applied —
-/// execution stays sequential.
+/// wrong-typed value (a String, null) is the `TypeError` class, while a
+/// FLOAT — whole or not — joins the integers outside the positive range
+/// in the `ArgumentError` class: live's 22N03 for the batch size reads
+/// "Expected 'value' to be of type INTEGER and in the range 1 to
+/// 9223372036854775807 but found 1.0", the same rejection as -1 (ADR-0565
+/// probes 0 under 22003). Unlike the ADR-0175 function sites
+/// (`substring()` & co truncate a float), a float batch size never
+/// converts. The concurrency hint is validated, never applied —
+/// execution stays sequential — and its runtime check is type-only with
+/// the same no-coercion rule: any FLOAT is the `TypeError` (live
+/// matches), an integer of any value passes.
 fn resolve_batch_options(
     graph: &ExecGraph<'_>,
     first: &Row,
     tx: &relate_ir::InTransactions,
     params: &BTreeMap<String, Value>,
 ) -> Result<usize> {
-    const MSG: &str = "batch size must be a positive integer";
     let batch_size = match tx.batch_size.as_ref() {
         None => 1000,
         Some(expr) => {
-            let size = eval(graph, first, expr, params)?
-                .as_int()
-                .ok_or_else(|| Error::ty(MSG))?;
-            // A narrowing cast is not a range guard: on a 32-bit target a
-            // value above u32::MAX would truncate (to 0, panicking
-            // `chunks(0)`), so the conversion and the positive range are one
-            // rejection.
-            usize::try_from(size)
-                .ok()
-                .filter(|n| *n > 0)
-                .ok_or_else(|| Error::argument_value_kind(ErrorKind::NumberOutOfRange, MSG))?
+            // A FLOAT maps to the one range rejection below (joined with
+            // the integers outside the positive range), everything else
+            // non-INTEGER is the wrong-typed rejection — both read the
+            // site's row (integer_args, the single text home).
+            let size = match eval(graph, first, expr, params)? {
+                // `try_from` refuses an integer that does not fit
+                // `usize` rather than truncating it, and zero is
+                // refused because the site is positive-only — the
+                // conversion bound and the positive range are one
+                // rejection.
+                Value::Int(size) => usize::try_from(size).ok().filter(|n| *n > 0),
+                Value::Float(_) => None,
+                _ => return Err(Error::ty(TX_BATCH_SIZE.type_error)),
+            };
+            size.ok_or_else(|| {
+                Error::argument_value_kind(ErrorKind::NumberOutOfRange, range_text(&TX_BATCH_SIZE))
+            })?
         }
     };
-    // The CIP-260 concurrency hint is validated, not applied. Unlike the
+    // The concurrency hint is validated, not applied. Unlike the
     // batch size, a non-positive value is deliberately NOT rejected here:
-    // CIP-34 (neo4j-verified scenarios 17-19) gives a parameter `0` the
-    // default concurrency and a negative value a default-derived one, while
-    // only the *literal* forms are rejected — at plan time, by
-    // `check_positive_int_arg`. The runtime contract is type-only.
+    // live gives a parameter `0` the default concurrency and a negative
+    // value a default-derived one, while only the *literal* forms are
+    // rejected — at plan time, by `check_positive_int_arg`. The runtime
+    // contract is type-only, and type-only means no float coercion: a
+    // FLOAT parameter — whole or not — is the TypeError.
     if let relate_ir::Concurrency::Value(expr) = &tx.concurrency {
-        eval(graph, first, expr, params)?
-            .as_int()
-            .ok_or_else(|| Error::ty("concurrency must be an integer"))?;
+        if !matches!(eval(graph, first, expr, params)?, Value::Int(_)) {
+            return Err(Error::ty(TX_CONCURRENCY.type_error));
+        }
     }
     Ok(batch_size)
 }

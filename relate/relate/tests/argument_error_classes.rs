@@ -85,9 +85,8 @@ fn wrong_typed_similarity_argument_is_a_type_error() {
     );
 }
 
-/// `trim()`'s single-character rule, `round()`'s precision/mode checks, the
-/// `replace()` limit and a zero `CALL … IN TRANSACTIONS` batch size are the
-/// `ArgumentError` class.
+/// `trim()`'s single-character rule, `round()`'s precision/mode checks and
+/// the `replace()` limit are the `ArgumentError` class.
 #[test]
 fn function_argument_rejections_are_argument_errors() {
     let mut conn = connection();
@@ -114,24 +113,45 @@ fn function_argument_rejections_are_argument_errors() {
         ),
         "ArgumentError"
     );
+}
+
+/// The `CALL … IN [CONCURRENT] TRANSACTIONS` batch-size value rejections:
+/// an integer outside the positive range and a FLOAT — whole or not,
+/// both spellings — are the `ArgumentError` class (live's 22N03 reads
+/// "Expected 'value' to be of type INTEGER and in the range 1 to
+/// 9223372036854775807 but found 1.0", the same rejection as -1,
+/// REL8-2179), while a wrong-typed value keeps the `TypeError` class.
+#[test]
+fn batch_size_value_rejections_are_argument_errors() {
+    let mut conn = connection();
+    // One statement scaffold, one value-class matrix: every value class
+    // is pinned for both spellings.
+    let query = |modifier: &str| {
+        format!("UNWIND [1, 2] AS x CALL {{ WITH x RETURN x AS y }} {modifier} RETURN y")
+    };
+    for spelling in ["IN TRANSACTIONS", "IN CONCURRENT TRANSACTIONS"] {
+        for (value, class) in [
+            (Value::Int(0), "ArgumentError"),
+            (Value::Float(1.0), "ArgumentError"),
+            (Value::Float(2.5), "ArgumentError"),
+            (Value::String("two".into()), "TypeError"),
+        ] {
+            assert_eq!(
+                error_class(
+                    &mut conn,
+                    &query(&format!("{spelling} OF $batchSize ROWS")),
+                    params(&[("batchSize", value.clone())])
+                ),
+                class,
+                "spelling {spelling}, value {value:?}"
+            );
+        }
+    }
+    // The FLOAT literal is the plan-time syntax rejection: it never
+    // reaches the runtime coercion, so it is not this class.
     assert_eq!(
-        error_class(
-            &mut conn,
-            "UNWIND [1, 2] AS x CALL { WITH x RETURN x AS y } IN TRANSACTIONS OF $batchSize \
-             ROWS RETURN y",
-            params(&[("batchSize", Value::Int(0))])
-        ),
-        "ArgumentError"
-    );
-    // A non-integer batch size is the TypeError class, not this one.
-    assert_eq!(
-        error_class(
-            &mut conn,
-            "UNWIND [1, 2] AS x CALL { WITH x RETURN x AS y } IN TRANSACTIONS OF $batchSize \
-             ROWS RETURN y",
-            params(&[("batchSize", Value::String("two".into()))])
-        ),
-        "TypeError"
+        error_class_literal(&mut conn, &query("IN TRANSACTIONS OF 1.0 ROWS")),
+        "SyntaxError"
     );
 }
 

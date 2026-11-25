@@ -1,12 +1,15 @@
 //! The statically-known literal vocabulary: what an expression spells when
 //! its value is known at plan time (a literal, a resolved plan-cache
-//! placeholder, a folded eager value), and the ADR-0175 rejections the
-//! integer-argument sites raise from it. A crate-level module, below both
+//! placeholder, a folded eager value), the ADR-0175 rejections the
+//! integer-argument sites raise from it, and the `CALL { … } IN
+//! TRANSACTIONS` modifier sites' positive-integer literal gate (whose
+//! texts and class mapping live in the `relate_core::integer_args` rows,
+//! REL8-2179). A crate-level module, below both
 //! the expression checker and the binding classifier that read it, so
 //! neither imports back up into the other.
 
-use relate_core::integer_args::{self, IntegerArgSite};
-use relate_core::{Error, Result, Value};
+use relate_core::integer_args::{self, range_text, IntegerArgSite};
+use relate_core::{invalid_argument_text, Error, Result, Value};
 use relate_ir::{Expr, UnaryOp};
 
 /// The literal an expression spells, bucketed by the kind each caller
@@ -192,5 +195,33 @@ pub(crate) fn reject_non_integer_literal(expr: &Expr, detail: &str) -> Result<()
     if is_non_integer_literal(expr) {
         return Err(Error::invalid_argument_type(detail));
     }
+    Ok(())
+}
+
+/// The `CALL { … } IN TRANSACTIONS` modifier sites' positive-integer
+/// literal gate (the batch size, the concurrency hint): a
+/// negative numeric literal rejects with the site's range sentence
+/// under the `InvalidArgument` token
+/// ([`relate_core::invalid_argument_text`]), a non-INTEGER literal with
+/// its type sentence — the plan-time half of the runtime coercion
+/// whose texts the same row owns (REL8-2179).
+pub(crate) fn check_positive_int_arg(expr: &Expr, site: &IntegerArgSite) -> Result<()> {
+    // The parser's two spellings of a negative numeric literal are one
+    // predicate, not two rejection sites (the shape `check_nonneg_int_arg`
+    // uses); zero joins the negatives — these sites are positive-only.
+    let negative = matches!(expr, Expr::Int(i) if *i <= 0)
+        || matches!(
+            expr,
+            Expr::Unary {
+                op: UnaryOp::Minus,
+                expr,
+            } if matches!(expr.as_ref(), Expr::Int(_) | Expr::Float(_))
+        );
+    if negative {
+        return Err(Error::syntax(invalid_argument_text(range_text(site))));
+    }
+    // The helper owns the reject-a-non-INTEGER-literal policy; the class
+    // is this caller's — the Syntax re-class the function sites don't take.
+    reject_non_integer_literal(expr, site.type_error).map_err(Error::into_syntax)?;
     Ok(())
 }

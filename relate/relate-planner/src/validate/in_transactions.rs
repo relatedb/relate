@@ -3,11 +3,13 @@
 //! duration, `REPORT STATUS`). Split from `subquery.rs` so each file owns
 //! one concern.
 
+use relate_core::integer_args;
 use relate_core::{Error, Result};
 use relate_ir::{Clause, Expr, InTransactions, UnaryOp};
 
 use crate::binding::Env;
-use crate::expr_check::{check_expr, check_positive_int_arg, expr_non_static};
+use crate::expr_check::{check_expr, expr_non_static};
+use crate::literal::check_positive_int_arg;
 
 /// Validate one `IN TRANSACTIONS` modifier list. The `REPORT STATUS`
 /// variable's binding is the caller's: it joins the CALL body's export set
@@ -27,10 +29,10 @@ pub(super) fn check_in_transactions_modifiers(
         check_expr(env, is_write_procedure, expr)?;
     }
     if let Some(n) = &tx.batch_size {
-        check_positive_int_arg(n, "batch size")?;
+        check_positive_int_arg(n, &integer_args::TX_BATCH_SIZE)?;
     }
     if let relate_ir::Concurrency::Value(n) = &tx.concurrency {
-        check_positive_int_arg(n, "concurrency")?;
+        check_positive_int_arg(n, &integer_args::TX_CONCURRENCY)?;
         if expr_non_static(n) {
             return Err(Error::syntax(
                 "NonStaticConcurrency: concurrency cannot reference row variables",
@@ -53,14 +55,16 @@ pub(super) fn check_in_transactions_modifiers(
             Expr::Unary {
                 op: UnaryOp::Minus, ..
             } => {
-                return Err(Error::syntax(
-                    "NumberOutOfRange: retry duration must be non-negative",
-                ))
+                return Err(Error::syntax(format!(
+                    "NumberOutOfRange: {}",
+                    integer_args::range_text(&integer_args::TX_RETRY_DURATION)
+                )))
             }
             Expr::Null | Expr::Bool(_) | Expr::String(_) | Expr::List(_) | Expr::Map(_) => {
-                return Err(Error::syntax(
-                    "InvalidArgumentType: retry duration must be numeric",
-                ))
+                return Err(Error::invalid_argument_type(
+                    integer_args::TX_RETRY_DURATION.type_error,
+                )
+                .into_syntax())
             }
             _ => {}
         }
