@@ -11,6 +11,8 @@ Run: python3 scripts/tests/test_changelog_rotate.py
 
 from __future__ import annotations
 
+import contextlib
+import io
 import tempfile
 import unittest
 from pathlib import Path
@@ -206,6 +208,92 @@ class RotateTests(unittest.TestCase):
         with self.assertRaises(SystemExit) as ctx:
             changelog_rotate.main([])
         self.assertEqual(ctx.exception.code, 2)
+
+
+class RecutMerge(unittest.TestCase):
+    """The tagless re-cut: the version's section already exists and
+    [Unreleased] carries the next collection — the entries merge into
+    the existing section, [Unreleased] empties, and both a re-run and a
+    non-grammar body are covered."""
+
+    RECUT = """# Changelog
+
+## [Unreleased]
+
+### Changed
+
+- Parked change.
+
+### Notes
+
+- Parked note.
+
+## [0.1.0] — 2026-11-08
+
+### Added
+
+- First release.
+
+### Notes
+
+- Released note.
+
+[Unreleased]: https://github.com/relatedb/relate/compare/v0.1.0...HEAD
+
+[0.1.0]: https://github.com/relatedb/relate/releases/tag/v0.1.0
+"""
+
+    def run_main(self, content: str, *argv: str) -> tuple[int, str]:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "CHANGELOG.md"
+            path.write_text(content)
+            rc = changelog_rotate.main([str(path), *argv])
+            return rc, path.read_text()
+
+    def test_the_recuts_unreleased_merges_into_the_existing_section(self) -> None:
+        rc, text = self.run_main(self.RECUT, "--version", "0.1.0", "--date", "2026-11-08")
+        self.assertEqual(rc, 0)
+        # [Unreleased] is empty again.
+        unreleased = text[text.index("## [Unreleased]") : text.index("## [0.1.0]")]
+        self.assertNotIn("###", unreleased)
+        self.assertNotIn("Parked", unreleased)
+        # The parked entries joined the version section: the existing
+        # Notes gained the parked note after its released bullet, and
+        # the missing Changed block landed canonically — after Added,
+        # before Notes.
+        version = text[text.index("## [0.1.0]") : text.index("[Unreleased]:")]
+        self.assertIn("- Released note.\n- Parked note.\n", version)
+        self.assertLess(version.index("### Added"), version.index("### Changed"))
+        self.assertLess(version.index("### Changed"), version.index("### Notes"))
+        self.assertIn("- Parked change.", version)
+        # The refs are untouched.
+        self.assertIn("[Unreleased]: https://github.com/relatedb/relate/compare/v0.1.0...HEAD", text)
+
+    def test_the_recut_merge_is_idempotent(self) -> None:
+        once = self.run_main(self.RECUT, "--version", "0.1.0", "--date", "2026-11-08")[1]
+        twice = self.run_main(once, "--version", "0.1.0", "--date", "2026-11-08")[1]
+        self.assertEqual(once, twice)
+        self.assertEqual(twice.count("- Parked note."), 1)
+
+    def test_an_empty_unreleased_still_pure_skips(self) -> None:
+        doc = self.RECUT.replace("### Changed\n\n- Parked change.\n\n### Notes\n\n- Parked note.\n\n", "")
+        rc, text = self.run_main(doc, "--version", "0.1.0", "--date", "2026-11-08")
+        self.assertEqual(rc, 0)
+        self.assertEqual(text, doc)
+
+    def test_a_non_grammar_unreleased_body_refuses(self) -> None:
+        doc = self.RECUT.replace(
+            "### Changed\n\n- Parked change.\n\n### Notes\n\n- Parked note.\n",
+            "Free prose under [Unreleased].\n",
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "CHANGELOG.md"
+            path.write_text(doc)
+            with contextlib.redirect_stderr(io.StringIO()) as err:
+                rc = changelog_rotate.main([str(path), "--version", "0.1.0", "--date", "2026-11-08"])
+            self.assertEqual(rc, 1)
+            self.assertIn("cannot parse", err.getvalue())
+            self.assertEqual(path.read_text(), doc)
 
 
 if __name__ == "__main__":

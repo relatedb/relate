@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -21,6 +22,12 @@ from pathlib import Path
 from script_loader import ROOT, load
 
 collector = load("changes_collect", ROOT / "scripts" / "changes_collect.py")
+
+# The fragment grammar parser lives in the shared lib (the rotation
+# merges through the same spelling); its refusals are ValueError — the
+# collector wraps them into its own CollectError at the pool boundary.
+sys.path.insert(0, str(ROOT / "scripts" / "lib"))
+import changelog as grammar
 
 CHANGELOG = """# Changelog
 
@@ -147,60 +154,60 @@ class Discovery(Sandbox):
 
 class FragmentGrammar(Sandbox):
     def test_bullets_and_wrapped_continuations_parse(self) -> None:
-        sections = collector.parse_sections(
+        sections = grammar.parse_sections(
             ["### Changed\n", "\n", "- A flag\n", "  now works\n"],
             "f"
         )
         self.assertEqual(sections, {"Changed": [["- A flag", "  now works"]]})
 
     def test_blank_separated_bullets_are_separate_entries(self) -> None:
-        sections = collector.parse_sections(
+        sections = grammar.parse_sections(
             ["### Added\n", "\n", "- One.\n", "\n", "- Two.\n"],
             "f"
         )
         self.assertEqual(sections, {"Added": [["- One."], ["- Two."]]})
 
     def test_unknown_section_is_a_refusal(self) -> None:
-        with self.assertRaises(collector.CollectError) as ctx:
-            collector.parse_sections(
+        with self.assertRaises(ValueError) as ctx:
+            grammar.parse_sections(
                 ["### Additions\n", "\n", "- One.\n"], "f"
             )
         self.assertIn("unknown section heading", str(ctx.exception))
 
     def test_a_repeated_section_is_a_refusal(self) -> None:
-        with self.assertRaises(collector.CollectError) as ctx:
-            collector.parse_sections(
+        with self.assertRaises(ValueError) as ctx:
+            grammar.parse_sections(
                 ["### Added\n", "\n", "- One.\n", "### Added\n", "\n", "- Two.\n"],
                 "f",
             )
         self.assertIn("appears twice", str(ctx.exception))
 
     def test_an_empty_section_is_a_refusal(self) -> None:
-        with self.assertRaises(collector.CollectError) as ctx:
-            collector.parse_sections(
+        with self.assertRaises(ValueError) as ctx:
+            grammar.parse_sections(
                 ["### Added\n", "\n", "### Changed\n", "\n", "- One.\n"],
                 "f",
             )
         self.assertIn("'Added' is empty", str(ctx.exception))
 
     def test_content_before_the_first_heading_is_a_refusal(self) -> None:
-        with self.assertRaises(collector.CollectError) as ctx:
-            collector.parse_sections(
+        with self.assertRaises(ValueError) as ctx:
+            grammar.parse_sections(
                 ["A note.\n", "### Added\n", "\n", "- One.\n"],
                 "f",
             )
         self.assertIn("before the first", str(ctx.exception))
 
     def test_an_unindented_non_bullet_line_is_a_refusal(self) -> None:
-        with self.assertRaises(collector.CollectError) as ctx:
-            collector.parse_sections(
+        with self.assertRaises(ValueError) as ctx:
+            grammar.parse_sections(
                 ["### Added\n", "\n", "One.\n"], "f"
             )
         self.assertIn("neither a '- ' bullet", str(ctx.exception))
 
     def test_an_indented_line_with_no_bullet_is_a_refusal(self) -> None:
-        with self.assertRaises(collector.CollectError) as ctx:
-            collector.parse_sections(
+        with self.assertRaises(ValueError) as ctx:
+            grammar.parse_sections(
                 ["### Added\n", "\n", "  stray\n"], "f"
             )
         self.assertIn("no bullet to continue", str(ctx.exception))
@@ -269,39 +276,44 @@ class Collect(Sandbox):
         self.assertLess(text.index("Hand-filed"), text.index("Fragment entry"))
         self.assertLess(text.index("Fragment entry"), text.index("## [1.0.0]"))
 
-    def test_fragment_sections_colliding_with_the_body_accumulate(self) -> None:
-        # The transition window: the body already carries Added and
-        # Changed sections, and two fragments collide on each. Every
-        # collision is named — fragment and section — in one refusal.
-        changelog = self.with_hand_filed(
+    def test_fragment_sections_colliding_with_the_body_merge(self) -> None:
+        # A tagless re-cut: the body already carries Added and Changed
+        # sections (a prior cut's parked collection), and two fragments
+        # contribute to each. The entries merge under the existing
+        # headings — appended after the parked bullets, never a second
+        # heading — and the fragments are consumed.
+        self.with_hand_filed(
             "### Added\n\n- Hand-filed entry.\n\n"
             "### Changed\n\n- Also hand-filed.\n"
         )
         self.fragment("1-a.md", "### Added\n\n- Fragment entry.\n")
         self.fragment("2-b.md", "### Changed\n\n- Fragment entry.\n")
-        with self.assertRaises(collector.CollectError) as ctx:
-            collector.collect(self.changelog, self.changes)
-        message = str(ctx.exception)
-        self.assertIn("1-a.md", message)
-        self.assertIn("'Added'", message)
-        self.assertIn("2-b.md", message)
-        self.assertIn("'Changed'", message)
-        # Nothing was written, nothing consumed.
-        self.assertEqual(self.changelog.read_text(), changelog)
-        self.assertTrue((self.changes / "1-a.md").exists())
-        self.assertTrue((self.changes / "2-b.md").exists())
+        self.assertEqual(collector.collect(self.changelog, self.changes), 0)
+        text = self.changelog.read_text()
+        unreleased = text[text.index("## [Unreleased]") : text.index("## [1.0.0]")]
+        self.assertEqual(unreleased.count("### Added"), 1)
+        self.assertEqual(unreleased.count("### Changed"), 1)
+        self.assertLess(text.index("Hand-filed entry"), text.index("Fragment entry", text.index("### Added")))
+        self.assertLess(text.index("Also hand-filed."), text.index("Fragment entry", text.index("### Changed")))
+        self.assertFalse((self.changes / "1-a.md").exists())
+        self.assertFalse((self.changes / "2-b.md").exists())
 
-    def test_a_newline_in_a_colliding_fragment_name_cannot_start_a_log_line(
-        self,
-    ) -> None:
-        # The collision refusal is the second place a PR-controlled
-        # fragment name lands in a message; it goes through log_name too,
-        # so no refusal channel can break a log line.
-        self.with_hand_filed()
-        self.fragment("1-a\n::error::boom.md", "### Added\n\n- Fragment entry.\n")
-        with self.assertRaises(collector.CollectError) as ctx:
-            collector.collect(self.changelog, self.changes)
-        self.assert_no_log_break(str(ctx.exception), "::error::boom")
+    def test_a_re_collect_after_a_crashed_deletion_adds_nothing(self) -> None:
+        # The idempotent merge: entries land, the fragment files fail to
+        # delete (the crash), and a re-run re-collects the same fragment
+        # — the entries the section already carries verbatim are
+        # skipped, never duplicated. (The log-line safety a colliding
+        # name used to prove lives in the discovery findings, which still
+        # route names through log_name.)
+        self.with_hand_filed("### Notes\n\n- Parked note.\n")
+        self.fragment("1-a.md", "### Notes\n\n- New note.\n")
+        self.assertEqual(collector.collect(self.changelog, self.changes), 0)
+        # The crash: the fragment survived its own collection.
+        self.fragment("1-a.md", "### Notes\n\n- New note.\n")
+        self.assertEqual(collector.collect(self.changelog, self.changes), 0)
+        text = self.changelog.read_text()
+        self.assertEqual(text.count("- New note."), 1)
+        self.assertEqual(text.count("### Notes"), 1)
 
     def test_first_release_body_shape_passes_through(self) -> None:
         # A first-release changelog carries no version section below

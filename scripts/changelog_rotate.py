@@ -17,8 +17,14 @@ Either way the rotation inserts `## [<next>] — <date>` directly under the
 `## [Unreleased]` heading and rewrites the `[Unreleased]:` ref to
 `<base>/compare/v<next>...HEAD`. `base` never carries a trailing slash;
 the line builders add it. A changelog whose `## [<next>]` heading already
-exists is already rotated: the CLI prints the skip notice and exits 0
-without writing.
+exists is a re-run of the same cut: with `[Unreleased]` empty the CLI
+prints the skip notice and exits 0 without writing; with it populated —
+a tagless re-cut (the release failed before tagging, the next dispatch
+re-derives the same version) collected the next pool under it — the
+entries merge into the existing version section, idempotently (an entry
+the section already carries verbatim is skipped), and `[Unreleased]`
+empties. `[Unreleased]` content the fragment grammar cannot parse is a
+refusal, never a guessed merge.
 
 Refusals come through two channels: document-shape refusals (no
 `## [Unreleased]` heading, no `[Unreleased]:` link ref at or below the
@@ -47,10 +53,24 @@ sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
 
 from atomic_write import atomic_write
 # The changelog document grammar — semver, the [Unreleased] heading, the
-# locate-a-line-with-refusal scan — is shared with the placement guard and
-# the fragment collector through scripts/lib/changelog.py, the one
-# spelling (the refusal type stays this module's own).
-from changelog import SEMVER, find_line, unreleased_region
+# locate-a-line-with-refusal scan — and, since the rotation learned to
+# merge a tagless re-cut's parked [Unreleased] into the existing version
+# section, the fragment section grammar the collector renders it with:
+# shared through scripts/lib/changelog.py, the one spelling (the
+# refusal type stays this module's own).
+from changelog import (
+    SECTIONS,
+    SECTION_HEADING,
+    SEMVER,
+    Entry,
+    Sections,
+    append_entries,
+    parse_sections,
+    render_sections,
+    section_name,
+    find_line,
+    unreleased_region,
+)
 
 UNRELEASED_REF = "[Unreleased]:"
 
@@ -90,6 +110,95 @@ def already_rotated(text: str, version: str) -> bool:
     prefix match — the heading line carries the ` — <date>` suffix."""
     heading = version_heading(version)
     return any(line.rstrip("\n").startswith(heading) for line in text.splitlines())
+
+
+def _is_link_ref(line: str) -> bool:
+    """A link-reference line (`[<name>]: <url>`) — the ref block that
+    ends the last version section."""
+    return line.startswith("[") and "]: " in line
+
+
+def merge_recut(text: str, version: str) -> str | None:
+    """The tagless re-cut's completion: the version's section already
+    exists (a prior cut rotated, the release never tagged) and
+    [Unreleased] carries the next collection — merge those entries into
+    the existing section, idempotently, and empty [Unreleased]. None
+    when there is nothing to merge (the pure re-run skip); a RotateError
+    when [Unreleased] carries content the fragment grammar cannot parse
+    — the merge never guesses at non-grammar body lines."""
+    lines = text.splitlines(keepends=True)
+    region = unreleased_region(
+        lines,
+        refusal="changelog_rotate: no ## [Unreleased] heading found",
+        error=RotateError,
+    )
+    body = lines[region.heading_idx + 1 : region.end_idx]
+    if not any(line.strip() for line in body):
+        return None
+    try:
+        merges = parse_sections(body, "the [Unreleased] body")
+    except ValueError as exc:
+        raise RotateError(
+            "changelog_rotate: [Unreleased] carries content the fragment"
+            f" grammar cannot parse, so it cannot merge into {version_heading(version)}: {exc}"
+        ) from None
+
+    ver_idx, _ = find_line(
+        lines,
+        lambda l: l.rstrip("\n").startswith(version_heading(version)),
+        f"changelog_rotate: no {version_heading(version)} heading found",
+        start=region.end_idx,
+        error=RotateError,
+    )
+    # The version section runs to the next version heading or the ref
+    # block, whichever ends it first.
+    section_end = len(lines)
+    for idx in range(ver_idx + 1, len(lines)):
+        if lines[idx].startswith("## [") or _is_link_ref(lines[idx].rstrip("\n")):
+            section_end = idx
+            break
+    section = list(lines[ver_idx + 1 : section_end])
+
+    # Entries under headings the section already carries, idempotently;
+    # whole blocks — in canonical position — for the ones it does not.
+    blocks: Sections = {}
+    for name in SECTIONS:
+        entries = merges.get(name)
+        if not entries:
+            continue
+        if f"{SECTION_HEADING}{name}\n" in section:
+            section = append_entries(section, name, entries)
+        else:
+            blocks[name] = entries
+    for name in SECTIONS:
+        entries = blocks.get(name)
+        if not entries:
+            continue
+        insert_at = _block_insert_at(section, name)
+        section[insert_at:insert_at] = render_sections({name: entries})[:-1]
+
+    out = lines[: region.heading_idx + 1]
+    out.append("\n")
+    out += lines[region.end_idx : ver_idx + 1]
+    out += section
+    out += lines[section_end:]
+    return "".join(out)
+
+
+def _block_insert_at(section: list[str], name: str) -> int:
+    """Where a new section block lands in the version section: canonically
+    — before the first section whose canonical order follows it, after
+    the last that precedes it, or at the section's start when none
+    precedes it."""
+    following = SECTIONS[SECTIONS.index(name) + 1 :]
+    for idx, raw in enumerate(section):
+        other = section_name(raw.rstrip("\n"))
+        if other is not None and other in following:
+            return idx
+    for idx in range(len(section) - 1, -1, -1):
+        if section_name(section[idx].rstrip("\n")) is not None:
+            return idx + 1
+    return 0
 
 
 def unreleased_ref_line(base_url: str, version: str) -> str:
@@ -220,7 +329,25 @@ def main(argv: Sequence[str] | None = None) -> int:
     path: Path = args.changelog
     text = path.read_text()
     if already_rotated(text, args.version):
-        print(f"changelog_rotate: CHANGELOG already has {version_heading(args.version)}; skipping rotation")
+        # A re-run of the same cut: with [Unreleased] empty this is the
+        # pure idempotence skip; with it populated (a tagless re-cut
+        # collected the next pool under it) the entries merge into the
+        # existing version section — the release sweep's rollback
+        # restores both sides through git, and the merge is idempotent,
+        # so a crashed rotation's re-run adds nothing.
+        try:
+            merged = merge_recut(text, args.version)
+        except RotateError as exc:
+            print(exc, file=sys.stderr)
+            return 1
+        if merged is None:
+            print(f"changelog_rotate: CHANGELOG already has {version_heading(args.version)}; skipping rotation")
+            return 0
+        atomic_write(path, merged)
+        print(
+            f"changelog_rotate: CHANGELOG already has {version_heading(args.version)};"
+            " merged the re-cut's [Unreleased] entries into it"
+        )
         return 0
     try:
         rotated = rotate(text, version=args.version, date=args.date)
