@@ -95,7 +95,9 @@ class Staging(unittest.TestCase):
         )
 
     def test_the_sha256_gate_reads_the_signed_checksum_set(self) -> None:
-        self.assertIn("Get-FileHash -LiteralPath $downloadPath -Algorithm SHA256", TEXT)
+        # The hash is computed through .NET, not Get-FileHash: Chocolatey's
+        # PowerShell host does not reliably load the Utility module.
+        self.assertIn("Get-RelateFileSha256 -Path $downloadPath", TEXT)
         self.assertIn("Get-RelateSumsEntry -Sums $sums -Asset $RelateAsset", TEXT)
         self.assertIn("-ine $expected", TEXT)
 
