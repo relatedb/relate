@@ -44,12 +44,10 @@ fn gate_fails_closed_without_the_opt_in() {
 }
 
 /// The features whose gate a site's consumer actually reads, taken from the
-/// consumer's own table or mapping. The `ParseOption` and `AstDetector` consumers
+/// consumer's own table or mapping. The `ParseOption`, `AstDetector` and `GraphTypeMembership` consumers
 /// live in `relate-front`: its total matches pin them at compile time and its
 /// `declared_gate_sites_behave_as_named` test checks their behavior.
 fn consumer_features(site: GateSite) -> Option<Vec<PreviewFeature>> {
-    let admitted_by_opt_in =
-        |feature: PreviewFeature| PreviewFeatures::none().with_feature(feature);
     fn features_where(reads: impl Fn(PreviewFeature) -> bool) -> Vec<PreviewFeature> {
         PREVIEW_FEATURES
             .iter()
@@ -57,12 +55,19 @@ fn consumer_features(site: GateSite) -> Option<Vec<PreviewFeature>> {
             .filter(|feature| reads(*feature))
             .collect()
     }
+    // The one "features changed by the opt-in" predicate: `reads` answers
+    // with the feature's opt-in and not without it.
+    fn changed_by_opt_in(feature: PreviewFeature, reads: impl Fn(PreviewFeatures) -> bool) -> bool {
+        reads(PreviewFeatures::none().with_feature(feature)) && !reads(PreviewFeatures::none())
+    }
     match site {
-        GateSite::ParseOption(_) | GateSite::AstDetector(_) => None,
+        GateSite::ParseOption(_)
+        | GateSite::AstDetector(_)
+        | GateSite::GraphTypeMembership
+        | GateSite::GatedElsewhere => None,
         GateSite::NameAdmission => Some(features_where(|feature| {
             gated_function_names().any(|function| {
-                function_passes_name_gate(function, admitted_by_opt_in(feature))
-                    && !function_passes_name_gate(function, PreviewFeatures::none())
+                changed_by_opt_in(feature, |set| function_passes_name_gate(function, set))
             })
         })),
         GateSite::ProcedureDispatch => Some(features_where(|feature| {
@@ -71,10 +76,9 @@ fn consumer_features(site: GateSite) -> Option<Vec<PreviewFeature>> {
                 .any(|signature| procedure_preview_feature(signature.name) == Some(feature))
         })),
         GateSite::Namespace => Some(features_where(|feature| {
-            Namespace::ALL.iter().any(|namespace| {
-                namespace.visible_under(admitted_by_opt_in(feature))
-                    && !namespace.visible_under(PreviewFeatures::none())
-            })
+            Namespace::ALL
+                .iter()
+                .any(|namespace| changed_by_opt_in(feature, |set| namespace.visible_under(set)))
         })),
     }
 }
