@@ -129,6 +129,86 @@ impl MemoMeter for ExecGraph<'_> {
     }
 }
 
+/// The two-meter books every retaining memo keeps: the bytes it holds as
+/// charged to the statement's retained-container meter (ADR-0463) and, by
+/// the same amount, to the query's shared live-bytes counter (ADR-0657),
+/// plus the freeze a refusal on either sets. One settle protocol for the
+/// kernel [`Memo`] and the fulltext corpus memo: growth charges both
+/// (each adds before it checks, so a refusal on one still charges the
+/// other), a shrink returns the difference to both, an equal swap touches
+/// neither. A refusal is not an error to the query: the memo is an
+/// optimisation, so it freezes. Dropping the ledger returns the memo's
+/// remaining share to the shared counter.
+pub(crate) struct MemoLedger {
+    charged: u64,
+    live: MemoLive,
+    frozen: bool,
+}
+
+impl MemoLedger {
+    /// Empty books over the query's shared `live` counter.
+    pub(crate) fn new(live: MemoLive) -> Self {
+        Self {
+            charged: 0,
+            live,
+            frozen: false,
+        }
+    }
+
+    /// The bytes currently charged, the retained set's sum.
+    pub(crate) fn charged(&self) -> u64 {
+        self.charged
+    }
+
+    /// The shared live counter these books charge.
+    pub(crate) fn live(&self) -> &MemoLive {
+        &self.live
+    }
+
+    /// Whether a refusal has stopped the memo from growing.
+    pub(crate) fn is_frozen(&self) -> bool {
+        self.frozen
+    }
+
+    /// Move both meters by the net of `added` over `refunded` bytes.
+    pub(crate) fn settle(&mut self, meter: &impl MemoMeter, added: u64, refunded: u64) {
+        match added.cmp(&refunded) {
+            std::cmp::Ordering::Greater => {
+                let grew = added - refunded;
+                // The meter sees the running total with the growth added;
+                // the ledger's own `charged` stays the one authority, so a
+                // meter that does not keep the total cannot desync it.
+                let mut total = self.charged;
+                if meter.charge(&mut total, grew).is_err() {
+                    self.frozen = true;
+                }
+                self.charged += grew;
+                if self.live.charge(grew) {
+                    self.frozen = true;
+                }
+            }
+            std::cmp::Ordering::Less => {
+                let shrank = refunded - added;
+                self.charged -= shrank;
+                self.live.release(shrank);
+            }
+            std::cmp::Ordering::Equal => {}
+        }
+    }
+
+    /// Return every charged byte to the shared counter.
+    pub(crate) fn release(&mut self) {
+        self.live.release(self.charged);
+        self.charged = 0;
+    }
+}
+
+impl Drop for MemoLedger {
+    fn drop(&mut self) {
+        self.release();
+    }
+}
+
 /// What a memo did, for PROFILE and tuning: counted after the warm-up.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct MemoStats {
@@ -169,8 +249,9 @@ impl MemoStats {
 }
 
 /// The memo's lifecycle: one field in place of the separate warm-up
-/// counter and frozen/disabled flags the earlier version carried, so the
-/// three can no longer disagree.
+/// counter and disabled flag the earlier version carried, so they can no
+/// longer disagree. Whether the table has stopped growing is the
+/// [`MemoLedger`]'s fact, not a phase.
 #[derive(Clone, Copy, Debug)]
 enum Phase {
     /// Below the policy's warm-up: the count of inputs answered by the
@@ -178,9 +259,6 @@ enum Phase {
     Warming(u32),
     /// The table is in use and growing.
     Active,
-    /// A meter, the ceiling or the query budget refused an insert: the
-    /// table stops growing, hits are still served.
-    Frozen,
     /// The hit-rate review dropped the table and the memo bypasses
     /// itself.
     Disabled,
@@ -193,27 +271,19 @@ pub(crate) struct Memo<T: MemoTable> {
     /// The lifecycle phase: warming, active, frozen or disabled.
     phase: Phase,
     table: T,
-    /// The table's running size as charged to the retained-container meter.
-    retained: u64,
+    /// The two-meter books of the table's bytes and the freeze a refusal
+    /// sets.
+    ledger: MemoLedger,
     /// Whether the one hit-rate review has run. Kept apart from `phase`
     /// because it is orthogonal: a memo can be reviewed while active or
     /// frozen, so it is a latch, not a phase.
     reviewed: bool,
-    /// This memo's share of the query's live memo bytes, returned on drop.
-    reserved: u64,
-    live: MemoLive,
     stats: MemoStats,
 }
 
 impl<T: MemoTable> Default for Memo<T> {
     fn default() -> Self {
         Self::new(MemoPolicy::MODERATE, MemoLive::default())
-    }
-}
-
-impl<T: MemoTable> Drop for Memo<T> {
-    fn drop(&mut self) {
-        self.release_reserved();
     }
 }
 
@@ -236,10 +306,8 @@ impl<T: MemoTable> Memo<T> {
             policy,
             phase,
             table: T::default(),
-            retained: 0,
+            ledger: MemoLedger::new(live),
             reviewed: false,
-            reserved: 0,
-            live,
             stats: MemoStats::default(),
         }
     }
@@ -275,7 +343,7 @@ impl<T: MemoTable> Memo<T> {
             // The warm-up is done: this input, and every later one, is a
             // probe.
             Phase::Warming(_) => self.phase = Phase::Active,
-            Phase::Active | Phase::Frozen => {}
+            Phase::Active => {}
         }
         let Some(key) = key() else {
             return compute();
@@ -306,13 +374,7 @@ impl<T: MemoTable> Memo<T> {
         if grew == 0 {
             return;
         }
-        if meter.charge(&mut self.retained, grew).is_err() {
-            self.phase = Phase::Frozen;
-        }
-        self.reserved += grew;
-        if self.live.charge(grew) {
-            self.phase = Phase::Frozen;
-        }
+        self.ledger.settle(meter, grew, 0);
     }
 
     /// The one hit-rate review, after the policy's window of probes: a
@@ -326,9 +388,8 @@ impl<T: MemoTable> Memo<T> {
         let floor = u64::from(self.policy.min_hit_percent);
         if self.stats.hits * 100 < self.stats.probes * floor {
             self.table = T::default();
-            self.retained = 0;
             self.phase = Phase::Disabled;
-            self.release_reserved();
+            self.ledger.release();
         }
     }
 
@@ -348,18 +409,12 @@ impl<T: MemoTable> Memo<T> {
 
     /// Whether the table has stopped growing.
     fn is_frozen(&self) -> bool {
-        matches!(self.phase, Phase::Frozen)
+        self.ledger.is_frozen()
     }
 
     /// Whether the memo bypasses itself (a zero ceiling or a failed review).
     fn is_disabled(&self) -> bool {
         matches!(self.phase, Phase::Disabled)
-    }
-
-    /// Return this memo's reserved share to the query's live total.
-    fn release_reserved(&mut self) {
-        self.live.release(self.reserved);
-        self.reserved = 0;
     }
 
     /// The table's exact allocation.

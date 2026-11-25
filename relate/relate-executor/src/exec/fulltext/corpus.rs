@@ -14,9 +14,9 @@ use relate_core::{PropertyMap, Value};
 
 use super::Analyzer;
 use crate::exec::candidates::index_population;
-use crate::exec::kernels::memo::MemoPolicy;
+use crate::exec::kernels::memo::{MemoLedger, MemoPolicy};
 use crate::metrics::MemoCounters;
-use crate::overlay::{ExecGraph, MemoLive};
+use crate::overlay::ExecGraph;
 use crate::recency::RecencySlots;
 use crate::redo::IndexDetailSpec;
 
@@ -239,8 +239,8 @@ struct CorpusSlot {
 /// runtime data): at most [`MEMO_CAPACITY`] slots, and — the bound that
 /// holds in *bytes* — the charged total of every retained corpus stays
 /// under the kernel memos' own ceiling (`MemoPolicy::moderate`). Every
-/// charge is the kernel memo's own three-part protocol
-/// (`Memo::remember`): through the statement's retained-container meter
+/// charge is the kernel memo's own settle protocol
+/// (`MemoLedger::settle`): through the statement's retained-container meter
 /// (ADR-0463), into the query's shared live-bytes counter (ADR-0657, so
 /// the joint per-statement bound sees the corpora — an evicted slot
 /// releases its share at once, and the memo's drop returns the rest)
@@ -255,35 +255,27 @@ pub(crate) struct CorpusMemo {
     state: RefCell<CorpusMemoState>,
 }
 
-/// The memo's live state: the recency-ordered slots, the one retained
-/// total, and the freeze flag a refused charge sets. The retained total
-/// is the meter's running number and the share charged to the query's
-/// live counter at once: every path moves both by the same net delta,
-/// and `charge_retained` adds before it checks, so the number is always
-/// the retained set's sum.
+/// The memo's live state: the recency-ordered slots and the shared
+/// two-meter books ([`MemoLedger`]), whose charged total is the retained
+/// set's sum and whose live counter is the graph's own `memo_live` — the
+/// same counter every kernel memo of the statement charges, so the corpora
+/// join the joint per-statement bound from the first insert.
 struct CorpusMemoState {
     slots: RecencySlots<CorpusSlot>,
-    charged: u64,
-    /// The query's shared live counter, captured at construction — the
-    /// graph's own `memo_live`, the same counter every kernel memo of
-    /// the statement charges, so the corpora join the joint
-    /// per-statement bound from the first insert.
-    live: MemoLive,
-    frozen: bool,
+    ledger: MemoLedger,
 }
 
 impl Drop for CorpusMemoState {
     /// The memo dies with its clause or call: the retained bytes fold
     /// into PROFILE's memo group when an arm is armed (the kernel
     /// memo's own drop fold, `MemoState::drop`, ADR-0654 — otherwise
-    /// nothing is read), then every corpus still retained returns its
-    /// share to the query's shared counter (`Memo::release_reserved`).
+    /// nothing is read); the ledger then returns every corpus still
+    /// retained to the query's shared counter as it drops.
     fn drop(&mut self) {
         crate::exec::record_memos(|| MemoCounters {
-            bytes: self.charged,
+            bytes: self.ledger.charged(),
             ..MemoCounters::default()
         });
-        self.live.release(self.charged);
     }
 }
 
@@ -296,9 +288,7 @@ impl CorpusMemo {
                 slots: RecencySlots::new(
                     NonZeroUsize::new(MEMO_CAPACITY).expect("a non-zero memo cap"),
                 ),
-                charged: 0,
-                live: graph.memo_live(),
-                frozen: false,
+                ledger: MemoLedger::new(graph.memo_live()),
             }),
         }
     }
@@ -327,8 +317,8 @@ impl CorpusMemo {
         // meters by the one comparison — the new corpus against the
         // evicted refund.
         let corpus = Rc::new(Corpus::build(graph, detail, index));
-        let ceiling = MemoPolicy::moderate(&state.live).max_bytes as u64;
-        if state.frozen || state.charged >= ceiling {
+        let ceiling = MemoPolicy::moderate(state.ledger.live()).max_bytes as u64;
+        if state.ledger.is_frozen() || state.ledger.charged() >= ceiling {
             return corpus;
         }
         let bytes = corpus.heap_bytes() as u64;
@@ -341,28 +331,9 @@ impl CorpusMemo {
                 charged: bytes,
             })
             .map_or(0, |evicted| evicted.charged);
-        // Both meters move by the same delta, so the one retained total
-        // serves both: growth charges each (a refusal on either freezes
-        // — the kernel memo charges the shared counter even after a
-        // meter refusal, and both add before they check), a shrink
-        // releases each, an equal swap touches neither.
-        match bytes.cmp(&refund) {
-            std::cmp::Ordering::Greater => {
-                let grew = bytes - refund;
-                if graph.charge_retained(&mut state.charged, grew).is_err() {
-                    state.frozen = true;
-                }
-                if state.live.charge(grew) {
-                    state.frozen = true;
-                }
-            }
-            std::cmp::Ordering::Less => {
-                let shrank = refund - bytes;
-                state.charged -= shrank;
-                state.live.release(shrank);
-            }
-            std::cmp::Ordering::Equal => {}
-        }
+        // The one settle (`MemoLedger::settle`): both meters move by the
+        // net of the new corpus over the evicted refund.
+        state.ledger.settle(graph, bytes, refund);
         corpus
     }
 }
@@ -453,7 +424,7 @@ mod tests {
         memo.corpus(&graph, &detail("n-overflow"), Analyzer::Standard);
         let state = memo.state.borrow();
         let sum_after = state.slots.iter().map(|slot| slot.charged).sum::<u64>();
-        assert_eq!(state.charged, sum_after);
+        assert_eq!(state.ledger.charged(), sum_after);
         assert_eq!(state.slots.len(), MEMO_CAPACITY);
         // The shared live counter (ADR-0657): every retained corpus
         // charges there too, an eviction releases at once, so the
@@ -504,7 +475,7 @@ mod tests {
     /// The running charged-bytes total, read through the private state
     /// for the byte-bound pins.
     fn charged_bytes(memo: &CorpusMemo) -> u64 {
-        memo.state.borrow().charged
+        memo.state.borrow().ledger.charged()
     }
 
     /// The memo's retained bytes fold into PROFILE's memo group at the
