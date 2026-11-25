@@ -6,7 +6,9 @@ use std::sync::atomic::Ordering;
 use std::sync::mpsc;
 use std::time::Duration;
 
-use crate::test_opts::{count, following, read_only, wait_count, writable};
+use crate::test_opts::{
+    count, every_second, following, published_image, read_only, wait_count, wal_segments, writable,
+};
 use crate::{Database, Error, FollowGapPolicy, OpenOptions};
 
 #[test]
@@ -422,4 +424,98 @@ fn ensure_writable_refuses_retryably_only_while_draining() {
     shared.draining.store(false, Ordering::Release);
 
     assert!(crate::ensure_writable(&shared).is_ok());
+}
+
+#[test]
+fn a_writer_detach_writes_one_checkpoint_and_frees_the_lease_before_the_drop() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("db");
+    let manifest = path.join("manifest.json");
+    let uri = path.to_str().unwrap();
+    let writer = Database::open_with(uri, writable()).unwrap();
+    writer.connect().unwrap().execute("CREATE (:Seed)").unwrap();
+    writer.checkpoint().unwrap();
+    let before = published_image(&manifest);
+    for _ in 0..3 {
+        writer.connect().unwrap().execute("CREATE (:Tail)").unwrap();
+    }
+
+    writer.demote().unwrap();
+    let detached = published_image(&manifest);
+    assert_ne!(detached, before, "the detach publishes the dirty tail");
+
+    // The lease is free the moment `demote` returns, while the detaching
+    // handle is still alive: the next worker's promote takes it.
+    let next = Database::open_with(uri, following()).unwrap();
+    wait_count(&next, "Tail", 3);
+    next.promote().unwrap();
+
+    drop(writer);
+    assert_eq!(
+        published_image(&manifest),
+        detached,
+        "the drop after `demote` writes no second checkpoint"
+    );
+    assert_eq!(count(&next, "Tail"), 3);
+}
+
+#[test]
+fn a_writer_detach_under_every_second_leaves_every_acknowledged_commit_in_the_checkpoint() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("db");
+    let uri = path.to_str().unwrap();
+    let writer = Database::open_with(uri, every_second()).unwrap();
+    writer.connect().unwrap().execute("CREATE (:Seed)").unwrap();
+    writer.checkpoint().unwrap();
+    for _ in 0..20 {
+        writer
+            .connect()
+            .unwrap()
+            .execute("CREATE (:Acked)")
+            .unwrap();
+    }
+    writer.demote().unwrap();
+    drop(writer);
+
+    // Delete every WAL segment: whatever is left must come from the checkpoint
+    // alone, so no acknowledged commit depends on a WAL tail the detach left.
+    let segments = wal_segments(&path);
+    assert!(
+        !segments.is_empty(),
+        "the WAL segments were found and deleted"
+    );
+    for segment in segments {
+        std::fs::remove_file(segment).unwrap();
+    }
+    let reopened = Database::open_with(uri, writable()).unwrap();
+    assert_eq!(count(&reopened, "Acked"), 20);
+    assert_eq!(count(&reopened, "Seed"), 1);
+}
+
+#[test]
+fn a_follower_detach_is_a_drop_that_writes_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("db");
+    let uri = path.to_str().unwrap();
+    let manifest = path.join("manifest.json");
+    let writer = Database::open_with(uri, every_second()).unwrap();
+    writer.connect().unwrap().execute("CREATE (:Seed)").unwrap();
+    writer.checkpoint().unwrap();
+    writer.connect().unwrap().execute("CREATE (:Tail)").unwrap();
+
+    let follower = Database::open_with(uri, following()).unwrap();
+    wait_count(&follower, "Tail", 1);
+    let before = published_image(&manifest);
+    follower.checkpoint_if_writable().unwrap();
+    drop(follower);
+    assert_eq!(
+        published_image(&manifest),
+        before,
+        "a follower owns no snapshot to publish"
+    );
+
+    // The writer's tail is untouched: its own detach still publishes it.
+    writer.demote().unwrap();
+    let fresh = Database::open_with(uri, following()).unwrap();
+    assert_eq!(count(&fresh, "Tail"), 1);
 }

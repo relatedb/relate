@@ -192,11 +192,7 @@ fn everysecond_worker_barriers_dirty_wal() {
     let dir = tempfile::tempdir().unwrap();
     let db = Database::open_with(
         dir.path().to_str().unwrap(),
-        OpenOptions {
-            checkpoint_interval: Some(Duration::ZERO),
-            durability_mode: Some(DurabilityMode::EverySecond),
-            ..Default::default()
-        },
+        crate::test_opts::every_second(),
     )
     .unwrap();
     db.connect().unwrap().query("CREATE (:N)").unwrap();

@@ -6,6 +6,7 @@
 //! writes. Split from `tests.rs` (the no-1k-line rule).
 
 use super::*;
+use crate::test_opts::published_image;
 
 /// The markdown-codec open options every test in this suite opens with.
 fn md_opts() -> crate::OpenOptions {
@@ -13,16 +14,6 @@ fn md_opts() -> crate::OpenOptions {
         snapshot_codec: Some(SnapshotCodecKind::Markdown),
         ..Default::default()
     }
-}
-
-/// A store's published image, stamped for the skip tests: the bytes
-/// and the modification time the skip must leave untouched (a rewrite
-/// — even of identical bytes through the tmp/rename publication —
-/// stamps a fresh mtime).
-fn published_image(path: &std::path::Path) -> (Vec<u8>, std::time::SystemTime) {
-    let bytes = std::fs::read(path).unwrap();
-    let mtime = std::fs::metadata(path).unwrap().modified().unwrap();
-    (bytes, mtime)
 }
 
 /// The exit checkpoint of an unchanged session over a published

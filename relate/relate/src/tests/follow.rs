@@ -5,7 +5,7 @@ use std::io::Read;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::test_opts::{count, following, wait_count, writable};
+use crate::test_opts::{count, following, latest_wal_segment, wait_count, writable};
 use crate::{Database, Error, FollowGapPolicy, OpenOptions, Value};
 
 #[test]
@@ -262,7 +262,7 @@ fn follow_truncation_reloads_without_trimming() {
     follower.park_follow();
     writer.leak_without_checkpoint();
 
-    let segment = wal_segment(&path);
+    let segment = latest_wal_segment(&path);
     let before = fs::metadata(&segment).unwrap().len();
     assert!(before > 8);
     let file = fs::OpenOptions::new().write(true).open(&segment).unwrap();
@@ -345,7 +345,7 @@ fn follow_trimmed_tail_reloads_instead_of_applying_regrowth() {
     follower.park_follow();
     writer.leak_without_checkpoint();
 
-    let segment = wal_segment(&path);
+    let segment = latest_wal_segment(&path);
     let mut bytes = fs::read(&segment).unwrap();
     let magic = relate_storage::MAGIC.len();
     assert!(bytes.len() > magic);
@@ -483,16 +483,6 @@ fn follow_transient_poll_error_clears_on_the_next_apply() {
     }
     assert_eq!(follower.follow_reloads(), 0);
     follower.connect().unwrap();
-}
-
-fn wal_segment(root: &std::path::Path) -> std::path::PathBuf {
-    let mut logs: Vec<_> = fs::read_dir(root.join("wal"))
-        .unwrap()
-        .map(|ent| ent.unwrap().path())
-        .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("log"))
-        .collect();
-    logs.sort();
-    logs.pop().unwrap()
 }
 
 #[test]
