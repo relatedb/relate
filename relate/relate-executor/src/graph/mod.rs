@@ -92,6 +92,7 @@ mod research;
 #[cfg(test)]
 pub(crate) mod test_support;
 mod theater;
+mod unposted;
 
 pub(crate) use declared::{spatial_holds, trigram_count, Extremum, RangeSeek, SpatialSeek};
 use declared::{GramIndex, PointIndex, RangeIndex};
