@@ -213,10 +213,7 @@ fn served(
     if !seek.servable(graph, labels, label_seekable) {
         return None;
     }
-    match cap {
-        Some(cap) => seek.serve_upto(graph, labels, cap),
-        None => seek.serve(graph, labels),
-    }
+    seek.serve(graph, labels, cap)
 }
 
 fn index_leaf(var: &SmallName, expr: &Expr, ctx: &OrCtx<'_>) -> IndexArm {
@@ -357,7 +354,7 @@ impl Prepared<'_> {
     /// ([`Seek::is_point`]); the first served seek decides, so any other
     /// served seek answers the pattern without a bounded list and the ask
     /// declines. `None`: no point seek serves the pattern. `cap` is the
-    /// ask's stop ([`Seek::serve_upto`]): a served answer longer than it
+    /// ask's stop ([`Seek::serve`]): a served answer longer than it
     /// is a subset meaningful only by its length.
     fn first_point(&self, graph: &ExecGraph<'_>, cap: Option<usize>) -> Option<ServedIds> {
         for seek in &self.seeks {

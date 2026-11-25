@@ -183,7 +183,7 @@ impl FarProbe {
         // filters by membership only.
         let mut served: Option<ServedIds> = None;
         for seek in &node.seeks {
-            let Some(answer) = seek.serve(graph, &node.labels) else {
+            let Some(answer) = seek.serve(graph, &node.labels, None) else {
                 continue;
             };
             #[cfg(test)]

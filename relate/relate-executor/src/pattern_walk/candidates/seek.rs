@@ -90,7 +90,19 @@ impl Seek {
     /// Candidate ids tagged exact-or-superset, or `None` when no index
     /// serves this seek (the TEXT index also declines an empty
     /// `CONTAINS` needle).
-    pub(crate) fn serve(&self, graph: &ExecGraph<'_>, labels: &[String]) -> Option<ServedIds> {
+    ///
+    /// `cap` is the point ask's stop (`None`: the full answer): a property
+    /// `=` / `IN` point seek streams its postings and stops at `cap + 1`
+    /// matches ([`ExecGraph::lookup_point_upto`]), so an answer longer than
+    /// `cap` is an arbitrary subset meaningful only by its length. Every
+    /// other seek answers in full whatever `cap` is — an ids seek is
+    /// bounded by its list, and no other seek is a point lookup.
+    pub(crate) fn serve(
+        &self,
+        graph: &ExecGraph<'_>,
+        labels: &[String],
+        cap: Option<usize>,
+    ) -> Option<ServedIds> {
         let ids = match self {
             Seek::Ids(ids) => ids
                 .iter()
@@ -101,7 +113,10 @@ impl Seek {
                 graph.lookup_string_contains(labels, key, n)?
             }
             Seek::Text(key, StringSeek::Prefix(n)) => graph.lookup_string_prefix(labels, key, n)?,
-            Seek::Range(key, seek) => graph.lookup_range(labels, key, seek)?,
+            Seek::Range(key, seek) => match cap {
+                Some(cap) if self.is_point() => graph.lookup_point_upto(labels, key, seek, cap)?,
+                _ => graph.lookup_range(labels, key, seek)?,
+            },
             Seek::Spatial(key, seek) => graph.lookup_spatial(labels, key, seek)?,
         };
         Some(if self.indexed() {
@@ -109,27 +124,6 @@ impl Seek {
         } else {
             ServedIds::Exact(ids)
         })
-    }
-
-    /// [`Self::serve`] for a caller that only needs the ids when at most
-    /// `cap` match (the point ask): a property `=` / `IN` point seek
-    /// streams its postings and stops at `cap + 1` matches
-    /// ([`ExecGraph::lookup_point_upto`]), so an answer longer than `cap`
-    /// is an arbitrary subset meaningful only by its length. Every other
-    /// seek answers in full — an ids seek is bounded by its list, and no
-    /// other seek is a point lookup.
-    pub(crate) fn serve_upto(
-        &self,
-        graph: &ExecGraph<'_>,
-        labels: &[String],
-        cap: usize,
-    ) -> Option<ServedIds> {
-        match self {
-            Seek::Range(key, seek) if self.is_point() => graph
-                .lookup_point_upto(labels, key, seek, cap)
-                .map(ServedIds::Superset),
-            _ => self.serve(graph, labels),
-        }
     }
 
     /// `Some(n)` is an upper bound on the ids this seek would materialize.
