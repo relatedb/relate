@@ -98,6 +98,8 @@ impl Graph {
                     prop_pair_post(st, id, GroupKey::for_property_index(val).as_ref());
                 });
             },
+            // Relationship keys have no statistics (ADR-0696).
+            || None,
             read,
         )
     }

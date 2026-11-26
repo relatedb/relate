@@ -152,6 +152,7 @@ SHOW FUNCTIONS;           -- every built-in the binder accepts
 CALL db.schema.nodeTypeProperties();  -- inferred node property types + mandatory
 CALL db.schema.relTypeProperties();   -- inferred rel property types + mandatory
 CALL db.schema.visualization();       -- virtual schema graph (nodes per label, rels per triple)
+CALL db.stats.retrieve('GRAPH COUNTS');  -- data.keyStatistics: distinct counts, min/max, heavy values of the keys the engine has measured (built lazily; a read never builds)
 -- labels and relationship types in the data:
 MATCH (n) UNWIND labels(n) AS l RETURN DISTINCT l ORDER BY l;
 MATCH ()-[r]->() RETURN DISTINCT type(r) AS relType ORDER BY relType;

@@ -7,6 +7,7 @@ mod bookmarks;
 mod catalog;
 mod ephemeral;
 mod follow;
+mod key_statistics_counts;
 mod label_stats;
 mod memory;
 mod namespace;

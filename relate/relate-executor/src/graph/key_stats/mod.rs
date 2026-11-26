@@ -171,6 +171,15 @@ impl KeyStatsState {
         None
     }
 
+    /// The published statistics of one key without recording a request:
+    /// the read for a consumer that benefits from statistics when they
+    /// exist but must not make a build happen on their account.
+    fn peek(&self, label: u32, key: u32) -> Option<Arc<KeyStats>> {
+        self.published
+            .get(&(label, key))
+            .map(|found| Arc::clone(&found))
+    }
+
     fn request(&self, label: u32) {
         match self.labels.entry(label) {
             dashmap::mapref::entry::Entry::Vacant(slot) => {
@@ -310,6 +319,13 @@ impl KeyStatsState {
     }
 }
 
+/// One published key's statistics beside the decoded names it belongs to.
+pub(crate) struct PublishedKeyStats {
+    pub(crate) label: Arc<str>,
+    pub(crate) property: Arc<str>,
+    pub(crate) stats: Arc<KeyStats>,
+}
+
 impl Graph {
     /// The statistics epoch: a monotonic count of changes to what
     /// [`Graph::key_stats`] can answer (a label's statistics published,
@@ -333,6 +349,21 @@ impl Graph {
             return None;
         }
         self.indexes.key_stats.get(label, key)
+    }
+
+    /// The distinct count the equality pair's build sizes its table from:
+    /// the key's PUBLISHED statistics, read without a request. A pair build
+    /// happens once per process (the pair is lazy and kept), so a request
+    /// made on its behalf would scan the label to benefit a build that has
+    /// already happened; the build uses statistics only when an earlier
+    /// consult had them built, and never waits for or asks for a build.
+    /// `None` while the label is unbuilt, stale, or the key was declined,
+    /// and for the unsupported any-label bucket.
+    pub(super) fn published_distinct(&self, label: u32, key: u32) -> Option<u64> {
+        if label == self.indexes.star_label_id {
+            return None;
+        }
+        self.indexes.key_stats.peek(label, key).map(|s| s.distinct)
     }
 
     /// [`Graph::key_stats`] by name; `None` when either name was never
@@ -381,6 +412,30 @@ impl Graph {
         for &label in labels {
             self.indexes.key_stats.note_write(label);
         }
+    }
+
+    /// Every published key's statistics beside its decoded label and
+    /// property names, ordered by `(label, property)`: the read-only
+    /// snapshot a surface lists. It reads the published map alone, so it
+    /// never records a build request and never builds, and only labels
+    /// whose statistics are currently built (not stale, not evicted) appear.
+    pub(crate) fn published_key_statistics(&self) -> Vec<PublishedKeyStats> {
+        let mut all: Vec<PublishedKeyStats> = self
+            .indexes
+            .key_stats
+            .published
+            .iter()
+            .map(|entry| {
+                let (label, key) = *entry.key();
+                PublishedKeyStats {
+                    label: self.interner.get(label),
+                    property: self.interner.get(key),
+                    stats: Arc::clone(entry.value()),
+                }
+            })
+            .collect();
+        all.sort_by(|a, b| (&*a.label, &*a.property).cmp(&(&*b.label, &*b.property)));
+        all
     }
 
     /// Published statistics of every key of `label`, for tests and the

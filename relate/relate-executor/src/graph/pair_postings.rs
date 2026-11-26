@@ -121,10 +121,9 @@ struct Table<K> {
 }
 
 impl<K: Eq + Hash> Table<K> {
-    /// Reserve the buckets `rest` more candidates will add, at the rate the
-    /// first `prefix` candidates produced them.
-    fn reserve_rest(&mut self, prefix: usize, rest: usize) {
-        self.map.reserve(self.len().saturating_mul(rest) / prefix);
+    /// Reserve room for `additional` more buckets.
+    fn reserve(&mut self, additional: usize) {
+        self.map.reserve(additional);
     }
 
     fn new() -> Self {
@@ -255,15 +254,43 @@ impl PairPostings {
         }
     }
 
-    /// Decide, after the build's first [`PRESIZE_PREFIX`] candidates, whether
-    /// the key looks unique and the table should reserve for the rest: when
-    /// the prefix's buckets are nearly as many as its posted ids, the table
-    /// that took most keys reserves the buckets the remaining `total -
-    /// prefix` candidates will add at the prefix's rate. A key with few
-    /// distinct values reserves nothing, so a build over a million-node
-    /// label with five values never sizes a table for a million.
-    pub(super) fn presize(&mut self, prefix: usize, total: usize) {
+    /// Reserve in the table that took most keys, the one choice rule both
+    /// presize paths share: `additional` is told that table's bucket count
+    /// and answers how many more buckets to make room for.
+    fn reserve_in_busiest(&mut self, additional: impl FnOnce(usize) -> usize) {
+        if self.ints.len() >= self.others.len() {
+            let more = additional(self.ints.len());
+            self.ints.reserve(more);
+        } else {
+            let more = additional(self.others.len());
+            self.others.reserve(more);
+        }
+    }
+
+    /// Size the table once, after the build's first `prefix` candidates, so
+    /// it never doubles beside its predecessor (peak at steady state).
+    ///
+    /// With a `distinct` count published for the key (the key statistics'
+    /// distinct estimate, about 3% off) the statistics decide: the busiest
+    /// table reserves `distinct` plus a 5% margin, capped at `total`, minus
+    /// the buckets it already holds. The sample is not consulted, so a prefix
+    /// that is not representative (sorted or clustered ids) no longer
+    /// misleads the build. A key with few distinct values reserves next to
+    /// nothing, so a million-node label with five values never sizes a
+    /// table for a million.
+    ///
+    /// Without statistics the prefix is the evidence: when its buckets are
+    /// nearly as many as its posted ids the key looks unique, and the table
+    /// reserves the buckets the remaining `total - prefix` candidates will
+    /// add at the prefix's rate; otherwise it reserves nothing.
+    pub(super) fn presize(&mut self, prefix: usize, total: usize, distinct: Option<u64>) {
         if prefix == 0 || total <= prefix {
+            return;
+        }
+        if let Some(distinct) = distinct {
+            let distinct = usize::try_from(distinct).unwrap_or(usize::MAX);
+            let want = distinct.saturating_add(distinct / 20).min(total);
+            self.reserve_in_busiest(|held| want.saturating_sub(held));
             return;
         }
         let buckets = self.ints.len() + self.others.len();
@@ -272,11 +299,14 @@ impl PairPostings {
             return;
         }
         let rest = total - prefix;
-        if self.ints.len() >= self.others.len() {
-            self.ints.reserve_rest(prefix, rest);
-        } else {
-            self.others.reserve_rest(prefix, rest);
-        }
+        self.reserve_in_busiest(|held| held.saturating_mul(rest) / prefix);
+    }
+
+    /// The two tables' bucket capacities, `(integer, general)`: what a
+    /// build's growth (or its absence) leaves visible to a test.
+    #[cfg(test)]
+    pub(super) fn capacities(&self) -> (usize, usize) {
+        (self.ints.map.capacity(), self.others.map.capacity())
     }
 
     /// Release the capacity a build's appends left behind: every `Many`

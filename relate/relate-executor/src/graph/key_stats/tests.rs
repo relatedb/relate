@@ -135,6 +135,68 @@ fn publishing_nothing_leaves_the_epoch_alone() {
     );
 }
 
+/// The pair build reads the key's published distinct count WITHOUT asking
+/// for a build: a pair is built once, so a request made for it would scan the
+/// label to benefit a build that has already happened.
+#[test]
+fn the_pair_builds_distinct_hint_never_requests_a_build() {
+    let g = graph(2_000, |i| props(&[("k", Value::Int(i))]));
+    let (label, key) = (
+        g.interner.get_id("P").unwrap(),
+        g.interner.get_id("k").unwrap(),
+    );
+
+    assert_eq!(g.published_distinct(label, key), None, "unbuilt");
+    assert!(!g.has_pending_key_stats(), "a peek never requests");
+
+    assert!(g.key_stats_named("P", "k").is_none(), "a consult requests");
+    assert!(g.has_pending_key_stats());
+    assert_eq!(
+        g.published_distinct(label, key),
+        None,
+        "requested, not built"
+    );
+    assert_eq!(pump(&g), 1);
+
+    let distinct = g.published_distinct(label, key).expect("published");
+    assert!(
+        (1_900..=2_100).contains(&distinct),
+        "2,000 unique values: {distinct}"
+    );
+    assert!(!g.has_pending_key_stats(), "the peek asked for nothing");
+}
+
+#[test]
+fn the_distinct_hint_is_withdrawn_when_the_label_goes_stale_and_for_the_star() {
+    let g = graph(500, |i| props(&[("k", Value::Int(i))]));
+    let (label, key) = (
+        g.interner.get_id("P").unwrap(),
+        g.interner.get_id("k").unwrap(),
+    );
+    consult_and_build(&g, "P", "k").expect("built");
+    assert!(g.published_distinct(label, key).is_some());
+
+    // Writes past the stale threshold age the statistics out.
+    g.begin_write().unwrap();
+    for i in 0..200 {
+        g.create_node(vec!["P".into()], props(&[("k", Value::Int(10_000 + i))]))
+            .unwrap();
+    }
+    g.commit_write();
+    assert_eq!(
+        g.published_distinct(label, key),
+        None,
+        "stale: the sample decides"
+    );
+
+    let star = g.interner.get_id("*").unwrap();
+    assert_eq!(
+        g.published_distinct(star, key),
+        None,
+        "the any-label bucket"
+    );
+}
+
 #[test]
 fn the_pending_flag_tracks_requests_for_the_seams_fast_path() {
     let g = graph(10, |i| props(&[("k", Value::Int(i))]));

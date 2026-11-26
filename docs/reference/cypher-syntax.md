@@ -861,6 +861,52 @@ RETURN size(relationships) AS relationshipCount;
 These procedures report no counts; use plain Cypher
 (`MATCH (n:Label) RETURN count(n)`) for aggregates.
 
+`db.stats.retrieve('GRAPH COUNTS')` (ADR-0497, ADR-0696) returns one row of
+`section` (the argument echoed back) and `data`, a map with three lists:
+`constraints` and `indexes` (one entry per named constraint or index, the
+rows `SHOW CONSTRAINTS` and `SHOW INDEXES` render) and `keyStatistics`, the
+per-key value statistics the engine has built. Any other section name is an
+`InvalidArgumentValue` error, and a `null` section is rejected the same way.
+
+`keyStatistics` lists one entry per `(label, property)` whose statistics are
+**currently built**, ordered by label then property. The engine builds a
+label's statistics lazily, on the first planning consult of one of its keys
+(one scan of the label covers all of its keys), and serves the build after a
+later statement completes; a write burst past a threshold ages them out. So
+a label nothing has consulted is absent, and **reading the counts never
+builds or requests a build**: the list is the built set as of the statement.
+Only value types worth an estimate are measured: integers, booleans, floats
+(not NaN), temporal values, points, node and relationship references and
+strings up to 64 bytes; a key whose values are mostly long strings, lists or
+vectors has no entry. Each entry is a map:
+
+| Key | Type | Meaning |
+|-----|------|---------|
+| `label`, `property` | `STRING` | the decoded names |
+| `provenance` | `STRING` | `sketched` (an estimate); `upperBound` and `exact` are reserved for answers read off an index or a built equality pair |
+| `count` | `INTEGER` | values measured |
+| `declined` | `INTEGER` | values of the key the type gate skipped |
+| `distinct` | `INTEGER` | estimated number of distinct values (a sketch, about 3% error), never above `count` |
+| `min`, `max` | value or `null` | smallest and largest value, for a key whose values are numbers, booleans or one temporal kind; `null` otherwise (strings, mixed kinds) |
+| `sum`, `mean` | `INTEGER`/`FLOAT` or `null` | for numeric keys; `null` for other keys, and `mean` is `null` when the sum is not finite |
+| `heavy` | `LIST<MAP>` | the values clearly frequent (roughly above a tenth of the rows), each `{value, count}`; the `count` is an upper bound, and a key with no dominant value lists none |
+
+```cypher
+CREATE (:City {country: 'DE', pop: 3600000}), (:City {country: 'DE', pop: 1800000});
+-- statistics are built after a planning consult, so the first statements
+-- over a label list nothing; then:
+CALL db.stats.retrieve('GRAPH COUNTS')
+YIELD data
+RETURN data.keyStatistics AS keyStatistics;
+```
+
+The statistics are best effort (a bounded budget keeps the structured keys
+first when a graph has very many) and are recomputed, not persisted: they
+are empty after a restart until a consult asks again. The procedure is the
+same row of `SHOW PROCEDURES`; only its payload grew. These behaviours are
+pinned by the executor tests in `graph_counts/key_statistics_tests.rs` and the
+`Connection` tests in `tests/key_statistics_counts.rs`.
+
 ### EXISTS subquery
 
 Test if a pattern exists as a boolean expression:
