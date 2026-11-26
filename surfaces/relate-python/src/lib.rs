@@ -38,7 +38,7 @@
 //!
 //! # Threading
 //!
-//! `execute` / `execute_arrow` release the GIL (`py.allow_threads`) around the
+//! `execute` / `execute_arrow` release the GIL (`py.detach`) around the
 //! Rust engine call, so other Python threads make progress while a query runs.
 //! A `Database` is thread-affine (the DB-API `threadsafety` level is 1: module
 //! shareable, connections not): it records the thread that opened it and every
@@ -265,7 +265,7 @@ impl Drop for Database {
     }
 }
 
-/// A Rust-side execution error carried out of `allow_threads` (where the GIL is
+/// A Rust-side execution error carried out of `detach` (where the GIL is
 /// released and a `PyErr` cannot be constructed), mapped to a `PyErr` once the
 /// GIL is reacquired.
 enum ExecError {
@@ -354,7 +354,7 @@ impl Database {
     /// window, with the `ExecError` mapped to a `PyErr` once the GIL is
     /// back. The connection guard stays on this thread for the window's
     /// whole duration; the closure captures a `&mut` reborrow of it, which
-    /// is `Send` (pyo3's `allow_threads` takes any `Send` capture — the
+    /// is `Send` (pyo3's `detach` takes any `Send` capture — the
     /// engine connection carries no Python/GIL-bound state), so no unsafe
     /// pointer is needed to cross the GIL-release boundary.
     fn run_engine_off_gil<T: Send>(
@@ -367,7 +367,7 @@ impl Database {
         let rust_params = optional_params_to_cypher(params)?;
         let mut conn = self.lock_conn(py)?;
         let connection: &mut RelateConnection = &mut conn;
-        let out = py.allow_threads(move || {
+        let out = py.detach(move || {
             let params = rust_params
                 .into_iter()
                 .map(|(key, value)| (key, cypher_to_value(&value)))
@@ -487,7 +487,7 @@ impl Database {
         py: Python<'_>,
         query: &str,
         params: Option<&Bound<'_, PyAny>>,
-    ) -> PyResult<PyObject> {
+    ) -> PyResult<Py<PyAny>> {
         // Serialize the engine result to Arrow IPC in the same GIL-release
         // window the query ran in.
         let buf = self.run_engine_off_gil(py, query, params, |result| {

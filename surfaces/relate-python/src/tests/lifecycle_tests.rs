@@ -117,7 +117,7 @@ fn foreign_thread_engine_use_raises_typed_error_not_panic() {
         (db, keep)
     });
     let refusal = std::thread::spawn(move || {
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             match db.call_method(py, "execute", ("MATCH (n) RETURN n",), None) {
                 // A panic here (pyo3's unsendable assertion) is exactly the
                 // regression this test guards against (GH #352 / LABS-700).
@@ -151,7 +151,7 @@ fn foreign_thread_drop_runs_deferred_cleanup_and_persists() {
         // Releasing the last reference here runs the pyclass `Drop` (the
         // deferred checkpoint) on this thread — the unsendable design turned
         // this into an unraisable RuntimeError (GH #352 / LABS-700).
-        Python::with_gil(|_py| drop(db));
+        Python::attach(|_py| drop(db));
     })
     .join()
     .unwrap();

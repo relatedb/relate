@@ -187,7 +187,7 @@ impl Vector {
     /// Equal when the coordinate type and every coordinate are equal — the
     /// engine's vector equality.
     fn __eq__(&self, other: &Bound<'_, PyAny>) -> bool {
-        match other.downcast::<Vector>() {
+        match other.cast::<Vector>() {
             Ok(o) => {
                 let o = o.get();
                 o.coord == self.coord && o.values == self.values

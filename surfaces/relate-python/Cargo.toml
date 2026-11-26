@@ -21,7 +21,7 @@ relate-arrow = { workspace = true }
 # Deliberately not the workspace pyo3 (which force-enables extension-module):
 # `cargo test` needs to link libpython, while maturin wheel builds enable
 # extension-module via [tool.maturin] features in pyproject.toml.
-pyo3 = { version = "0.23", features = ["abi3-py39"] }
+pyo3 = { version = "0.30", features = ["abi3-py39"] }
 indexmap = { workspace = true }
 chrono = { workspace = true }
 serde_json = { workspace = true }

@@ -6,7 +6,7 @@ use crate::result::stats_to_map;
 
 /// The keys of a Python dict, in iteration order.
 fn dict_keys(dict: &Bound<'_, PyAny>) -> Vec<String> {
-    dict.downcast::<PyDict>()
+    dict.cast::<PyDict>()
         .unwrap()
         .keys()
         .iter()

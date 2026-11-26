@@ -18,7 +18,7 @@ use crate::walk::Walk;
 /// lists or maps raise `ValueError` instead of overflowing the stack.
 fn copy_value_at<'py>(value: &Bound<'py, PyAny>, walk: &mut Walk) -> PyResult<Bound<'py, PyAny>> {
     let py = value.py();
-    if let Ok(list) = value.downcast::<PyList>() {
+    if let Ok(list) = value.cast::<PyList>() {
         walk.enter(value, |walk| {
             let out = PyList::empty(py);
             for item in list.iter() {
@@ -26,7 +26,7 @@ fn copy_value_at<'py>(value: &Bound<'py, PyAny>, walk: &mut Walk) -> PyResult<Bo
             }
             Ok(out.into_any())
         })
-    } else if let Ok(dict) = value.downcast::<PyDict>() {
+    } else if let Ok(dict) = value.cast::<PyDict>() {
         Ok(copy_dict(py, dict, walk)?.into_any())
     } else {
         Ok(value.clone())
@@ -82,16 +82,16 @@ impl Node {
 
     /// The property keys, so `dict(node)` is the property dict (the Neo4j
     /// driver's behavior) and `**node` works.
-    fn keys(&self, py: Python<'_>) -> PyResult<PyObject> {
+    fn keys(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         Ok(self.properties.bind(py).call_method0("keys")?.unbind())
     }
 
     /// The property pairs, like the driver entity's `items()`.
-    fn items(&self, py: Python<'_>) -> PyResult<PyObject> {
+    fn items(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         Ok(self.properties.bind(py).call_method0("items")?.unbind())
     }
 
-    fn __getitem__(&self, py: Python<'_>, key: &str) -> PyResult<PyObject> {
+    fn __getitem__(&self, py: Python<'_>, key: &str) -> PyResult<Py<PyAny>> {
         match self.properties.bind(py).get_item(key)? {
             Some(v) => Ok(v.unbind()),
             None => Err(PyKeyError::new_err(key.to_string())),
@@ -103,7 +103,7 @@ impl Node {
     }
 
     fn __eq__(&self, other: &Bound<'_, PyAny>) -> bool {
-        match other.downcast::<Node>() {
+        match other.cast::<Node>() {
             Ok(o) => o.borrow().id == self.id,
             Err(_) => false,
         }
@@ -177,12 +177,12 @@ impl Relationship {
 
     /// The property keys, so `dict(relationship)` is the property dict (the
     /// Neo4j driver's behavior) and `**relationship` works.
-    fn keys(&self, py: Python<'_>) -> PyResult<PyObject> {
+    fn keys(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         Ok(self.properties.bind(py).call_method0("keys")?.unbind())
     }
 
     /// The property pairs, like the driver entity's `items()`.
-    fn items(&self, py: Python<'_>) -> PyResult<PyObject> {
+    fn items(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         Ok(self.properties.bind(py).call_method0("items")?.unbind())
     }
 
@@ -198,7 +198,7 @@ impl Relationship {
         self.end_node
     }
 
-    fn __getitem__(&self, py: Python<'_>, key: &str) -> PyResult<PyObject> {
+    fn __getitem__(&self, py: Python<'_>, key: &str) -> PyResult<Py<PyAny>> {
         match self.properties.bind(py).get_item(key)? {
             Some(v) => Ok(v.unbind()),
             None => Err(PyKeyError::new_err(key.to_string())),
@@ -206,7 +206,7 @@ impl Relationship {
     }
 
     fn __eq__(&self, other: &Bound<'_, PyAny>) -> bool {
-        match other.downcast::<Relationship>() {
+        match other.cast::<Relationship>() {
             Ok(o) => o.borrow().id == self.id,
             Err(_) => false,
         }
@@ -393,7 +393,7 @@ impl Point {
     }
 
     fn __eq__(&self, other: &Bound<'_, PyAny>) -> bool {
-        match other.downcast::<Point>() {
+        match other.cast::<Point>() {
             Ok(o) => {
                 let o = o.borrow();
                 o.srid == self.srid && o.x == self.x && o.y == self.y && o.z == self.z
