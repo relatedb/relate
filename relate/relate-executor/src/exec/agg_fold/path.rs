@@ -10,7 +10,7 @@ use relate_names::NamedToken;
 
 use crate::eval::{binary, eval};
 use crate::group_key::GroupKey;
-use crate::hash_seed::{seeded_map, IdMap, SeededMap};
+use crate::hash_seed::{seeded_map, FxBuildHasher, IdMap, SeededMap};
 use crate::overlay::{ExecGraph, RetainedTotal, SeatShape};
 use crate::pattern_walk::{binding, node_candidates, rel_props_ok, Binding, NodeBinding};
 use crate::row::Row;
@@ -29,7 +29,32 @@ use super::{
 /// group's aggregate pairs — each count seat structurally paired with the
 /// [`StreamAgg`] it feeds, so the offer site consumes pairs and never
 /// zips two same-length vectors by position.
-type Groups = IndexMap<Vec<GroupKey>, (Vec<Value>, Vec<(CountSeat, StreamAgg)>)>;
+type Groups = IndexMap<Vec<GroupKey>, GroupSlot>;
+
+/// One group: the key values beside the group's aggregate pairs.
+type GroupSlot = (Vec<Value>, Vec<(CountSeat, StreamAgg)>);
+
+/// The node-counted fold's per-node binding counts, in first-seen order
+/// (so the groups the collapse lands keep the per-binding table's order).
+type NodeCounts = IndexMap<NodeId, i64, FxBuildHasher>;
+
+/// The node-counted fold's collapsed groups: the key values beside the one
+/// count every plain-count seat reports.
+type NodeGroups = IndexMap<Vec<GroupKey>, (Vec<Value>, i64)>;
+
+/// The retained bytes per slot of a node-count map's capacity: the
+/// `(hash, id, count)` bucket plus its index slot, rounded up for the
+/// index table's load headroom. Charged on capacity growth, ahead of the
+/// allocation, never per entry.
+const NODE_COUNT_SLOT_BYTES: u64 = 40;
+
+/// What the fold accumulates into, selected once from the plan's key plan:
+/// the per-binding group table, or per-key-node binding counts the end of
+/// the walk collapses into groups ([`KeyPlan::NodeCounted`]).
+enum Accum {
+    PerBinding(Groups),
+    NodeCounted { slot: usize, counts: NodeCounts },
+}
 
 struct HopEnd {
     start: NodeId,
@@ -53,11 +78,11 @@ struct FoldEnv<'a> {
     params: &'a BTreeMap<String, Value>,
     plan: &'a PathPlan,
     caches: &'a mut FoldCaches,
-    /// The group table the fold accumulates into rides the env the way
+    /// The accumulator the fold lands bindings into rides the env the way
     /// `caches` does, so the recursive `fold_steps` frames forward only
-    /// the walk state, never these. The seat template stays with the
-    /// plan (`plan.seats`) — the one canonical holder.
-    groups: &'a mut Groups,
+    /// the walk state, never this. The seat template stays with the plan
+    /// (`plan.seats`) — the one canonical holder.
+    accum: &'a mut Accum,
     /// ADR-0463 (LABS-781): the group table's retaining-total guard —
     /// every new group's landing (map entry, key, retained key-half
     /// values) grows it, enforced at the per-value cap while the groups
@@ -445,10 +470,22 @@ fn path_key(
     caches: &mut FoldCaches,
     ids: &[NodeId],
 ) -> CachedKey {
+    key_vals(graph, plan, caches, |slot| ids[slot])
+}
+
+/// The one key derivation: each key item reads its slot's node (`node_of`
+/// names it), so a path key reads the slot table and a one-slot key reads
+/// the one node.
+fn key_vals(
+    graph: &ExecGraph<'_>,
+    plan: &PathPlan,
+    caches: &mut FoldCaches,
+    node_of: impl Fn(usize) -> NodeId,
+) -> CachedKey {
     let vals: Vec<Value> = plan
         .keys
         .iter()
-        .map(|(slot, prop)| path_prop(graph, caches, ids[*slot], prop))
+        .map(|(slot, prop)| path_prop(graph, caches, node_of(*slot), prop))
         .collect();
     CachedKey::from_vals(vals)
 }
@@ -533,50 +570,34 @@ fn offer_aggs(
 /// the groups — one match over the key plan yields the CachedKey, and
 /// the group insert-or-find, offer, and note tail runs exactly once.
 fn absorb(env: &mut FoldEnv<'_>, bindings: &[Option<NodeId>]) -> Result<()> {
-    // Every slot is bound by construction: each is a hop-step endpoint and
-    // this terminal arm runs only after all steps bound theirs.
-    let ids: Vec<NodeId> = bindings
-        .iter()
-        .map(|id| id.expect("every slot is bound when the walk completes"))
-        .collect();
+    let groups = match &mut *env.accum {
+        Accum::NodeCounted { slot, counts } => {
+            absorb_node_counted(
+                env.graph,
+                env.group_retained,
+                counts,
+                bound_slot(&bindings[*slot]),
+            )?;
+            note_path_binding();
+            return Ok(());
+        }
+        Accum::PerBinding(groups) => groups,
+    };
+    let ids: Vec<NodeId> = bindings.iter().map(bound_slot).collect();
     let cached = match env.plan.key_plan {
         KeyPlan::None => CachedKey::from_vals(Vec::new()),
-        KeyPlan::One(slot) => {
-            let id = ids[slot];
-            match env.caches.keys.get(&id) {
-                Some(cached) => cached.clone(),
-                None => {
-                    // The payload charge rides the group landing's
-                    // `add_group_landing` below: its entry delta counts the
-                    // key's payload once, count-blind to the `Arc` shares
-                    // the key cache and the props cache hold.
-                    let cached = path_key(env.graph, env.plan, env.caches, &ids);
-                    env.caches.keys.insert(id, cached.clone());
-                    cached
-                }
-            }
+        KeyPlan::One(slot) | KeyPlan::NodeCounted(slot) => {
+            node_key(env.graph, env.plan, env.caches, ids[slot])
         }
         KeyPlan::Mixed => path_key(env.graph, env.plan, env.caches, &ids),
     };
-    let seats = &env.plan.seats;
-    // ADR-0463 (LABS-781): the group-table landing charge. An occupied
-    // landing retains nothing new (this row's key is dropped by the
-    // lookup and its cached vals with it); a new group's landing pays
-    // the one `add_group_landing` charge ahead of the insert.
-    let map_slots = env.groups.len();
-    let entry = match env.groups.entry(cached.key) {
-        Entry::Occupied(entry) => entry.into_mut(),
-        Entry::Vacant(entry) => {
-            env.group_retained.add_group_landing(
-                env.graph,
-                map_slots,
-                entry.key(),
-                cached.vals.len(),
-                SeatShape::of::<(CountSeat, StreamAgg)>(seats.len()),
-            )?;
-            entry.insert((cached.vals, fresh_group_aggs(seats)))
-        }
-    };
+    let entry = group_entry(
+        groups,
+        env.group_retained,
+        env.graph,
+        &env.plan.seats,
+        cached,
+    )?;
     offer_aggs(
         env.graph,
         env.caches,
@@ -586,6 +607,115 @@ fn absorb(env: &mut FoldEnv<'_>, bindings: &[Option<NodeId>]) -> Result<()> {
     )?;
     note_path_binding();
     Ok(())
+}
+
+/// A binding's slot id: every slot is bound by construction (each is a
+/// hop-step endpoint and the terminal arm runs only after all steps bound
+/// theirs) — the one statement of that fact.
+fn bound_slot(id: &Option<NodeId>) -> NodeId {
+    id.expect("every slot is bound when the walk completes")
+}
+
+/// The cached key of one key node: the key cache's hit, or the key derived
+/// from the node's properties and remembered. Every key of a one-slot key
+/// plan reads that slot, so the node id alone derives it. The payload
+/// charge rides the group landing's `add_group_landing`: its entry delta
+/// counts the key's payload once, count-blind to the `Arc` shares the key
+/// cache and the props cache hold.
+fn node_key(
+    graph: &ExecGraph<'_>,
+    plan: &PathPlan,
+    caches: &mut FoldCaches,
+    id: NodeId,
+) -> CachedKey {
+    if let Some(cached) = caches.keys.get(&id) {
+        return cached.clone();
+    }
+    let cached = key_vals(graph, plan, caches, |_| id);
+    caches.keys.insert(id, cached.clone());
+    cached
+}
+
+/// The group landing both folds' tails run: insert-or-find the group for
+/// `cached`'s key. ADR-0463 (LABS-781): an occupied landing retains nothing
+/// new (this row's key is dropped by the lookup and its cached vals with
+/// it); a new group's landing pays the one `add_group_landing` charge ahead
+/// of the insert.
+fn group_entry<'g>(
+    groups: &'g mut Groups,
+    retained: &mut RetainedTotal,
+    graph: &ExecGraph<'_>,
+    seats: &[CountSeat],
+    cached: CachedKey,
+) -> Result<&'g mut GroupSlot> {
+    let map_slots = groups.len();
+    Ok(match groups.entry(cached.key) {
+        Entry::Occupied(entry) => entry.into_mut(),
+        Entry::Vacant(entry) => {
+            retained.add_group_landing(
+                graph,
+                map_slots,
+                entry.key(),
+                cached.vals.len(),
+                SeatShape::of::<(CountSeat, StreamAgg)>(seats.len()),
+            )?;
+            entry.insert((cached.vals, fresh_group_aggs(seats)))
+        }
+    })
+}
+
+/// The node-counted binding: one increment on the key node's count. A new
+/// node that would grow the map lands the growth's bytes first — charged on
+/// capacity, ahead of the allocation (ADR-0463).
+fn absorb_node_counted(
+    graph: &ExecGraph<'_>,
+    retained: &mut RetainedTotal,
+    counts: &mut NodeCounts,
+    id: NodeId,
+) -> Result<()> {
+    if let Some(count) = counts.get_mut(&id) {
+        *count += 1;
+        return Ok(());
+    }
+    if counts.len() == counts.capacity() {
+        let added = counts.capacity().max(4) as u64 * NODE_COUNT_SLOT_BYTES;
+        retained.add_bytes(graph, added)?;
+    }
+    counts.insert(id, 1);
+    Ok(())
+}
+
+/// Collapse the node counts into groups, in first-seen node order: each key
+/// node derives its key (nodes with equal key values collapse into one
+/// group, their counts adding), and every plain-count seat reports its
+/// group's count — the groups, and their order, the per-binding table would
+/// have built. The caller projects them into rows.
+fn collapse_node_counts(
+    graph: &ExecGraph<'_>,
+    plan: &PathPlan,
+    caches: &mut FoldCaches,
+    retained: &mut RetainedTotal,
+    counts: NodeCounts,
+) -> Result<NodeGroups> {
+    let mut groups: NodeGroups = IndexMap::new();
+    for (id, count) in counts {
+        let cached = node_key(graph, plan, caches, id);
+        let slots = groups.len();
+        match groups.entry(cached.key) {
+            Entry::Occupied(entry) => entry.into_mut().1 += count,
+            Entry::Vacant(entry) => {
+                retained.add_group_landing(
+                    graph,
+                    slots,
+                    entry.key(),
+                    cached.vals.len(),
+                    SeatShape::ZERO_SEATS,
+                )?;
+                entry.insert((cached.vals, count));
+            }
+        }
+    }
+    Ok(groups)
 }
 
 /// Project one group into its output row: the path fold's aggregate
@@ -662,7 +792,13 @@ pub(crate) fn try_fold_path_aggs(ctx: &FoldCtx<'_>) -> Result<Option<FoldedRetur
     let Some(plan) = compile_path(patterns, where_clause, output.items) else {
         return Ok(None);
     };
-    let mut groups: Groups = IndexMap::new();
+    let mut accum = match plan.key_plan {
+        KeyPlan::NodeCounted(slot) => Accum::NodeCounted {
+            slot,
+            counts: IndexMap::default(),
+        },
+        _ => Accum::PerBinding(IndexMap::new()),
+    };
     let mut caches = FoldCaches {
         props: IdMap::default(),
         keys: IdMap::default(),
@@ -691,7 +827,7 @@ pub(crate) fn try_fold_path_aggs(ctx: &FoldCtx<'_>) -> Result<Option<FoldedRetur
             params,
             plan: &plan,
             caches: &mut caches,
-            groups: &mut groups,
+            accum: &mut accum,
             group_retained: &mut group_retained,
             preds: IdMap::default(),
             tallies: &tallies,
@@ -700,28 +836,43 @@ pub(crate) fn try_fold_path_aggs(ctx: &FoldCtx<'_>) -> Result<Option<FoldedRetur
         let mut bindings = vec![None; plan.nslots];
         fold_steps(&mut env, patterns, 0, None, &mut bindings)?;
     }
-    // No accepted binding: `groups` stayed empty — `absorb`
-    // inserts-or-finds a group entry on every call, so the table carries
-    // the fact. `key_plan` carries the seed-group fact: `None` means
-    // every item is an aggregate, so the seed group answers them; any key
-    // plan means a key column exists and the empty tail below yields the
-    // empty row set — one exit, no parallel early return.
-    if groups.is_empty() && matches!(plan.key_plan, KeyPlan::None) {
-        // ADR-0463 (LABS-781): the keyless seed lands through the same
-        // charge every row-loop landing pays (an empty key carries no
-        // payload), seats buffer included.
-        group_retained.add_group_landing(
-            graph,
-            0,
-            &[],
-            0,
-            SeatShape::of::<(CountSeat, StreamAgg)>(plan.seats.len()),
-        )?;
-        groups.insert(Vec::new(), (Vec::new(), fresh_group_aggs(&plan.seats)));
-    }
-    let out = groups
-        .into_values()
-        .map(|(key_vals, aggs)| project_path_row(output.items, &plan.ranks, &key_vals, &aggs))
-        .collect();
+    let out = match accum {
+        Accum::NodeCounted { counts, .. } => {
+            collapse_node_counts(graph, &plan, &mut caches, &mut group_retained, counts)?
+                .into_values()
+                .map(|(key_vals, count)| {
+                    project_ranked_row(output.items, &plan.ranks, &key_vals, |_| Value::Int(count))
+                })
+                .collect()
+        }
+        Accum::PerBinding(mut groups) => {
+            // No accepted binding: `groups` stayed empty — `absorb`
+            // inserts-or-finds a group entry on every call, so the table
+            // carries the fact. `key_plan` carries the seed-group fact:
+            // `None` means every item is an aggregate, so the seed group
+            // answers them; any key plan means a key column exists and the
+            // empty tail below yields the empty row set — one exit, no
+            // parallel early return.
+            if groups.is_empty() && matches!(plan.key_plan, KeyPlan::None) {
+                // ADR-0463 (LABS-781): the keyless seed lands through the
+                // same charge every row-loop landing pays (an empty key
+                // carries no payload), seats buffer included.
+                group_retained.add_group_landing(
+                    graph,
+                    0,
+                    &[],
+                    0,
+                    SeatShape::of::<(CountSeat, StreamAgg)>(plan.seats.len()),
+                )?;
+                groups.insert(Vec::new(), (Vec::new(), fresh_group_aggs(&plan.seats)));
+            }
+            groups
+                .into_values()
+                .map(|(key_vals, aggs)| {
+                    project_path_row(output.items, &plan.ranks, &key_vals, &aggs)
+                })
+                .collect()
+        }
+    };
     Ok(Some(finish_folded_rows(graph, &output, out)?))
 }

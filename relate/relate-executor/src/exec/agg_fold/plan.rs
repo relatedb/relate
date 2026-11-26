@@ -36,6 +36,11 @@ pub(super) struct HopStep {
 pub(super) enum KeyPlan {
     None,
     One(usize),
+    /// One key slot, and every aggregate a plain count of bindings
+    /// ([`key_plan_of`] classifies it, [`CountSeat::is_plain_count`] is the
+    /// seat predicate): the fold counts per key node and collapses nodes
+    /// with equal key values at the end.
+    NodeCounted(usize),
     Mixed,
 }
 
@@ -411,7 +416,7 @@ pub(super) fn compile_path(
             }
         }
     }
-    let key_plan = key_plan_of(&keys);
+    let key_plan = key_plan_of(&keys, &seats);
     Some(PathPlan {
         nslots,
         conjuncts,
@@ -423,13 +428,40 @@ pub(super) fn compile_path(
     })
 }
 
+impl CountSeat {
+    /// Whether the seat counts every binding exactly once: `count(*)`, or a
+    /// non-distinct count of a bound node (a bound endpoint is never null).
+    fn is_plain_count(&self) -> bool {
+        matches!(
+            self,
+            Self::Star
+                | Self::Whole {
+                    distinct: false,
+                    ..
+                }
+        )
+    }
+}
+
 /// The key-slot classification of the key list: no keys, keys all
 /// reading the same slot (one key column), or keys reading different
-/// slots.
-fn key_plan_of(keys: &[(usize, NamedToken)]) -> KeyPlan {
+/// slots. One key slot whose every aggregate is a plain count of bindings
+/// (`count(*)` or a non-distinct count of a bound node, never null) is
+/// node-counted: each binding adds one to its key node and the groups
+/// follow by collapsing nodes with equal key values, so a binding costs one
+/// integer-keyed increment, not a key clone, a group hash and an
+/// accumulator offer.
+fn key_plan_of(keys: &[(usize, NamedToken)], seats: &[CountSeat]) -> KeyPlan {
     match keys {
         [] => KeyPlan::None,
-        keys if keys.iter().all(|(slot, _)| *slot == keys[0].0) => KeyPlan::One(keys[0].0),
+        keys if keys.iter().all(|(slot, _)| *slot == keys[0].0) => {
+            let slot = keys[0].0;
+            if seats.iter().all(CountSeat::is_plain_count) {
+                KeyPlan::NodeCounted(slot)
+            } else {
+                KeyPlan::One(slot)
+            }
+        }
         _ => KeyPlan::Mixed,
     }
 }
