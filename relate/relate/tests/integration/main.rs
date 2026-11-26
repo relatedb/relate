@@ -123,6 +123,7 @@ mod schema_procedures;
 mod sealed_adjacency_reopen;
 mod search_complex_patterns;
 mod search_window;
+mod shortest_path_end_predicate;
 mod show_catalog_shape;
 mod show_commands;
 mod show_indexes_create_statement;

@@ -89,36 +89,38 @@ impl<'a> PathFilter<'a> {
 }
 
 /// The same-node-pair gate of one routed `MATCH`: present when the
-/// spelling needs it (see [`RouteFilters::split`]), it evaluates the
-/// route's endpoint-only conjuncts ([`RouteFilters::endpoint`], the one
-/// owned list) under the bound-name scope (the readiness rule's input).
+/// spelling's 51N23 policy rejects a same-node pair (see
+/// [`RouteFilters::split`]), it owns the gate's one predicate list — the
+/// endpoint-only conjuncts plus the end pattern's inline `WHERE`, which
+/// every arrival satisfies so an origin failing it is not a reached end —
+/// under the bound-name scope (the readiness rule's input).
 pub(super) struct PairFilter<'a> {
+    predicates: Vec<Expr>,
     scope: &'a HashSet<String>,
 }
 
 impl PairFilter<'_> {
-    /// Whether the conjuncts drop the pair `(start row, end)`: the end
-    /// bound beside the start row, every conjunct that reads only names
-    /// that row binds is evaluated, and one that does not hold drops the
-    /// pair. A conjunct reading a name no row binds yet is the caller's
-    /// later predicate pass, never a reason to skip the rejection. A pair
-    /// whose end cannot bind emits no row (as `Route::bind_trail`), so
-    /// there is nothing left to reject.
+    /// Whether the gate's predicates drop the pair `(start row, end)`: the
+    /// end bound beside the start row, every predicate that reads only
+    /// names that row binds is evaluated, and one that does not hold drops
+    /// the pair. A predicate reading a name no row binds yet is the
+    /// caller's later predicate pass, never a reason to skip the
+    /// rejection. A pair whose end cannot bind emits no row (as
+    /// `Route::bind_trail`), so there is nothing left to reject.
     pub(super) fn drops(
         &self,
         ctx: ExecCtx<'_>,
         end: &NodePattern,
         e: NodeId,
         srow: &Row,
-        conjuncts: &[Expr],
     ) -> Result<bool> {
         let mut row = srow.clone();
         if !gpm_bind_node(ctx.graph, end, e, &mut row) {
             return Ok(true);
         }
-        // The canonical residual pass: ready conjuncts evaluated on the row.
+        // The canonical residual pass: ready predicates on the row.
         let residual = Residual {
-            conjuncts,
+            conjuncts: &self.predicates,
             scope: self.scope,
         };
         Ok(!residual_ok(ctx.graph, &row, ctx.params, &residual)?)
@@ -137,7 +139,10 @@ pub(super) struct RouteFilters<'a> {
     pub endpoint: Vec<Expr>,
     /// `Some` when a predicate filters the *search* itself.
     pub path: Option<PathFilter<'a>>,
-    /// `Some` when an endpoint-only conjunct exists to drop a same-node pair.
+    /// `Some` when the spelling's 51N23 policy rejects a same-node pair:
+    /// the gate over the endpoint-only conjuncts plus the end pattern's
+    /// inline `WHERE` — either can drop the pair before the rejection (an
+    /// origin failing the end's own predicate is not a reached end).
     pub pair: Option<PairFilter<'a>>,
     /// The MATCH's bound-variable scope, the readiness rule's input: which
     /// names a conjunct reads count (see [`conjunct_ready`]).
@@ -164,20 +169,40 @@ impl<'p> RouteFilters<'p> {
         // even where the clause conjuncts are a post-filter. The spelling
         // gates only the search predicates and the pair filter.
         let filters_search = shape.spelling.filters_search_by_clause_where();
+        // The pair gate's predicates, one owned list: the endpoint-only
+        // conjuncts plus the end pattern's inline `WHERE` — every arrival
+        // satisfies the end's own predicate, so an origin that fails it is
+        // not a reached end and the (s, s) pair never forms (the TCK's
+        // `shortestPath((:N {level: 0})-[*]-(e:N WHERE e.level > 0))`).
+        let pair_predicates: Vec<Expr> = endpoint_only
+            .iter()
+            .map(|expr| (*expr).clone())
+            .chain(shape.end.where_clause.iter().cloned())
+            .collect();
         let endpoint: Vec<Expr> = endpoint_only.into_iter().cloned().collect();
         // One list, one role (the search answers each per arrival): the
         // path-reading clause conjuncts of a spelling whose clause `WHERE`
         // filters the search (a keyword selector's ride the caller's
         // residual instead), then the pattern's own inline `WHERE` and
         // the end node's.
-        let predicates: Vec<&Expr> = path_reading
-            .into_iter()
-            .filter(|_| filters_search)
-            .chain(path.where_clause.as_deref())
-            .chain(shape.end.where_clause.as_ref())
-            .collect();
+        let predicates: Vec<&Expr> = if filters_search {
+            path_reading
+        } else {
+            Vec::new()
+        }
+        .into_iter()
+        .chain(path.where_clause.as_deref())
+        .chain(shape.end.where_clause.as_ref())
+        .collect();
         Self {
-            pair: (filters_search && !endpoint.is_empty()).then_some(PairFilter { scope }),
+            // The gate exists exactly for the spellings whose 51N23 policy
+            // rejects a same-node pair — the one policy table decides both
+            // the rejection and the gate that can remove it.
+            pair: (shape.spelling.common_end_nodes() == crate::shortest::CommonEndNodes::Forbidden)
+                .then_some(PairFilter {
+                    predicates: pair_predicates,
+                    scope,
+                }),
             endpoint,
             path: (!predicates.is_empty()).then_some(PathFilter { predicates, scope }),
             scope,
