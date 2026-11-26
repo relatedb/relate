@@ -13,6 +13,12 @@ pub(super) struct Ver<Live> {
 }
 
 impl<Live> Ver<Live> {
+    /// The one live rule: a version is live while it is open-ended
+    /// (`xmax == 0`).
+    pub(super) fn is_live(&self) -> bool {
+        self.xmax == 0
+    }
+
     /// A version is collectable once its tombstone is at or before `horizon`.
     fn dead_at(&self, horizon: u64) -> bool {
         self.xmax != 0 && self.xmax <= horizon
@@ -153,7 +159,7 @@ impl<Live> Chain<Live> {
     /// The LIVE version: the newest one with `xmax == 0` — found from the
     /// end, so the common single-version chain exits on its first item.
     pub(super) fn live(&self) -> Option<VerRef<'_, Live>> {
-        self.iter().rev().find(|v| v.xmax == 0)
+        self.iter().nth(self.live_index()?)
     }
 
     /// [`Self::live`]'s position form, for the walks that classify every
@@ -165,7 +171,7 @@ impl<Live> Chain<Live> {
         match self {
             // The inline version is open-ended by construction.
             Self::Inline { .. } => Some(0),
-            Self::Spilled(vers) => vers.iter().rposition(|v| v.xmax == 0),
+            Self::Spilled(vers) => vers.iter().rposition(Ver::is_live),
         }
     }
 
@@ -207,31 +213,17 @@ impl<Live> Chain<Live> {
     /// Tombstone the live version at `ts`, spilling an inline row into a
     /// one-version chain. `None` when nothing is live.
     pub(super) fn tombstone(&mut self, ts: u64) -> Option<&Live> {
-        if let Self::Inline { xmin, .. } = self {
-            let xmin = *xmin;
-            let Self::Inline { live, .. } = std::mem::replace(self, Self::Spilled(Vec::new()))
-            else {
-                unreachable!()
-            };
-            *self = Self::Spilled(vec![Ver {
-                xmin,
-                xmax: ts,
-                live,
-            }]);
-        } else if let Self::Spilled(vers) = self {
-            let v = vers.iter_mut().rev().find(|v| v.xmax == 0)?;
-            v.xmax = ts;
-        }
-        match self {
-            Self::Spilled(vers) => vers.iter().rev().find(|v| v.xmax == ts).map(|v| &v.live),
-            Self::Inline { .. } => unreachable!("the inline row was spilled above"),
-        }
+        let at = self.live_index()?;
+        let mut vers = self.take_versions();
+        vers[at].xmax = ts;
+        *self = Self::Spilled(vers);
+        self.iter().nth(at).map(|v| v.live)
     }
 
     /// A single live version goes back inline.
     fn fold(&mut self) {
         if let Self::Spilled(vers) = self {
-            if vers.len() == 1 && vers[0].xmax == 0 {
+            if vers.len() == 1 && vers[0].is_live() {
                 let Ver { xmin, live, .. } = vers.pop().expect("one version");
                 *self = Self::Inline { xmin, live };
             }
@@ -325,5 +317,34 @@ impl<Live: Clone> Chain<Live> {
                 Some(live)
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tombstone_tests {
+    use super::*;
+
+    #[test]
+    fn tombstone_spills_an_inline_row_and_returns_it() {
+        let mut c = Chain::inline(3, "a");
+        assert_eq!(c.tombstone(7), Some(&"a"));
+        assert!(!c.is_inline());
+        let vers: Vec<_> = c.iter().map(|v| (v.xmin, v.xmax)).collect();
+        assert_eq!(vers, [(3, 7)]);
+        // Nothing is live any more: a repeat tombstones nothing.
+        assert_eq!(c.tombstone(9), None);
+    }
+
+    #[test]
+    fn tombstone_closes_the_newest_live_version_of_a_spilled_chain() {
+        let mut c = Chain::inline(1, "a");
+        c.push(Ver {
+            xmin: 5,
+            xmax: 0,
+            live: "b",
+        });
+        assert_eq!(c.tombstone(8), Some(&"b"));
+        let vers: Vec<_> = c.iter().map(|v| (v.xmin, v.xmax)).collect();
+        assert_eq!(vers, [(1, 0), (5, 8)]);
     }
 }

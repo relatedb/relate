@@ -22,8 +22,6 @@
 //! scalar reader, and the experiment copy under
 //! `testing/relate-datasets/src/codec` stays pinned as its reference.
 
-use relate_core::RelId;
-
 use super::bitpack::{bit_width, unzigzag, zigzag, BitReader, BitWriter};
 use super::Hop;
 
@@ -163,16 +161,25 @@ pub(crate) fn stream_len_with(bytes: &[u8], n: usize, widths: &mut impl WidthRea
     let mut rest = &bytes[bitmap_len..];
     let mut consumed = bitmap_len;
     if present > 0 {
-        consumed += 8;
-        rest = &rest[8..];
-        consumed += walk_section(&mut rest, present - 1, TS_BLOCK, widths, |_, _, _| {});
+        consumed += section_len(&mut rest, present, TS_BLOCK, widths);
     }
     if n > 0 {
-        consumed += 8;
-        rest = &rest[8..];
-        consumed += walk_section(&mut rest, n - 1, ID_BLOCK, widths, |_, _, _| {});
+        consumed += section_len(&mut rest, n, ID_BLOCK, widths);
     }
     consumed
+}
+
+/// The byte length of one framed section of `count` values — the 8-byte raw
+/// head, then the packed blocks of the remaining `count - 1` — advancing
+/// `rest` past it.
+fn section_len(
+    rest: &mut &[u8],
+    count: usize,
+    block: usize,
+    widths: &mut impl WidthReader,
+) -> usize {
+    *rest = &rest[8..];
+    8 + walk_section(rest, count - 1, block, widths, |_, _, _| {})
 }
 
 /// Walk one stream's packed section — `count` values in blocks of `block` —
@@ -202,6 +209,33 @@ fn walk_section<'a>(
     consumed
 }
 
+/// Decode one framed section of `count` values — the raw 8-byte head, then
+/// the packed blocks of the remaining `count - 1`, each value chained from
+/// the previous by `step(prev, packed)` — advancing `rest` past it.
+fn decode_section(
+    rest: &mut &[u8],
+    count: usize,
+    block: usize,
+    widths: &mut impl WidthReader,
+    step: impl Fn(i64, u64) -> i64,
+) -> Vec<i64> {
+    let mut out = Vec::with_capacity(count);
+    if count > 0 {
+        let (raw, tail) = rest.split_at(8);
+        *rest = tail;
+        let mut prev = i64::from_le_bytes(raw.try_into().expect("codec: section head"));
+        out.push(prev);
+        walk_section(rest, count - 1, block, widths, |width, packed, take| {
+            let mut r = BitReader::new(packed);
+            for _ in 0..take {
+                prev = step(prev, r.read(width));
+                out.push(prev);
+            }
+        });
+    }
+    out
+}
+
 /// Decode one chunk encoded by [`encode_chunk`], whose hop count `n` rides
 /// the arena entry; the hop stream comes back in the original chunk order.
 pub(crate) fn decode_chunk(bytes: &[u8], n: usize) -> Vec<Hop> {
@@ -215,44 +249,14 @@ pub(crate) fn decode_stream(bytes: &[u8], n: usize, widths: &mut impl WidthReade
     let bitmap_len = n.div_ceil(8);
     let (bitmap, mut rest) = bytes.split_at(bitmap_len);
 
-    // (a) ts stream.
+    // (a) ts stream, (b) id stream.
     let present = bitmap.iter().map(|b| b.count_ones() as usize).sum();
-    let mut tss: Vec<i64> = Vec::with_capacity(present);
-    if present > 0 {
-        let (raw, tail) = rest.split_at(8);
-        rest = tail;
-        let mut prev = i64::from_le_bytes(raw.try_into().expect("codec: ts head"));
-        tss.push(prev);
-        walk_section(
-            &mut rest,
-            present - 1,
-            TS_BLOCK,
-            widths,
-            |width, packed, take| {
-                let mut r = BitReader::new(packed);
-                for _ in 0..take {
-                    prev = prev.wrapping_sub(r.read(width) as i64);
-                    tss.push(prev);
-                }
-            },
-        );
-    }
-
-    // (b) id stream.
-    let mut ids: Vec<RelId> = Vec::with_capacity(n);
-    if n > 0 {
-        let (raw, tail) = rest.split_at(8);
-        rest = tail;
-        let mut prev = i64::from_le_bytes(raw.try_into().expect("codec: id head"));
-        ids.push(prev);
-        walk_section(&mut rest, n - 1, ID_BLOCK, widths, |width, packed, take| {
-            let mut r = BitReader::new(packed);
-            for _ in 0..take {
-                prev = prev.wrapping_add(unzigzag(r.read(width)));
-                ids.push(prev);
-            }
-        });
-    }
+    let tss = decode_section(&mut rest, present, TS_BLOCK, widths, |prev, v| {
+        prev.wrapping_sub(v as i64)
+    });
+    let ids = decode_section(&mut rest, n, ID_BLOCK, widths, |prev, v| {
+        prev.wrapping_add(unzigzag(v))
+    });
 
     // Zip the parallel streams back into hops, original order.
     let mut next_ts = tss.into_iter();
