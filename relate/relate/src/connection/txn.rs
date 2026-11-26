@@ -89,8 +89,8 @@ pub(crate) struct OpenTxn {
     /// reads it; `settle_statement` records the successful statement's
     /// class. The history is the explicit mode's business alone
     /// (ADR-0667's rule is the explicit-transaction one): a pipelined
-    /// write batch records nothing — [`Self::record_statement_class`]
-    /// returns without touching the cell — so a batch's statements
+    /// write batch records nothing — [`Self::settle_statement`]
+    /// records only under [`InFlight::Explicit`] — so a batch's statements
     /// never consult, and never trip, a mixing history.
     mix_class: Cell<MixClass>,
     /// The running tally of the transaction's prospective commit record
@@ -135,15 +135,15 @@ impl OpenTxn {
     /// ADR-0667's mixing history is the explicit transaction's rule: a
     /// pipelined write batch shares this `OpenTxn` but keeps no history —
     /// the cell stays [`MixClass::None`] for its whole life, so the
-    /// admission gate's mixing arm never refuses a batch statement.
+    /// admission gate's mixing arm never refuses a batch statement. The
+    /// caller is [`Self::settle_statement`], which records only a
+    /// statement whose in-flight value is [`InFlight::Explicit`].
     pub(crate) fn record_statement_class(&self, class: MixClass) {
-        if self.mode.is_batch() {
-            return;
-        }
         if !matches!(class, MixClass::None) {
             self.mix_class.set(class);
         }
     }
+
     /// Refuse the statement that takes the transaction's prospective commit
     /// record over `payload_cap` (the store's resolved cap, ADR-0650), with
     /// the same refusal the commit would have produced (ADR-0494). Each op
@@ -217,7 +217,17 @@ impl OpenTxn {
     /// batch's whole redo — while the batch stays alive. An explicit
     /// transaction fails for good. Between statements it is inert.
     fn abort_statement(&self) {
-        match std::mem::replace(&mut *self.in_flight.borrow_mut(), InFlight::Idle) {
+        self.abort_in_flight(self.take_in_flight());
+    }
+
+    /// Take the in-flight value, leaving the between-statements state.
+    fn take_in_flight(&self) -> InFlight {
+        std::mem::replace(&mut *self.in_flight.borrow_mut(), InFlight::Idle)
+    }
+
+    /// [`Self::abort_statement`]'s body over a value already taken.
+    fn abort_in_flight(&self, in_flight: InFlight) {
+        match in_flight {
             InFlight::Batch(pre) => {
                 let BatchPreState { mark, tally } = *pre;
                 // A rollback this mark cannot finish fails the batch instead:
@@ -247,11 +257,13 @@ impl OpenTxn {
     /// for an explicit transaction — joins the mixing history
     /// (ADR-0667). The one place the success outcome is discriminated.
     fn settle_statement(&self, result: Result<ExecResult>, class: MixClass) -> Result<ExecResult> {
-        if result.is_err() {
-            self.abort_statement();
-        } else {
-            *self.in_flight.borrow_mut() = InFlight::Idle;
-            self.record_statement_class(class);
+        let in_flight = self.take_in_flight();
+        match (&result, in_flight) {
+            (Err(_), in_flight) => self.abort_in_flight(in_flight),
+            (Ok(_), InFlight::Explicit) => self.record_statement_class(class),
+            // A batch keeps no history (ADR-0667); `Idle` cannot follow a
+            // `begin_statement`, so a success there has nothing to record.
+            (Ok(_), InFlight::Batch(_) | InFlight::Idle) => {}
         }
         result
     }

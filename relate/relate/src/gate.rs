@@ -238,36 +238,17 @@ impl Connection {
         // run — the metadata is per statement, never cached.
         let mut is_write_proc = |name: &str| call_is_write(&self.inner.graph, name);
         let qtype = query_type(logical, &mut is_write_proc);
-        // The statement's transaction-mixing class (ADR-0667) and the
+        // The statement's transaction-mixing class (ADR-0667), then the
         // mixing gate that reads it against the open transaction's
         // history at the sequence's tail — the one gate that reads
-        // transaction state (see `mixing_gate_error`). The classes are
-        // mutually exclusive by construction: the match has no both arm,
-        // and a statement whose ontology write call rides beside data
-        // updates (`CREATE … CALL db.ontology.apply()`, either clause
-        // order, implicit or explicit transaction) is refused here, at
-        // the plan gate, with the schema-after-data text the transaction
-        // rule uses — the ontology write is the schema update, the data
-        // clauses beside it are the data updates it refuses to mix with.
+        // transaction state (see `mixing_gate_error`). `statement_writes`
+        // is derived once: the class and the write route both read it.
         let ontology_schema_update = call_names
             .ontology
             .iter()
             .any(|name| is_ontology_write_procedure(name));
-        // The data arm masks the write bits the ontology write call
-        // itself sets back out (the writers are writes-flagged, so a
-        // bare `CALL db.ontology.set` classifies `w` yet is a schema
-        // update, not a data update): with the call present, only a
-        // clause beside it — `is_write`, whose procedure predicate is
-        // write-blind — turns the query type's write classes into a
-        // data update.
-        let data_update = matches!(qtype, QueryType::Write | QueryType::ReadWrite)
-            && (!ontology_schema_update || is_write(logical));
-        let mix_class = match (ontology_schema_update, data_update) {
-            (false, false) => MixClass::None,
-            (true, false) => MixClass::OntologySchema,
-            (false, true) => MixClass::Data,
-            (true, true) => return Err(ce_messages::ontology_schema_after_data()),
-        };
+        let statement_writes = is_write(logical);
+        let mix_class = mixing_class(qtype, ontology_schema_update, statement_writes)?;
         passes(self.mixing_gate_error(mix_class))?;
         // Auto-commit routing: the write path is also required by a
         // statement whose only write is an ontology write procedure
@@ -277,7 +258,7 @@ impl Connection {
         // the full predicate: routing user-registered or other
         // writes-flagged procedures to the write path would change their
         // admission semantics for nothing — they push no redo.
-        let write_route = is_write(logical) || ontology_schema_update;
+        let write_route = statement_writes || ontology_schema_update;
         Ok(ResultStamp {
             namespace,
             qtype,
@@ -368,10 +349,13 @@ impl Connection {
         // store op; a statement whose ontology call is only `apply` (or
         // `get`) runs it only through the other-write predicate's own
         // `apply` count.
-        calls
+        if !calls
             .ontology
             .iter()
-            .find(|name| is_ontology_store_op(name.as_str()))?;
+            .any(|name| is_ontology_store_op(name.as_str()))
+        {
+            return None;
+        }
         // ADR-0121 §3: a statement calling set/drop may not write anything
         // else (the 42N03 text). "Anything else" is a data/schema write
         // (`is_write`'s procedure predicate is write-blind, so the set/drop
@@ -459,5 +443,35 @@ impl Connection {
                 .or_else(|| composed_show_current_user(logical))
                 .map(ce_messages::administration_command_needs_system_database),
         }
+    }
+}
+
+/// The statement's transaction-mixing class (ADR-0667). The classes are
+/// mutually exclusive by construction: the match has no both arm, and a
+/// statement whose ontology write call rides beside data updates
+/// (`CREATE … CALL db.ontology.apply()`, either clause order, implicit or
+/// explicit transaction) is refused here, at the plan gate, with the
+/// schema-after-data text the transaction rule uses — the ontology write
+/// is the schema update, the data clauses beside it are the data updates
+/// it refuses to mix with.
+///
+/// The data arm masks the write bits the ontology write call itself sets
+/// back out (the writers are writes-flagged, so a bare
+/// `CALL db.ontology.set` classifies `w` yet is a schema update, not a
+/// data update): with the call present, only a clause beside it —
+/// `statement_writes`, whose procedure predicate is write-blind — turns
+/// the query type's write classes into a data update.
+fn mixing_class(
+    qtype: QueryType,
+    ontology_schema_update: bool,
+    statement_writes: bool,
+) -> Result<MixClass> {
+    let data_update = matches!(qtype, QueryType::Write | QueryType::ReadWrite)
+        && (!ontology_schema_update || statement_writes);
+    match (ontology_schema_update, data_update) {
+        (false, false) => Ok(MixClass::None),
+        (true, false) => Ok(MixClass::OntologySchema),
+        (false, true) => Ok(MixClass::Data),
+        (true, true) => Err(ce_messages::ontology_schema_after_data()),
     }
 }
