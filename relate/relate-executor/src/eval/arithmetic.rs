@@ -134,13 +134,6 @@ pub(crate) fn add(graph: &ExecGraph<'_>, l: Value, r: Value) -> Result<Value> {
     })
 }
 
-/// Whether `v` may sit beside a null in `||`: the string and list operands
-/// (and null itself) always, a path only under `path-concatenation`.
-fn concat_operand(v: &Value, paths: bool) -> bool {
-    matches!(v, Value::String(_) | Value::List(_) | Value::Null)
-        || (paths && matches!(v, Value::Path(_)))
-}
-
 /// `||`. `path-concatenation` is gated here, at run time, rather than by a
 /// lowering detector: the operand types are only known once evaluated, so
 /// the disabled form is the ordinary operand-type rejection, never the
@@ -152,7 +145,12 @@ pub(crate) fn concat(graph: &ExecGraph<'_>, l: Value, r: Value) -> Result<Value>
         // charge-and-build policy has one spelling.
         (Value::String(_), Value::String(_)) | (Value::List(_), Value::List(_)) => add(graph, l, r),
         (Value::Path(a), Value::Path(b)) if paths => super::path_value::join(graph, a, b),
-        (Value::Null, other) | (other, Value::Null) if concat_operand(other, paths) => {
+        // A null beside a string or list operand (or another null) is null;
+        // a path operand joins them only under `path-concatenation`.
+        (Value::Null, other) | (other, Value::Null)
+            if matches!(other, Value::String(_) | Value::List(_) | Value::Null)
+                || (paths && matches!(other, Value::Path(_))) =>
+        {
             Ok(Value::Null)
         }
         _ => Err(Error::invalid_argument_type(
