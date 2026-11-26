@@ -784,6 +784,38 @@ impl Graph {
         )
     }
 
+    /// The names of every label a live node carries, from the maintained
+    /// per-label counts under the same consistency window as
+    /// [`Self::windowed_stats_count`] (a drained count leaves the map, so
+    /// its keys are exactly the labels the node scan would find). Bounded
+    /// by the label vocabulary, never the node count; `None` declines to
+    /// the scan.
+    pub(crate) fn windowed_label_names(&self, exact: impl FnOnce() -> bool) -> Option<Vec<String>> {
+        self.windowed_names(exact, |stats| &stats.label_counts)
+    }
+
+    /// [`Self::windowed_label_names`] for relationship types: the keys of
+    /// the maintained per-type live counts.
+    pub(crate) fn windowed_rel_type_names(
+        &self,
+        exact: impl FnOnce() -> bool,
+    ) -> Option<Vec<String>> {
+        self.windowed_names(exact, |stats| &stats.rel.rel_type_counts)
+    }
+
+    /// The names behind the keys of one maintained count map, read under
+    /// the shared consistency window: the one body both name readers share.
+    fn windowed_names(
+        &self,
+        exact: impl FnOnce() -> bool,
+        counts: impl FnOnce(&CountStats) -> &HashMap<u32, u64>,
+    ) -> Option<Vec<String>> {
+        self.windowed_read(exact, |stats| {
+            let ids: Vec<u32> = counts(stats).keys().copied().collect();
+            Some(self.interner.label_strings(&ids))
+        })
+    }
+
     /// One name→count resolution the single-name probe arms share —
     /// intern the name, a missing name or a drained entry is a hard 0
     /// (exactness makes them equivalent), the one spelling of the

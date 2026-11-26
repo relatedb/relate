@@ -23,6 +23,7 @@ mod call_in_transactions_batch_pass;
 mod cancellation;
 mod canonical_registries;
 mod case_expression;
+mod catalog_procedures_counts;
 mod checked_int_ops;
 mod cip_240_search_filters;
 mod cip_subqueries;
