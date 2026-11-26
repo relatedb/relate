@@ -5,7 +5,7 @@ claim: ac710b8c91e366a44ff6b4d079cbb291232de68e
 date: 2026-11-25
 deciders: Relate maintainers
 name: 0689-seeded-count-resolves-dynamic-names
-status: proposed
+status: accepted
 tags:
   - executor
   - statistics
