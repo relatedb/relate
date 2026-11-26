@@ -29,7 +29,7 @@ fn an_estimated_plan_serves_over_http() {
     // The engine's own integer estimate rides `arguments` — the walk read
     // the undecorated form, so no float reached the strict accessor.
     assert!(
-        scan["arguments"]["EstimatedRows"].is_i64() || scan["arguments"]["EstimatedRows"].is_null(),
+        scan["arguments"]["EstimatedRows"].is_i64(),
         "the estimate is the engine's integer form: {scan:?}"
     );
 }
@@ -43,16 +43,21 @@ fn an_index_backed_start_narrates_the_seek_over_http() {
     let db = db();
     {
         let mut conn = db.connect().unwrap();
-        conn.query("CREATE RANGE INDEX user_age FOR (u:User) ON (u.age)")
-            .unwrap();
-        conn.query("UNWIND range(1, 10) AS i CREATE (:User {age: i})")
-            .unwrap();
+        for statement in relate_test_support::range_index::RANGE_INDEX_SEED {
+            conn.query(statement).unwrap();
+        }
     }
     let reply = dispatch(
         &db,
         &post(
             "neo4j",
-            r#"{"statement": "EXPLAIN MATCH (n:User) WHERE n.age > 5 RETURN n"}"#,
+            &json!({
+                "statement": format!(
+                    "EXPLAIN {}",
+                    relate_test_support::range_index::RANGE_INDEX_MATCH
+                )
+            })
+            .to_string(),
         ),
         OPEN,
         &txs(),
@@ -63,9 +68,12 @@ fn an_index_backed_start_narrates_the_seek_over_http() {
     assert_eq!(seek["operatorType"], json!("NodeIndexSeekByRange@relate"));
     assert_eq!(
         seek["arguments"]["Details"],
-        json!("RANGE INDEX n:User(age) WHERE age > 5, WHERE filter")
+        json!(relate_test_support::range_index::RANGE_INDEX_DETAILS)
     );
-    assert_eq!(seek["arguments"]["EstimatedRows"], json!(5));
+    assert_eq!(
+        seek["arguments"]["EstimatedRows"],
+        json!(relate_test_support::range_index::RANGE_INDEX_ESTIMATED_ROWS)
+    );
 }
 
 /// Virtual plan operators: an index-seek-started MATCH's v2 plan lists the
@@ -216,7 +224,12 @@ fn explain_carries_query_plan_and_profile_carries_profiled_query_plan() {
         plan["children"][0]["operatorType"],
         json!("AllNodesScan@relate")
     );
-    assert!(plan["identifiers"].is_array());
+    assert!(
+        plan["identifiers"]
+            .as_array()
+            .is_some_and(|ids| ids.iter().all(|i| i.is_string())),
+        "identifiers is a plain array of strings: {plan:?}"
+    );
     assert!(explain_body.get("profiledQueryPlan").is_none());
 
     // PROFILE: the envelope carries `profiledQueryPlan`, the same
@@ -254,12 +267,9 @@ fn explain_carries_query_plan_and_profile_carries_profiled_query_plan() {
         "arguments is a plain object (never a tagged Map): {profiled:?}"
     );
     assert!(
-        profiled["identifiers"].is_array()
-            && profiled["identifiers"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .all(|i| i.is_string()),
+        profiled["identifiers"]
+            .as_array()
+            .is_some_and(|ids| ids.iter().all(|i| i.is_string())),
         "identifiers is a plain array of strings: {profiled:?}"
     );
     assert!(profile_body.get("queryPlan").is_none());

@@ -336,12 +336,14 @@ fn an_index_backed_start_narrates_the_seek_on_the_bolt_wire() {
     let (db, mut client) = crate::testutil::connected_client_with_db();
     {
         let mut conn = db.connect().unwrap();
-        conn.query("CREATE RANGE INDEX user_age FOR (u:User) ON (u.age)")
-            .unwrap();
-        conn.query("UNWIND range(1, 10) AS i CREATE (:User {age: i})")
-            .unwrap();
+        for statement in relate_test_support::range_index::RANGE_INDEX_SEED {
+            conn.query(statement).unwrap();
+        }
     }
-    let cypher = "EXPLAIN MATCH (n:User) WHERE n.age > 5 RETURN n";
+    let cypher = &format!(
+        "EXPLAIN {}",
+        relate_test_support::range_index::RANGE_INDEX_MATCH
+    );
     let run = run_success(&mut client, cypher);
     assert!(
         run.get("plan").is_none(),
@@ -365,12 +367,12 @@ fn an_index_backed_start_narrates_the_seek_on_the_bolt_wire() {
         .unwrap_or_else(|| panic!("the seek node carries an args map: {seek:?}"));
     assert_eq!(
         args.get("Details").and_then(Pack::as_str),
-        Some("RANGE INDEX n:User(age) WHERE age > 5, WHERE filter"),
+        Some(relate_test_support::range_index::RANGE_INDEX_DETAILS),
         "{cypher}"
     );
     assert_eq!(
         args.get("EstimatedRows").and_then(Pack::as_int),
-        Some(5),
+        Some(relate_test_support::range_index::RANGE_INDEX_ESTIMATED_ROWS),
         "the posting window rides the engine's integer form (the root's \
          Neo4j-facing float is the decoration's): {:?}",
         args.get("EstimatedRows")
