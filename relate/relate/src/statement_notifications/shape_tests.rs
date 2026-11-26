@@ -51,6 +51,56 @@ fn relationship_type_expression_satisfiability_follows_the_one_type_rule() {
     ));
 }
 
+/// The dynamic `all`/default quantifier over a literal list of two or
+/// more distinct types is the runtime spelling of the same unsatisfiable
+/// intersection (TCK `Dynamic Types in MATCH clause`): a single distinct
+/// name, an `any` quantifier, a non-literal list, and a mixed list all
+/// stay undecidable.
+#[test]
+fn dynamic_all_over_a_literal_type_list_is_unsatisfiable() {
+    let dynamic = |expr: Expr, quantifier| LabelExpr::Dynamic {
+        expr: Box::new(expr),
+        quantifier,
+    };
+    let list =
+        |names: &[&str]| Expr::List(names.iter().map(|n| Expr::String((*n).into())).collect());
+    use relate_ir::DynamicLabelQuantifier::{All, Any, Default};
+    for quantifier in [All, Default] {
+        assert!(type_expression_unsatisfiable(
+            &dynamic(list(&["REL1", "REL2"]), quantifier),
+            &mut WorkMeter::default()
+        ));
+        // One distinct name repeats into a satisfiable intersection.
+        assert!(!type_expression_unsatisfiable(
+            &dynamic(list(&["REL1", "REL1"]), quantifier),
+            &mut WorkMeter::default()
+        ));
+    }
+    assert!(!type_expression_unsatisfiable(
+        &dynamic(list(&["REL1", "REL2"]), Any),
+        &mut WorkMeter::default()
+    ));
+    assert!(!type_expression_unsatisfiable(
+        &dynamic(Expr::Parameter("p".into()), All),
+        &mut WorkMeter::default()
+    ));
+    assert!(!type_expression_unsatisfiable(
+        &dynamic(
+            Expr::List(vec![
+                Expr::String("REL1".into()),
+                Expr::Parameter("p".into())
+            ]),
+            All
+        ),
+        &mut WorkMeter::default()
+    ));
+    // An unsatisfiable dynamic member inside a conjunction decides it.
+    assert!(type_expression_unsatisfiable(
+        &LabelExpr::And(vec![label("A"), dynamic(list(&["REL1", "REL2"]), All),]),
+        &mut WorkMeter::default()
+    ));
+}
+
 /// A dynamic member anywhere is the callee's typed `None`, wherever it
 /// sits relative to a member that already decides the result.
 #[test]

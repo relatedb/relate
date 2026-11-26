@@ -13,8 +13,8 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use relate_ir::{
-    expr_vars, is_agg_call, is_agg_expr, walk_pattern_payloads, CallScope, Expr, LabelExpr,
-    OrderItem, PathPattern, PatternPayload, Projection,
+    expr_vars, is_agg_call, is_agg_expr, walk_pattern_payloads, CallScope, DynamicLabelQuantifier,
+    Expr, LabelExpr, OrderItem, PathPattern, PatternPayload, Projection,
 };
 use relate_model::wire::{Notification, NotificationKind};
 
@@ -534,6 +534,13 @@ fn complex_references<'a>(
 /// [`WorkMeter`] the check declines (returns `false`, emitting
 /// no notification): a wide crafted conjunction must not pin a core.
 fn type_expression_unsatisfiable(expr: &LabelExpr, meter: &mut WorkMeter) -> bool {
+    // A dynamic `all`/default quantifier over a literal list of two or
+    // more distinct types is the same unsatisfiable intersection the
+    // static `&` spelling is (TCK DynamicTypesAcceptance): relationships
+    // have exactly one type, so no single type satisfies both members.
+    if dynamic_all_types_unsatisfiable(expr) {
+        return true;
+    }
     let mut names = BTreeSet::new();
     collect_label_names(expr, &mut names);
     let candidate_count = names.len() + 1;
@@ -553,6 +560,42 @@ fn type_expression_unsatisfiable(expr: &LabelExpr, meter: &mut WorkMeter) -> boo
         }
     }
     !satisfiable
+}
+
+/// Whether a relationship type expression is a dynamic `all`/default
+/// quantifier over a literal list naming two or more distinct types — the
+/// runtime spelling of the unsatisfiable intersection the static `&` form
+/// spells. A non-literal (or non-string) member, a single distinct name,
+/// or an `any` quantifier stays undecidable here; an unsatisfiable `And`
+/// member makes the whole conjunction unsatisfiable, while an `Or` member
+/// does not (the other side may hold).
+fn dynamic_all_types_unsatisfiable(expr: &LabelExpr) -> bool {
+    match expr {
+        LabelExpr::Dynamic { expr, quantifier } => {
+            matches!(
+                quantifier,
+                DynamicLabelQuantifier::All | DynamicLabelQuantifier::Default
+            ) && literal_type_names(expr).is_some_and(|names| names.len() > 1)
+        }
+        LabelExpr::And(items) => items.iter().any(dynamic_all_types_unsatisfiable),
+        LabelExpr::Label(_) | LabelExpr::Wildcard | LabelExpr::Not(_) | LabelExpr::Or(_) => false,
+    }
+}
+
+/// The distinct names a literal list names, or `None` when the expression
+/// is not a list of string literals (a parameter, a variable, a mixed
+/// list — the runtime fact the caller declines on).
+fn literal_type_names(expr: &Expr) -> Option<BTreeSet<String>> {
+    let Expr::List(items) = expr else {
+        return None;
+    };
+    items
+        .iter()
+        .map(|item| match item {
+            Expr::String(name) => Some(name.clone()),
+            _ => None,
+        })
+        .collect()
 }
 
 /// The expression's node count — the per-candidate cost of
