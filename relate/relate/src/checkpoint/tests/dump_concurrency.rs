@@ -10,6 +10,22 @@ use super::*;
 use relate_storage::NativeVfs;
 use std::sync::{mpsc, Arc};
 
+/// The node count a fresh open of the store at `path` sees: what the
+/// snapshot and the surviving WAL together recovered.
+fn reopened_node_count(path: &std::path::Path) -> i64 {
+    let reopened =
+        Database::open_vfs(Arc::new(NativeVfs::new(path)), OpenOptions::default()).unwrap();
+    let r = reopened
+        .connect()
+        .unwrap()
+        .query("MATCH (n) RETURN count(n) AS n")
+        .unwrap();
+    match r.rows[0][0] {
+        Value::Int(n) => n,
+        ref other => panic!("count(n) is an integer, got {other:?}"),
+    }
+}
+
 #[test]
 fn a_commit_that_lands_during_a_dump_neither_waits_nor_joins_its_cut() {
     let dir = tempfile::tempdir().unwrap();
@@ -68,14 +84,7 @@ fn a_commit_that_lands_during_a_dump_is_dumped_by_the_next_checkpoint() {
     drop(shared);
     drop(db);
 
-    let reopened =
-        Database::open_vfs(Arc::new(NativeVfs::new(dir.path())), OpenOptions::default()).unwrap();
-    let r = reopened
-        .connect()
-        .unwrap()
-        .query("MATCH (n) RETURN count(n) AS n")
-        .unwrap();
-    assert_eq!(r.rows[0][0], Value::Int(2));
+    assert_eq!(reopened_node_count(dir.path()), 2);
 }
 
 /// A dump that fails publishes nothing and fences nothing, and the ids its
@@ -104,14 +113,7 @@ fn a_failed_dump_keeps_its_dirty_ids_and_fences_nothing() {
 
     // The second node's WAL record was recycled by the successful
     // checkpoint, so only the handed-back dirty id keeps it in the snapshot.
-    let reopened =
-        Database::open_vfs(Arc::new(NativeVfs::new(dir.path())), OpenOptions::default()).unwrap();
-    let r = reopened
-        .connect()
-        .unwrap()
-        .query("MATCH (n) RETURN count(n) AS n")
-        .unwrap();
-    assert_eq!(r.rows[0][0], Value::Int(3));
+    assert_eq!(reopened_node_count(dir.path()), 3);
 }
 
 /// The timer's trigger fences no more than the explicit one: a dump the

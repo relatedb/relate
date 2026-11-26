@@ -139,9 +139,9 @@ fn a_rollback_ends_the_batch_instead_of_discarding_its_statements() {
     let before = committed_records(&db);
     conn.begin_write_batch();
     run(&mut conn, "CREATE (:N {id: 1})");
-    let error = err_text(conn.rollback());
+    let error = conn.rollback().expect_err("a batch is not a transaction");
     assert!(
-        error.contains("no transaction"),
+        matches!(&error, relate::Error::Semantic(message) if message == "no transaction"),
         "unexpected error: {error}"
     );
     assert_eq!(
