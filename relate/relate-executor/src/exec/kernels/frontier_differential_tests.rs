@@ -18,7 +18,10 @@ use proptest::prelude::*;
 use relate_core::{NodeId, Value};
 
 use super::super::take_frontier_counters;
-use crate::exec::test_support::{build, exec_cypher, patterns, same_rows, Builder, Built};
+use crate::exec::test_support::{
+    build, exec_cypher, frontier_decline_of, patterns, same_rows, Builder, Built,
+};
+use crate::frontier_decline::FrontierRunDecline;
 use crate::graph::Graph;
 use crate::pattern_engine::PatternEngine;
 use crate::test_support::config_with_floor;
@@ -170,8 +173,9 @@ fn statement_ab(g: &Graph, cypher: &str) -> StatementAb {
 /// rel-distinct under the default pool (TRAIL answers) with rel reuse
 /// legal under the walk pool — and byte-equal to one row of the
 /// stood-down DFS's uncapped enumeration of the same statement. The row
-/// count is bounded by the cap; the row set is not compared (a
-/// contract-free prefix both ways).
+/// *count* is the caller's pin (the DFS cap rider's own,
+/// `min(want, paths)`); the row *set* is not compared (a contract-free
+/// prefix both ways).
 fn assert_capped_rows(
     g: &Graph,
     cypher: &str,
@@ -231,8 +235,9 @@ fn assert_capped_rows(
 /// answers; per-row validity for an engaged capped answer (Decision 4 —
 /// BFS-discovery order replaces DFS order, and the first-cap row set is
 /// a contract-free prefix); identical rows and zero engagements for
-/// every decline. Returns whether the frontier ran — the coverage
-/// matrix's aggregate reads it.
+/// every decline. Returns whether the frontier served the clause — the
+/// coverage matrix's aggregate reads it (a run-then-declined
+/// `short-cap` is not a served cell).
 fn assert_statement(
     g: &Graph,
     statement: &Statement,
@@ -242,14 +247,43 @@ fn assert_statement(
 ) -> bool {
     let cypher = statement_text(statement.template, body, mode);
     let ab = statement_ab(g, &cypher);
+    // An engagement requires the frontier's BFS to have run, and at most
+    // that one rung takes a shape. A capped run that ends before its cap
+    // fills declines (`short-cap`) after running — no engagement, the
+    // walker's rows — so `ran` without an engagement is valid there.
     if ab.ran {
-        assert_eq!(ab.engagements, 1, "exactly the frontier took {cypher}");
+        assert!(ab.engagements <= 1, "at most the frontier took {cypher}");
+        if ab.engagements == 0 {
+            // The one legitimate run-then-decline is the unfilled cap.
+            // Pinning its reason keeps the matrix's aggregate proof: a
+            // run that declines for any other reason (a budget, a
+            // future emission regression) fails here with the shape it
+            // hit, not at an aggregate that still counts another
+            // pattern's engagement.
+            assert!(
+                matches!(statement.kind, Kind::Capped { .. }),
+                "a run without an engagement must be a capped shape: {cypher}"
+            );
+            assert_eq!(
+                frontier_decline_of(g, &cypher),
+                Some(FrontierRunDecline::ShortCap.into()),
+                "a run that declines must name short-cap: {cypher}"
+            );
+        }
     } else {
         assert_eq!(ab.engagements, 0, "no kernel takes the declined {cypher}");
     }
     match statement.kind {
-        Kind::Capped { uncapped } if ab.ran => {
+        // Whether the rung served the cap or declined it (`short-cap`,
+        // the walker's rows), the row count is the DFS cap rider's own:
+        // `LIMIT n` answers `min(n, total)` rows, never one per pair.
+        Kind::Capped { uncapped } => {
             assert_eq!(ab.engaged.columns, ab.dfs.columns, "{cypher}");
+            assert_eq!(
+                ab.engaged.rows.len(),
+                ab.dfs.rows.len(),
+                "{cypher}: the capped answer's row count is the DFS cap's"
+            );
             let oracle =
                 with_frontier_disabled(|| exec_cypher(g, &statement_text(uncapped, body, mode)));
             assert_capped_rows(g, &cypher, &ab.engaged, seed, mode == WALK, &oracle);
@@ -261,7 +295,9 @@ fn assert_statement(
                 "the decline is the DFS's own rows: {cypher}"
             );
         }
-        _ if ab.ran => {
+        // Named variants, no wildcard: a new `Kind` fails to compile here
+        // until its assertion policy is chosen.
+        Kind::DistinctEndpoints | Kind::Exists if ab.ran => {
             assert!(
                 same_rows(&ab.engaged, &ab.dfs),
                 "rows diverge for {cypher}:\n  frontier: {:?}\n  dfs:      {:?}",
@@ -269,14 +305,16 @@ fn assert_statement(
                 ab.dfs.rows
             );
         }
-        _ => {
+        Kind::DistinctEndpoints | Kind::Exists => {
             assert_eq!(
                 ab.engaged.rows, ab.dfs.rows,
                 "the declined {cypher} is the DFS's own rows"
             );
         }
     }
-    ab.ran
+    // The coverage matrix reads "served": a run-then-declined clause
+    // (`short-cap`) must not count as a covered cell.
+    ab.ran && ab.engagements == 1
 }
 
 /// The coverage matrix's fixture: a dense cyclic `KNOWS`/`LIKES`

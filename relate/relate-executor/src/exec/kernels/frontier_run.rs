@@ -21,11 +21,14 @@
 //! working), one pinned seed when the entering row binds exactly the
 //! seed-side variable (the `CarryingRow` proof's one legal carry).
 //!
-//! The two RUN-TIME declines ([`crate::frontier_decline::FrontierRunDecline`]:
-//! ADR-0516's `RearrivalBudget`, and the sparse tables' allocation
-//! ceiling, ADR-0521's `TableBudget`): a run whose re-arrival rule cut a
+//! The three RUN-TIME declines ([`crate::frontier_decline::FrontierRunDecline`]:
+//! ADR-0516's `RearrivalBudget`, the sparse tables' allocation
+//! ceiling, ADR-0521's `TableBudget`, and the capped emission's
+//! `ShortCap`): a run whose re-arrival rule cut a
 //! search on its shared work budget carries an unproven endpoint set,
-//! and a run whose tables crossed the ceiling an unfinished one — both
+//! a run whose tables crossed the ceiling an unfinished one, and a
+//! capped run that ended short of its cap carries the pair-level answer
+//! to a full-enumeration question — all three
 //! arms discard every row buffered so far and fall through with the
 //! ladder's ordinary decline, so no partial answer ever escapes.
 
@@ -308,11 +311,31 @@ fn seed_run(
 /// shared by every seed, never copied, and so are the clause's recycled
 /// tables, handed back per seed. `Ok(Some(reason))` is the run-time
 /// decline; `Ok(None)` is a served clause.
+///
+/// The cap is read once per row and seed as `remaining`'s shrinking bound,
+/// so the loops leave fewer than `want` rows **only** when the whole
+/// clause's witness set ran out before the cap filled — the BFS ended
+/// naturally, and every seed's emission offered its one witness per
+/// reached (seed, endpoint) pair. Such a short answer is not a prefix of a
+/// larger one: the cap would have admitted the additional paths to the
+/// already-reached pairs, so the pair-level set is the pair-shaped answer
+/// to a full-enumeration question (`frontier_emit`'s module doc). The
+/// buffered rows are discarded and the clause declines (`ShortCap`) — the
+/// walker's cap rider emits exactly `min(want, paths)` rows (ADR-0475),
+/// which is what `LIMIT n` promises. A run set that accepted **no** witness
+/// is exempt: every pair it proved was disproven or none was reached, so
+/// the empty answer is already exact and is served — no decline, and no
+/// second walk.
 fn serve_capped_rows(
     serving: &mut Serving<'_, '_>,
     rows: &[Row],
     want: usize,
 ) -> Result<Option<FrontierDeclineReason>> {
+    // The run fact the short-cap verdict keys on: whether any run accepted
+    // a witness. Never inferred from the output buffer, which holds what
+    // landed after the reduce tail (one row per witness here, but the
+    // decline states a fact about the runs, not about a container).
+    let mut accepted_any = false;
     for entering in rows {
         // The same cap read at row depth: a filled cap is a contract-free
         // prefix, so the remaining rows are not even seeded.
@@ -340,6 +363,7 @@ fn serve_capped_rows(
                 Ok(served) => served,
                 Err(reason) => return Ok(Some(reason.into())),
             };
+            accepted_any |= !matched.is_empty();
             for (row, _used) in matched {
                 emit_reduced_row(
                     serving.run.ctx,
@@ -351,6 +375,16 @@ fn serve_capped_rows(
             }
             serving.run.tables = run.reclaim();
         }
+    }
+    // The loops left the cap unfilled: the pair-level witnesses are short
+    // of the full-enumeration answer the cap admitted. Decline; the
+    // buffered rows drop with `serving`. The unfilled verdict is
+    // `remaining`'s own cap read, never a second spelling beside it. Zero
+    // accepted witnesses is exempt: every pair the runs proved was
+    // disproven or none was reached, so the empty answer is already exact
+    // and is served — no decline, no second walk.
+    if accepted_any && remaining(want, serving.out.len()).is_some() {
+        return Ok(Some(FrontierRunDecline::ShortCap.into()));
     }
     Ok(None)
 }

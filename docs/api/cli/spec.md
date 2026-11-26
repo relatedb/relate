@@ -1909,8 +1909,10 @@ presence-only, the set together): `MemoProbes`, `MemoHits`, `MemoInserts`,
 `MemoryBytes`) and `MemoDisabledCount`, with the root's `MemoKinds` — a list
 of the memo type names (`node-label`, `datetime`) behind its sums — and `FrontierDeclineReason` (ADR-0516, ADR-0582) when the rung did
 not serve the clause: the typed reason's stable name. A run-time decline
-(`rearrival-budget`, ADR-0516, or `table-budget`, the sparse tables'
-allocation ceiling, ADR-0521) sits beside the counters of the run that
+(`rearrival-budget`, ADR-0516, `table-budget`, the sparse tables'
+allocation ceiling, ADR-0521, or `short-cap`, a capped run whose BFS ended
+before the cap filled — its pair-level witnesses cannot answer the
+full-enumeration question the cap admitted) sits beside the counters of the run that
 declined; a plan-time gate's reason (`conjunct`, `nfa-shape`, `cost`,
 `full-enumeration`, `path-count`, `ordered-cap`, `path-consumer`, `mode`,
 `carrying-row`, `pinned-binding`, `nested-spine`, `all-reduce-group`,

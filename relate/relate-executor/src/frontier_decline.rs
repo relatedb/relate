@@ -156,9 +156,9 @@ decline_vocabulary! {
     /// vocabulary ([`FrontierDecline`]) is the other half of the record's
     /// [`FrontierDeclineReason`] — every one of those decides before a
     /// single walk. The rider wiring records it and the metric record
-    /// carries it. Two today: the re-arrival budget's exhaustion (ADR-0516)
-    /// and the sparse tables' allocation ceiling (ADR-0521); a later
-    /// run-time decline adds its variant (and its wire name) here.
+    /// carries it. The variants below are the vocabulary's single source
+    /// (the macro derives `ALL` and `as_str` from them); a later run-time
+    /// decline adds its variant and its wire name there.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub enum FrontierRunDecline {
         /// The re-arrival rule's shared work budget cut a search — the
@@ -178,6 +178,17 @@ decline_vocabulary! {
         /// gate: the run's buffered rows are discarded and the DFS, with its
         /// own caps, answers the clause.
         TableBudget => relate_model::wire::plan_keys::DECLINE_TABLE_BUDGET,
+        /// The capped emission ended with at least one accepted witness but
+        /// fewer than the cap, and never halted on it — the BFS answers one
+        /// witness per reached (seed, endpoint) pair, so an unfilled cap is
+        /// the pair-level answer to a full-enumeration question and drops
+        /// every further path to a reached pair. The rung ran
+        /// (`frontier_emit`), so its counters stay recorded; its buffered
+        /// rows are discarded and the clause falls through to the walker,
+        /// whose cap rider emits exactly `min(want, paths)` rows (ADR-0475).
+        /// A run set that accepted no witness is exempt: it is the exact
+        /// empty answer and is served without a decline.
+        ShortCap => relate_model::wire::plan_keys::DECLINE_SHORT_CAP,
     }
 }
 

@@ -29,8 +29,12 @@ use super::with_frontier_disabled;
 const FITTING_CAP: u64 = 20_000_000;
 
 /// The capped-fan pins' one statement, hoisted so a fixture change
-/// (labels, quantifier, limit) is one edit.
-const CAPPED_FAN_QUERY: &str = "MATCH p = (a:A)-[:E*]->(y:B) RETURN p LIMIT 5000";
+/// (labels, quantifier, limit) is one edit. The cap equals the fan's
+/// trail set (40 seeds × 16 `:B` endpoints, one trail each), so the
+/// emission fills it and the frontier serves — a larger cap would end
+/// short and decline (`short-cap`, REL8-2076 finding 29), leaving the
+/// rows to the walker and the charge pins nothing to measure.
+const CAPPED_FAN_QUERY: &str = "MATCH p = (a:A)-[:E*]->(y:B) RETURN p LIMIT 640";
 
 /// The capped fan's per-landing slot figure — a two-hop trail's own
 /// path value (its node and rel list buffers) plus a generous 4-slot

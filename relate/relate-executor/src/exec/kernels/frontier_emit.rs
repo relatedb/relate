@@ -74,6 +74,16 @@
 //! valid, both contract-free prefixes, the documented consequence; the
 //! differential suite (the feature's later node) pins the divergence
 //! classes this leaves.
+//!
+//! **An unfilled cap is not a prefix** (REL8-2076 finding 29): the
+//! "both valid prefixes" argument holds only when the cap *fills*. A run
+//! that ends naturally with fewer accepted witnesses than `want` answers
+//! the pair-level set to a full-enumeration question — every further path
+//! to a reached pair is dropped — so the consumer
+//! (`frontier_run::serve_capped_rows`) discards such a run and declines it
+//! ([`crate::frontier_decline::FrontierRunDecline::ShortCap`]); the
+//! walker's cap rider then emits exactly `min(want, paths)` rows
+//! (ADR-0475).
 
 use crate::UsedSet;
 use std::cell::Cell;
