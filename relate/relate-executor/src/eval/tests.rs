@@ -310,3 +310,61 @@ fn a_long_streaming_statement_stays_under_the_per_allocation_cap() {
     assert_eq!(result.rows.len(), 1);
     assert_eq!(result.rows[0][0], Value::Int(1_000_000));
 }
+
+/// `all_vars_satisfy` (`relate_ir::all_vars_satisfy`) tests the expression's
+/// read set in place. Each entry carries its read set written out by hand —
+/// an oracle independent of the walker — and for every subset of the names
+/// bound the verdict must be "all of the reads are bound". The shapes cover
+/// the names a comprehension, quantifier or `reduce` binds for itself (not
+/// reads), a map projection's shorthand reads, and the subquery and pattern
+/// forms' over-approximation (every name they mention).
+#[test]
+fn names_all_bound_matches_the_hand_written_read_sets() {
+    const CASES: &[(&str, &[&str])] = &[
+        ("a", &["a"]),
+        ("a.x = 1 AND b.y > c", &["a", "b", "c"]),
+        ("a IN [b, c]", &["a", "b", "c"]),
+        ("[x IN a | x + b]", &["a", "b"]),
+        ("[x IN a WHERE x > b | x]", &["a", "b"]),
+        ("all(x IN a WHERE x > b)", &["a", "b"]),
+        ("reduce(s = 0, x IN a | s + x + b)", &["a", "b"]),
+        ("a { .p, b, k: c }", &["a", "b", "c"]),
+        ("CASE WHEN a THEN b ELSE c END", &["a", "b", "c"]),
+        ("coalesce(a.x, b.y, 3)", &["a", "b"]),
+        ("(a)-[:R]->(b)", &["a", "b"]),
+        (
+            "EXISTS { MATCH (a)-[:R]->(z) WHERE z.v > b }",
+            &["a", "b", "z"],
+        ),
+        ("size([(a)-[:R]->(z) | z]) > b", &["a", "b", "z"]),
+        ("1 + 2", &[]),
+    ];
+    // The bindable names are the distinct names the cases read, first seen
+    // first — one vocabulary, not a second list kept beside the cases.
+    let mut names: Vec<&str> = Vec::new();
+    for (_, reads) in CASES {
+        for name in *reads {
+            if !names.contains(name) {
+                names.push(name);
+            }
+        }
+    }
+    for (cypher, reads) in CASES {
+        let parsed = relate_parser::parser::parse_expression_str(cypher).expect(cypher);
+        let expr = relate_front::lower_expr(&parsed).expect(cypher);
+        for mask in 0u32..(1 << names.len()) {
+            let bound = |name: &str| {
+                names
+                    .iter()
+                    .position(|n| *n == name)
+                    .is_some_and(|i| mask & (1 << i) != 0)
+            };
+            let want = reads.iter().all(|name| bound(name));
+            assert_eq!(
+                all_vars_satisfy(&expr, bound),
+                want,
+                "{cypher} with bound mask {mask:04b}"
+            );
+        }
+    }
+}

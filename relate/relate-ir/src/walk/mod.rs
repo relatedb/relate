@@ -28,8 +28,8 @@ mod vars;
 // module: the crate re-export in `lib.rs` reads these names from here,
 // so the public spelling (`relate_ir::expr_vars` &c.) never changed.
 pub use vars::{
-    correlated_reads, exists_outer_vars, expr_row_vars, expr_vars, label_expr_vars,
-    map_projection_shorthand_names, path_pattern_vars, references_any,
+    all_vars_satisfy, correlated_reads, exists_outer_vars, expr_row_vars, expr_vars,
+    label_expr_vars, map_projection_shorthand_names, path_pattern_vars, references_any,
 };
 
 impl Expr {

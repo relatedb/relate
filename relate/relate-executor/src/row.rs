@@ -26,7 +26,34 @@ struct RowSchema {
     index: HashMap<String, usize>,
 }
 
+/// Schemas at most this wide resolve a name by scanning `names`: a few
+/// length-checked string compares beat hashing the key (the std SipHash
+/// dominated the per-row `get` on wide pattern queries), and the keys are
+/// query variable names, so no hash seed is involved. Wider schemas keep
+/// the indexed lookup.
+const LINEAR_SLOTS: usize = 8;
+
 impl RowSchema {
+    fn slot(&self, key: &str) -> Option<usize> {
+        if self.names.len() <= LINEAR_SLOTS {
+            self.names.iter().position(|n| n == key)
+        } else {
+            self.index.get(key).copied()
+        }
+    }
+
+    /// Drop the name at `slot`, moving the last name into its place, and keep `index` in step — the one mutation that owns the
+    /// names/index invariant.
+    fn swap_remove(&mut self, slot: usize) {
+        let name = self.names.swap_remove(slot);
+        self.index.remove(&name);
+        // `slot` was the last name unless another name moved into it.
+        if slot != self.names.len() {
+            let swapped = self.names[slot].clone();
+            self.index.insert(swapped, slot);
+        }
+    }
+
     fn empty() -> Arc<Self> {
         static EMPTY: OnceLock<Arc<RowSchema>> = OnceLock::new();
         Arc::clone(EMPTY.get_or_init(|| {
@@ -178,16 +205,9 @@ impl Row {
     /// Remove `key` without preserving the order of the names after it.
     /// Matches `IndexMap::swap_remove`.
     pub fn swap_remove(&mut self, key: &str) -> Option<Value> {
-        let slot = *self.schema.index.get(key)?;
-        let last = self.values.len() - 1;
-        self.schema_mut();
+        let slot = self.schema.slot(key)?;
         let removed = self.values.swap_remove(slot);
-        let name = self.schema_mut().names.swap_remove(slot);
-        self.schema_mut().index.remove(&name);
-        if slot != last {
-            let swapped = self.schema.names[slot].clone();
-            self.schema_mut().index.insert(swapped, slot);
-        }
+        self.schema_mut().swap_remove(slot);
         Some(removed)
     }
 
@@ -236,7 +256,7 @@ impl Row {
     }
 
     pub fn get(&self, key: &str) -> Option<&Value> {
-        self.schema.index.get(key).map(|slot| &self.values[*slot])
+        self.schema.slot(key).map(|slot| &self.values[slot])
     }
 
     /// Read a column through a [`SmallName`]: the one text bridge from
@@ -246,12 +266,12 @@ impl Row {
     }
 
     pub fn get_mut(&mut self, key: &str) -> Option<&mut Value> {
-        let slot = *self.schema.index.get(key)?;
+        let slot = self.schema.slot(key)?;
         Some(&mut self.values[slot])
     }
 
     pub fn contains_key(&self, key: &str) -> bool {
-        self.schema.index.contains_key(key)
+        self.schema.slot(key).is_some()
     }
 
     pub fn keys(&self) -> impl Iterator<Item = &String> {
@@ -278,7 +298,7 @@ impl Row {
     }
 
     pub fn insert(&mut self, key: String, value: Value) -> Option<Value> {
-        if let Some(slot) = self.schema.index.get(&key).copied() {
+        if let Some(slot) = self.schema.slot(&key) {
             return Some(std::mem::replace(&mut self.values[slot], value));
         }
         let mut names = self.schema.names.clone();
@@ -290,7 +310,7 @@ impl Row {
 
     /// Remove `key`, keeping the order of the names that remain.
     pub fn shift_remove(&mut self, key: &str) -> Option<Value> {
-        let slot = *self.schema.index.get(key)?;
+        let slot = self.schema.slot(key)?;
         let removed = std::mem::replace(&mut self.values[slot], Value::Null);
         let keep: Vec<usize> = (0..self.values.len()).filter(|i| *i != slot).collect();
         self.rebuild(keep);
@@ -300,7 +320,7 @@ impl Row {
     /// Move `key`'s value out, leaving null in the slot. The schema stays
     /// shared with every other row from the same clause.
     pub fn take_value(&mut self, key: &str) -> Option<Value> {
-        let slot = *self.schema.index.get(key)?;
+        let slot = self.schema.slot(key)?;
         Some(std::mem::replace(&mut self.values[slot], Value::Null))
     }
 
@@ -317,7 +337,7 @@ impl Row {
     }
 
     pub fn entry(&mut self, key: String) -> RowEntry<'_> {
-        let slot = self.schema.index.get(&key).copied();
+        let slot = self.schema.slot(&key);
         RowEntry {
             row: self,
             key,
@@ -363,7 +383,7 @@ impl Row {
 /// It is row vocabulary, not start-selection vocabulary, so it lives
 /// beside [`Row`] rather than in the first caller that needed it.
 pub(crate) fn row_bound(row: &Row) -> impl Fn(&str) -> bool + '_ {
-    |name: &str| row.get(name).is_some()
+    |name: &str| row.contains_key(name)
 }
 
 // Counts `interned_schema` calls: the per-row schema cost a hot path must

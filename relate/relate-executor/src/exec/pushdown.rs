@@ -40,11 +40,11 @@ impl Residual<'_> {
 /// The unscoped readiness kernel: every variable the expression names is
 /// bound in `row`. [`conjunct_ready`] narrows it to a residual's scope.
 /// The names-bound walk is the eval tier's one kernel
-/// ([`crate::eval::names_all_bound`]) with the row tier's one membership
+/// ([`relate_ir::all_vars_satisfy`]) with the row tier's one membership
 /// predicate ([`crate::row::row_bound`]) — the same spelling the seek
 /// recognizers' readiness reads, never re-spelled here.
 pub(crate) fn expr_ready(expr: &Expr, row: &Row) -> bool {
-    crate::eval::names_all_bound(expr, crate::row::row_bound(row))
+    relate_ir::all_vars_satisfy(expr, crate::row::row_bound(row))
 }
 
 /// Whether `expr` can be evaluated against `row`: every variable it names
@@ -54,7 +54,7 @@ pub(crate) fn expr_ready(expr: &Expr, row: &Row) -> bool {
 /// subquery-local — `EXISTS { MATCH (z) … }` names `z`, which the
 /// subquery itself binds — so they never gate readiness; the caller's
 /// later predicate pass covers an expression that is not ready here.
-/// The kernel ([`crate::eval::names_all_bound`]) with the scope's
+/// The kernel ([`relate_ir::all_vars_satisfy`]) with the scope's
 /// narrowing folded into the membership — the one spelling of it, read
 /// by both this predicate and [`ready_conjuncts`]'s filter: a name gates
 /// readiness only when the scope can bind it and neither the row nor
@@ -66,7 +66,7 @@ pub(crate) fn conjunct_ready(
     binding: Option<&SmallName>,
 ) -> bool {
     let bound = row_bound(row);
-    crate::eval::names_all_bound(expr, |v| {
+    relate_ir::all_vars_satisfy(expr, |v| {
         !scope.contains(v) || binding.is_some_and(|b| b.with_str(|t| t == v)) || bound(v)
     })
 }
