@@ -195,7 +195,9 @@ impl Combo {
     /// Whether some search ADR-0186 prescribes for this query starts where
     /// a relationship can be followed, so the route must expand one.
     /// Searches whose answer is fixed without looking (a pair whose end
-    /// cannot be entered, a zero-length partition) do not count.
+    /// cannot be entered, a zero-length partition, a fan whose listed far
+    /// side is its origin alone: the origin's own level settles it) do not
+    /// count.
     fn expansion_required(self, spec: &Spec) -> bool {
         let (d, back) = (self.dir, self.dir.flip());
         let (xs, ys) = (spec.with("X"), spec.with("Y"));
@@ -203,10 +205,12 @@ impl Combo {
             |s: usize| self.bound.min == 1 && self.adj(spec, s, d) && self.adj(spec, s, back);
         match self.ends {
             Ends::Unbound | Ends::StartBound => {
-                !ys.is_empty() && xs.iter().any(|&s| self.adj(spec, s, d))
+                !ys.is_empty() && xs.iter().any(|&s| self.adj(spec, s, d) && ys != [s])
             }
             Ends::Plain => (0..spec.labels.len()).any(|s| self.adj(spec, s, d)),
-            Ends::EndBound => !xs.is_empty() && ys.iter().any(|&e| self.adj(spec, e, back)),
+            Ends::EndBound => {
+                !xs.is_empty() && ys.iter().any(|&e| self.adj(spec, e, back) && xs != [e])
+            }
             Ends::BothBound => xs.iter().any(|&s| {
                 ys.iter().any(|&e| {
                     if s == e {

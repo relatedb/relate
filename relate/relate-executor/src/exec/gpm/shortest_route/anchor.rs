@@ -62,12 +62,12 @@ thread_local! {
 /// The far-side set of a listed side, `None` when its ids span too wide or
 /// the test override turns the far set off (the per-reached-node end test
 /// is the oracle).
-fn far_set(side: &Side) -> Option<FarSet> {
+fn far_set(ids: &[NodeId]) -> Option<FarSet> {
     #[cfg(test)]
     if FAR_SET_OFF.with(Cell::get) {
         return None;
     }
-    FarSet::of(side.ids())
+    FarSet::of(ids)
 }
 
 /// Run `f` with the far set disabled on this thread.
@@ -191,6 +191,15 @@ enum Probed {
     Within(Side),
 }
 
+impl Probed {
+    /// The far side's pattern `np` when this probe left it scan territory:
+    /// the only far side a fan lists on its own behalf. An over-bound side
+    /// is `None`; a listed side never reaches a fan's far position.
+    fn scan_side(self, np: &NodePattern) -> Option<&NodePattern> {
+        matches!(self, Probed::Scan).then_some(np)
+    }
+}
+
 /// The funnel entry an over-bound side was asked through — the two asks
 /// that can produce [`Probed::Over`]; a scan side never probes over, so
 /// `Scan` is unrepresentable here.
@@ -239,13 +248,11 @@ impl Way {
 
 impl Route<'_> {
     /// `None` declines a count selector (ADR-0607) before any row is
-    /// pushed: a count selector answers pair partitions only, so a fan it
-    /// cannot use is never built — the rule's one home is the tail check
-    /// below. The two early arms are more than fast paths: a two-over
-    /// pair declines *before* the listing, so it degenerates to no route
-    /// rather than the ADR-0567 refusal `listed_side` would raise; the
-    /// no-list pair skips the start scan as a pure pre-materialization
-    /// shortcut.
+    /// pushed: a count selector answers pair partitions only, so the rule
+    /// has one home, the early block after the probes. It declines before
+    /// any side is listed or the starts are scanned, so a two-over pair
+    /// degenerates to no route rather than the ADR-0567 refusal
+    /// `listed_side` would raise.
     pub(super) fn anchor(&self) -> Result<Option<Anchor>> {
         let counted = self.counted();
         let (start, end) = (self.shape.start, self.shape.end);
@@ -268,11 +275,21 @@ impl Route<'_> {
             self.probe(start, &side_caches.start)?,
             self.probe(end, &side_caches.end)?,
         );
+        // A count selector answers pair partitions only (ADR-0607), decided
+        // once, before any listing or fan construction: only the listed
+        // pair product within the bound is answered; every other shape is
+        // declined without listing a side or scanning the starts.
+        if counted {
+            return Ok(match probed {
+                (Probed::Within(starts), Probed::Within(ends)) => {
+                    Some(Self::listed(starts, ends)).filter(|a| matches!(a, Anchor::Pair { .. }))
+                }
+                _ => None,
+            });
+        }
         let anchor = match probed {
             // Both past the bound: the fan runs from the shorter side,
-            // which needs both lists in full. Under a count selector the
-            // listing is skipped: the fan it builds is declined below.
-            (Probed::Over(_), Probed::Over(_)) if counted => return Ok(None),
+            // which needs both lists in full.
             (Probed::Over(start_ask), Probed::Over(end_ask)) => Self::listed(
                 self.listed_side(start, start_ask)?,
                 self.listed_side(end, end_ask)?,
@@ -285,26 +302,21 @@ impl Route<'_> {
             // bounded: one full-depth fan per property match must not beat
             // the start scan's one ball per start (a non-selective map
             // makes the backward fan pay |ends| balls).
-            (Probed::Within(starts), Probed::Over(_) | Probed::Scan) => {
-                Self::fan_or_empty(starts, Way::Forward)
+            (Probed::Within(starts), far @ (Probed::Over(_) | Probed::Scan)) => {
+                self.fan_or_empty(starts, Way::Forward, far.scan_side(end))?
             }
-            (Probed::Over(_) | Probed::Scan, Probed::Within(ends)) => {
-                Self::fan_or_empty(ends, Way::Backward)
+            (far @ (Probed::Over(_) | Probed::Scan), Probed::Within(ends)) => {
+                self.fan_or_empty(ends, Way::Backward, far.scan_side(start))?
             }
             // Neither side has a list: the start candidates fan forward —
             // through the same empty-side policy, so an empty scan is the
-            // empty pair like an empty listed side. Under a count selector
-            // the start scan is skipped: the fan it builds is declined
-            // below.
-            _ if counted => return Ok(None),
-            _ => Self::fan_or_empty(Side::Many(self.start_candidates()?), Way::Forward),
+            // empty pair like an empty listed side.
+            (_, far) => self.fan_or_empty(
+                Side::Many(self.start_candidates()?),
+                Way::Forward,
+                far.scan_side(end),
+            )?,
         };
-        // A count selector answers pair partitions only: any fan the arms
-        // above built (a pair product past the bound, a listed side
-        // against no list) is declined here, once.
-        if counted && matches!(anchor, Anchor::Fan { .. }) {
-            return Ok(None);
-        }
         Ok(Some(anchor))
     }
 
@@ -317,14 +329,66 @@ impl Route<'_> {
         }
     }
 
-    /// A fan from the listed side of a pair whose other side is over the
-    /// bound; an empty listed side is the empty pair.
-    fn fan_or_empty(origins: Side, way: Way) -> Anchor {
+    /// A fan from the listed side of a pair whose other side is not
+    /// listed within the pair bound; an empty listed side is the empty
+    /// pair. `scan_far` is the far side's pattern when that side is scan
+    /// territory ([`Probed::scan_side`]); it is listed on the fan's
+    /// behalf, for a fan of several origins, when it fits the full-listing
+    /// bound ([`Self::far_listing`]): the fan then has a far set, the
+    /// batched sweep and the early stop of ADR-0612. An over-bound side
+    /// (`None`) stays unlisted (ADR-0567: its listing is never
+    /// materialized unasked).
+    fn fan_or_empty(
+        &self,
+        origins: Side,
+        way: Way,
+        scan_far: Option<&NodePattern>,
+    ) -> Result<Anchor> {
         if origins.ids().is_empty() {
-            Self::empty_pair()
-        } else {
-            Anchor::fan(origins, way)
+            return Ok(Self::empty_pair());
         }
+        // One origin has nothing to share, and a row-by-row loop would
+        // re-list the side per input row: the listing is for fans with at
+        // least two origins, whose own list is already in full.
+        let listing = match scan_far {
+            // A label-less side has no bucket to list: it would read the
+            // whole node store per input row, so it stays the fan's to test.
+            Some(np) if origins.ids().len() >= 2 && !np.labels.is_empty() => {
+                self.far_listing(np)?
+            }
+            _ => None,
+        };
+        Ok(match listing {
+            // An exactly listed side with no member matches nothing.
+            Some(far) if far.is_empty() => Self::empty_pair(),
+            Some(far) => Anchor::Fan {
+                far: far_set(&far),
+                origins,
+                way,
+            },
+            None => Anchor::fan(origins, way),
+        })
+    }
+
+    /// The nodes the unlisted far side of a fan matches, when they number
+    /// at most [`SEEK_LIST_LIMIT`] and the scan answers them exactly. Unlike
+    /// [`Self::listed_side`] this never refuses: a side over the bound or
+    /// with no exact scan answer stays unlisted and each reached node is
+    /// tested against the end pattern, as before.
+    fn far_listing(&self, np: &NodePattern) -> Result<Option<Vec<NodeId>>> {
+        // A property map reading a variable the walk binds later cannot be
+        // resolved from the input row: the side stays the fan's to test.
+        if np
+            .properties
+            .as_ref()
+            .is_some_and(|props| !expr_ready(props, self.row))
+        {
+            return Ok(None);
+        }
+        Ok(match self.asked(np, OverAsk::Map, list_limit())? {
+            Some(Capped::Within(ids)) => Some(ids),
+            Some(Capped::Over) | None => None,
+        })
     }
 
     /// Both endpoints as listed sides: the pair product while it is within
@@ -339,13 +403,13 @@ impl Route<'_> {
             Anchor::Pair { starts, ends }
         } else if e < s {
             Anchor::Fan {
-                far: far_set(&starts),
+                far: far_set(starts.ids()),
                 origins: ends,
                 way: Way::Backward,
             }
         } else {
             Anchor::Fan {
-                far: far_set(&ends),
+                far: far_set(ends.ids()),
                 origins: starts,
                 way: Way::Forward,
             }
