@@ -12,7 +12,9 @@ use crate::eval::{binary, eval};
 use crate::group_key::GroupKey;
 use crate::hash_seed::{seeded_map, FxBuildHasher, IdMap, SeededMap};
 use crate::overlay::{ExecGraph, RetainedTotal, SeatShape};
-use crate::pattern_walk::{binding, node_candidates, rel_props_ok, Binding, NodeBinding};
+use crate::pattern_walk::{
+    binding, node_candidates, rel_props_ok, rel_variable_row_bound, Binding, NodeBinding,
+};
 use crate::row::Row;
 use crate::store::RelTypes;
 
@@ -780,9 +782,26 @@ fn fold_steps(
     Ok(())
 }
 
+/// Whether an entering row binds one of the patterns' relationship
+/// variables. The fold reconciles row-bound **node** slots (`accept_slot`,
+/// "a row-bound node accepts only itself") but walks each hop's relationship
+/// fresh: a pre-bound `r` — or the null of a failed `OPTIONAL MATCH` — would
+/// be re-walked over every relationship of the type. The per-hop
+/// reconciliation is the general path's policy (`pattern_walk::bind_trail`),
+/// so such a clause declines the fold instead of re-deriving it here; the
+/// shared gate is `pattern_walk::rel_variable_row_bound`, which the walked
+/// path's probe declines through too (`probe::probe_plan`).
+fn any_rel_variable_row_bound(patterns: &[PathPattern], rows: &[Row]) -> bool {
+    patterns
+        .iter()
+        .flat_map(|path| &path.rels)
+        .any(|rel| rows.iter().any(|row| rel_variable_row_bound(rel, row)))
+}
+
 /// Stream one fixed hop, a fixed two-hop path, or two comma-joined one-hop
 /// patterns into group counts or a distinct set. Wider patterns, variable-length
-/// walks, repeated relationship variables, and `sum` stay on match-then-aggregate.
+/// walks, repeated relationship variables, a relationship variable bound by the
+/// entering rows, and `sum` stay on match-then-aggregate.
 pub(crate) fn try_fold_path_aggs(ctx: &FoldCtx<'_>) -> Result<Option<FoldedReturn>> {
     let (graph, rows, params) = (&ctx.graph, ctx.rows, ctx.params);
     let (patterns, where_clause, suffix) = (ctx.patterns, ctx.where_clause, ctx.tail);
@@ -792,6 +811,9 @@ pub(crate) fn try_fold_path_aggs(ctx: &FoldCtx<'_>) -> Result<Option<FoldedRetur
     let Some(plan) = compile_path(patterns, where_clause, output.items) else {
         return Ok(None);
     };
+    if any_rel_variable_row_bound(patterns, rows) {
+        return Ok(None);
+    }
     let mut accum = match plan.key_plan {
         KeyPlan::NodeCounted(slot) => Accum::NodeCounted {
             slot,

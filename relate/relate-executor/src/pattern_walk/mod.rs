@@ -254,6 +254,17 @@ pub(crate) fn rel_binding<'a>(rp: &'a RelPattern, row: &Row) -> RelBinding<'a> {
     classify(rp.variable.as_ref(), row, rel_id)
 }
 
+/// Whether `rp`'s variable is named by `row` — the gate every fast path
+/// that walks a hop without [`binds::bind_trail`]'s per-hop
+/// reconciliation must decline on. `Bound` carries the relationship,
+/// `Mismatch` the null or wrong-typed binding that matches nothing;
+/// `Unbound`/`Anonymous` are free. The anchored existence probe
+/// (`probe::probe_plan`) and the aggregate path fold
+/// (`exec::agg_fold`) read this one predicate.
+pub(crate) fn rel_variable_row_bound(rp: &RelPattern, row: &Row) -> bool {
+    matches!(rel_binding(rp, row), Binding::Bound(_) | Binding::Mismatch)
+}
+
 /// The trail a var-length binding carries: the id sequence of a list
 /// whose every element is a relationship. `None` for any other shape —
 /// null, a non-list, or a list holding a non-relationship element —

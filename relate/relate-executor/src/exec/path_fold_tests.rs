@@ -1,24 +1,12 @@
 use super::agg_fold::take_path_fold_bindings;
 use super::kernels::with_kernels_disabled;
 use super::test_support::{
-    assert_expression_cap, build, error_of, exec_autocommit, exec_cypher, exec_cypher_resolved,
-    same_rows, try_exec_cypher,
+    assert_expression_cap, build, error_of, exec_autocommit, exec_cypher, person_named, same_rows,
+    try_exec_cypher,
 };
 use super::*;
 use crate::graph::Graph;
 use relate_core::NodeId;
-
-fn person_named(g: &Graph, id: i64, first: &str, last: &str) -> NodeId {
-    g.create_node(
-        vec!["Person".into()],
-        BTreeMap::from([
-            ("firstName".into(), Value::String(first.into())),
-            ("lastName".into(), Value::String(last.into())),
-            ("ID".into(), Value::Int(id)),
-        ]),
-    )
-    .unwrap()
-}
 
 #[test]
 fn path_fold_counts_distinct_comments_in_a_place() {
@@ -697,118 +685,75 @@ fn two_hop_min_max_avg_sum_answer_over_the_shape() {
     );
 }
 
-/// The ADR-0541 measurement protocol: reset the `get_id` counter, run
-/// `query` over the resolved plan, and return its result with the calls the
-/// run made.
-fn run_counting_get_id(g: &Graph, query: &str) -> (QueryResult, u64) {
-    let _ = crate::store::take_get_id_calls();
-    let result = exec_cypher_resolved(g, query);
-    (result, crate::store::take_get_id_calls())
+/// The corpus-35 graph: `(a:A)-[:R]->(b:B)-[:R]->(:E)`, plus `a -R-> :C`
+/// and `a -R-> :D`. Node ids are build indexes: `a = 0`, `b = 1`, `e = 2`.
+fn row_bound_rel_graph() -> Graph {
+    build(
+        &[&["A"], &["B"], &["E"], &["C"], &["D"]],
+        &[(0, 1, "R"), (1, 2, "R"), (0, 3, "R"), (0, 4, "R")],
+    )
+    .graph
 }
 
-/// ADR-0541: with the plan's tokens resolved, the fold's label checks and
-/// property reads take ids from the plan — `Interner::get_id` calls do not
-/// grow with the number of candidates.
+/// A relationship variable bound by the entering row pins the hop to that
+/// one relationship; the fold walks every relationship of the type, so it
+/// must decline (ADR-0666) and leave the reconciliation to `bind_trail`.
+/// The null binding of a failed OPTIONAL MATCH matches nothing.
 #[test]
-fn path_fold_lookups_do_not_grow_with_candidates() {
-    const QUERY: &str = "MATCH (c:Comment)-[:commentHasCreator]->(p:Person) \
-                         WHERE c.content IS NOT NULL AND p.ID = 1 \
-                         RETURN COUNT(DISTINCT c.ID) AS n";
-    let lookups_for = |comments: i64| {
-        let g = Graph::default();
-        g.begin_write().unwrap();
-        let author = person_named(&g, 1, "Ada", "Local");
-        for id in 0..comments {
-            let comment = g
-                .create_node(
-                    vec!["Comment".into()],
-                    BTreeMap::from([
-                        ("ID".into(), Value::Int(id)),
-                        ("content".into(), Value::String("x".into())),
-                    ]),
-                )
-                .unwrap();
-            g.create_rel(comment, author, "commentHasCreator".into(), BTreeMap::new())
-                .unwrap();
-        }
-        g.commit_write();
-        let (result, calls) = run_counting_get_id(&g, QUERY);
-        assert_eq!(result.rows, vec![vec![Value::Int(comments)]]);
-        calls
-    };
-    let small = lookups_for(10);
-    let large = lookups_for(1000);
-    assert_eq!(small, large, "get_id calls grew with candidates");
+fn path_fold_declines_a_row_bound_relationship_variable() {
+    let g = row_bound_rel_graph();
+    let _ = take_path_fold_bindings();
+    let folded = exec_cypher(
+        &g,
+        "MATCH ()-[r:R]->(:B) WITH r MATCH (x:A)-[r:R]->(z) RETURN count(*) AS n",
+    );
+    assert_eq!(folded.rows, vec![vec![Value::Int(1)]]);
+    assert_eq!(
+        take_path_fold_bindings(),
+        0,
+        "a row-bound relationship variable must keep the path fold off the clause"
+    );
+    let general = exec_cypher(
+        &g,
+        "MATCH ()-[r:R]->(:B) WITH r MATCH (x:A)-[r:R]->(z) WITH z RETURN count(*) AS n",
+    );
+    assert_eq!(
+        general.rows, folded.rows,
+        "the spelling must not change the answer"
+    );
+
+    let null_bound = exec_cypher(
+        &g,
+        "MATCH (x:A) OPTIONAL MATCH (x)-[r:R]->(:Nope) \
+         MATCH (x)-[r:R]->(z) RETURN count(*) AS n",
+    );
+    assert_eq!(null_bound.rows, vec![vec![Value::Int(0)]]);
 }
 
-/// ADR-0541: a property key the store never interned reads as absent from
-/// the plan's token alone — the equality matches no row and the per-query
-/// `get_id` calls (planning, the seek decision) do not grow with the
-/// number of candidates, in every predicate shape that carries the key.
+/// The decline is narrow: a free pattern and a row-bound NODE still fold —
+/// the node reconciliation the fold always had is not affected. (The free
+/// *two-hop* count stopped folding on main with #858's tally rewrite —
+/// REL8-2255 — so the free half pins the one-hop shape that still folds.)
 #[test]
-fn absent_property_key_reads_do_not_grow_with_candidates() {
-    let none: Vec<Vec<Value>> = Vec::new();
-    for (query, expected) in [
-        ("MATCH (p:Person) WHERE p.ghost = 1 RETURN p", &none),
-        ("MATCH (p:Person) WHERE p.ghost IS NOT NULL RETURN p", &none),
-        ("MATCH (p:Person {ghost: 1}) RETURN p", &none),
-        (
-            "MATCH (p:Person) WHERE p.ghost = 1 AND p.ID > 0 RETURN p.ID",
-            &none,
-        ),
-        // An aggregate over no matching row still answers one zero row.
-        (
-            "MATCH (p:Person) WHERE p.ghost = 1 RETURN count(p.ghost)",
-            &vec![vec![Value::Int(0)]],
-        ),
-    ] {
-        let lookups_for = |people: i64| {
-            let g = Graph::default();
-            g.begin_write().unwrap();
-            for id in 0..people {
-                person_named(&g, id, "Ada", "Local");
-            }
-            g.commit_write();
-            let (result, calls) = run_counting_get_id(&g, query);
-            assert_eq!(&result.rows, expected, "{query}");
-            calls
-        };
-        assert_eq!(lookups_for(10), lookups_for(500), "{query}");
-    }
-}
-
-/// ADR-0541: a relationship property equality and a relationship or node
-/// pattern map on a key the store never interned match no row with the
-/// same `get_id` count at 10 and 500 candidates — the pattern-map keys
-/// and the relationship read carry the plan's token.
-#[test]
-fn absent_rel_and_pattern_map_keys_do_not_grow_with_candidates() {
-    for query in [
-        "MATCH (:Person)-[r:KNOWS]->(:Person) WHERE r.ghost = 1 RETURN r",
-        "MATCH (:Person)-[r:KNOWS {ghost: 1}]->(:Person) RETURN r",
-        "MATCH (a:Person)-[:KNOWS]->(b:Person {ghost: 1}) RETURN a",
-    ] {
-        let lookups_for = |people: i64| {
-            let g = Graph::default();
-            g.begin_write().unwrap();
-            let first = person_named(&g, 0, "Ada", "Local");
-            for id in 1..=people {
-                let next = person_named(&g, id, "Ada", "Local");
-                g.create_rel(
-                    first,
-                    next,
-                    "KNOWS".into(),
-                    BTreeMap::from([("since".into(), Value::Int(id))]),
-                )
-                .unwrap();
-            }
-            g.commit_write();
-            let (result, calls) = run_counting_get_id(&g, query);
-            assert!(result.rows.is_empty(), "{query}");
-            calls
-        };
-        assert_eq!(lookups_for(10), lookups_for(500), "{query}");
-    }
+fn path_fold_still_takes_free_and_node_bound_patterns() {
+    let g = row_bound_rel_graph();
+    let _ = take_path_fold_bindings();
+    let free = exec_cypher(&g, "MATCH (x:A)-[:R]->(y) RETURN count(*) AS n");
+    assert_eq!(free.rows, vec![vec![Value::Int(3)]]);
+    assert!(
+        take_path_fold_bindings() > 0,
+        "an unpinned pattern still folds"
+    );
+    let _ = take_path_fold_bindings();
+    let node_bound = exec_cypher(
+        &g,
+        "MATCH (m:B) WITH m MATCH (x)-[:R]->(m)-[:R]->(z) RETURN count(*) AS n",
+    );
+    assert_eq!(node_bound.rows, vec![vec![Value::Int(1)]]);
+    assert!(
+        take_path_fold_bindings() > 0,
+        "a row-bound node still folds"
+    );
 }
 
 /// A graph for the node-counted fold: followers `f1..f5` of persons `a`, `b`,

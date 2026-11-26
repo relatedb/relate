@@ -6,11 +6,7 @@ use crate::common;
 
 use relate::Value;
 
-use common::{connection, err_text, params, string, strings};
-
-fn int(n: i64) -> Value {
-    Value::Int(n)
-}
+use common::{connection, err_text, int, params, string, strings};
 
 #[test]
 fn pattern_comprehension_inline_node_predicate_filters() {

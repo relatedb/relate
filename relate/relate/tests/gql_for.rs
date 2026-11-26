@@ -11,16 +11,14 @@ mod common;
 
 use relate::Value;
 
+use common::int;
+
 /// The single-column `x` rows of a FOR query, in order.
 fn x_rows(c: &mut relate::Connection, query: &str) -> Vec<Value> {
     common::rows(c, query)
         .into_iter()
         .map(|row| row.into_iter().next().expect("one column"))
         .collect()
-}
-
-fn int(v: i64) -> Value {
-    Value::Int(v)
 }
 
 #[test]
