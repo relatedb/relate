@@ -63,7 +63,7 @@ fn cap() -> usize {
 /// Run `f` with the reach cap lowered to `cap` on this thread.
 #[cfg(test)]
 pub(super) fn with_reach_cap<T>(cap: usize, f: impl FnOnce() -> T) -> T {
-    super::with_override(&CAP, cap, f)
+    crate::exec::test_support::with_override(&CAP, cap, f)
 }
 
 /// Take and reset this thread's counts: reach sets built, and pair

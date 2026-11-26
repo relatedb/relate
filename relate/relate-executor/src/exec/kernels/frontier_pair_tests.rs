@@ -17,7 +17,7 @@ use relate_core::Value;
 
 use crate::ctx::ExecCtx;
 use crate::exec::test_support::{
-    build, complete_graph, decide, declines_with, exec_cypher, file_triangle, int_cell,
+    build, complete_graph, count_of, decide, declines_with, exec_cypher, file_triangle,
     leading_match, line_graph, planned_clauses, reset_frontier_facts, same_rows, Built,
     LeadingMatch,
 };
@@ -106,17 +106,6 @@ fn rides(graph: &mut Graph, cypher: &str, case: &str) -> Routed {
         "{case} rides the forced rung"
     );
     routed
-}
-
-/// The one count cell of a one-row result.
-fn count_of(answer: &QueryResult) -> i64 {
-    let [row] = answer.rows.as_slice() else {
-        panic!("one row, got {:?}", answer.rows);
-    };
-    let [cell] = row.as_slice() else {
-        panic!("one cell, got {row:?}");
-    };
-    int_cell(cell).unwrap_or_else(|| panic!("an integer cell, got {cell:?}"))
 }
 
 // ---------------------------------------------------------------------

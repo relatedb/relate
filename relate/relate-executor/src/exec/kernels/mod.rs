@@ -158,6 +158,8 @@ mod ratio_guard_tests;
 mod cancel_tests;
 mod chain;
 mod chain_count;
+mod chain_tally;
+mod count_entry;
 mod hub_star;
 #[cfg(test)]
 mod memo_differential_tests;
@@ -170,6 +172,7 @@ mod memo_wiring_tests;
 // theirs (`agg_fold`): the module stays private to the kernels, the one
 // entry is the public path.
 pub(crate) use chain_count::try_fold_chain_count;
+pub(crate) use chain_tally::try_fold_two_hop_tally;
 
 use relate_core::{NodeId, Result, Value};
 use relate_ir::{
@@ -727,16 +730,7 @@ fn frontier_table_budget_override() -> Option<u64> {
 /// afterwards — including on unwind, the shared guards' own spelling.
 #[cfg(test)]
 pub(crate) fn with_frontier_table_budget<R>(bytes: u64, f: impl FnOnce() -> R) -> R {
-    FRONTIER_TABLE_BUDGET_OVERRIDE.with(|cell| cell.set(Some(bytes)));
-    /// Restores the ceiling on the way out — including on unwind.
-    struct Restore;
-    impl Drop for Restore {
-        fn drop(&mut self) {
-            FRONTIER_TABLE_BUDGET_OVERRIDE.with(|cell| cell.set(None));
-        }
-    }
-    let _restore = Restore;
-    f()
+    super::test_support::with_override(&FRONTIER_TABLE_BUDGET_OVERRIDE, bytes, f)
 }
 
 /// The test hook's deferred-pass re-arrival budget, when set — the
@@ -755,16 +749,7 @@ fn rearival_deferred_budget_override() -> Option<u64> {
 /// spelling.
 #[cfg(test)]
 pub(crate) fn with_rearival_deferred_budget<R>(work: u64, f: impl FnOnce() -> R) -> R {
-    REARRIVAL_DEFERRED_BUDGET_OVERRIDE.with(|cell| cell.set(Some(work)));
-    /// Restores the budget on the way out — including on unwind.
-    struct Restore;
-    impl Drop for Restore {
-        fn drop(&mut self) {
-            REARRIVAL_DEFERRED_BUDGET_OVERRIDE.with(|cell| cell.set(None));
-        }
-    }
-    let _restore = Restore;
-    f()
+    super::test_support::with_override(&REARRIVAL_DEFERRED_BUDGET_OVERRIDE, work, f)
 }
 
 /// Count one engaged kernel — the differential suites' test-only counter.

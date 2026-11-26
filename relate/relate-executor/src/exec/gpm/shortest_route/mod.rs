@@ -11,8 +11,6 @@
 
 use crate::UsedSet;
 use std::cell::Cell;
-#[cfg(test)]
-use std::thread::LocalKey;
 
 use relate_core::Result;
 use relate_ir::{MatchMode, PathPattern};
@@ -48,25 +46,6 @@ pub(crate) struct RouteCaches {
     pub(super) reach: ReachCache,
     /// The pattern's filtered endpoint sides (see [`end_filter`]).
     pub(super) ends: end_filter::EndFilterCache,
-}
-
-#[cfg(test)]
-/// Run `f` with the thread-local test override `slot` set to `value`,
-/// restoring the previous setting afterwards (also on unwind) — the one
-/// scoped-override helper the route's size limits share.
-pub(super) fn with_override<V: Copy + 'static, T>(
-    slot: &'static LocalKey<Cell<Option<V>>>,
-    value: V,
-    f: impl FnOnce() -> T,
-) -> T {
-    struct Restore<V: Copy + 'static>(&'static LocalKey<Cell<Option<V>>>, Option<V>);
-    impl<V: Copy + 'static> Drop for Restore<V> {
-        fn drop(&mut self) {
-            self.0.with(|c| c.set(self.1));
-        }
-    }
-    let _restore = Restore(slot, slot.with(|c| c.replace(Some(value))));
-    f()
 }
 
 #[cfg(test)]

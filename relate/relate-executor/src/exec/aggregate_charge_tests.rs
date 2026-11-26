@@ -13,6 +13,7 @@
 
 use std::collections::BTreeMap;
 
+use super::kernels::with_kernels_disabled;
 use super::test_support::{
     agg_eval_rows, agg_fn, agg_fn_over, assert_charge_partition, assert_crossing_element,
     assert_crossing_row, assert_expression_cap, distinct_fn, group_with_vals, group_with_xs,
@@ -485,10 +486,14 @@ fn a_path_fold_keyless_seed_bills_its_seats_buffer_like_a_landing() {
     let entry_and_key = crate::workspace::group_entry_insert_delta(0, &[])
         + crate::workspace::value_buffer_bytes(0);
     g.configure_expression_memory_limit(Some(entry_and_key));
-    let error = try_exec_cypher(
-        &g,
-        "MATCH (a:A)-[:E]->(:M)-[:E]->(b:B) RETURN count(*) AS c",
-    )
+    // The two-hop tally fold takes this shape first (ADR-0693); stand the
+    // kernels down so the path fold's seed is the one under test.
+    let error = with_kernels_disabled(|| {
+        try_exec_cypher(
+            &g,
+            "MATCH (a:A)-[:E]->(:M)-[:E]->(b:B) RETURN count(*) AS c",
+        )
+    })
     .err()
     .expect("the seed's seats buffer must cross a cap sized to the entry alone");
     assert_expression_cap(&error, entry_and_key);

@@ -28,12 +28,15 @@ type Rung = fn(&FoldCtx<'_>) -> Result<Option<FoldedReturn>>;
 /// quantified pattern under a plain `count`).
 const ANY_MODE_RUNGS: [Rung; 2] = [try_fold_boolean_count, try_fold_walk_count];
 
-/// The default-mode rungs, in order — the path fold first (it compiles
-/// the full hop plan once and serves the widest coverage), the chain
-/// count and one-hop folds after, each serving exactly the queries the
-/// path fold declined. No coverage gate between the rungs, so no query
-/// compiles the plan twice.
-const DEFAULT_SINGLE_HOP_RUNGS: [Rung; 3] = [
+/// The default-mode rungs, in order — the two-hop tally fold first (a
+/// structural gate on exactly two same-direction hops declines every other
+/// shape before any compile, ADR-0693), then the path fold (it compiles the
+/// full hop plan once and serves the widest coverage), the chain count and
+/// one-hop folds after, each serving exactly the queries the path fold
+/// declined. No coverage gate between the later rungs, so no query compiles
+/// the plan twice.
+const DEFAULT_SINGLE_HOP_RUNGS: [Rung; 4] = [
+    super::kernels::try_fold_two_hop_tally,
     try_fold_path_aggs,
     super::kernels::try_fold_chain_count,
     try_fold_one_hop_aggs,
