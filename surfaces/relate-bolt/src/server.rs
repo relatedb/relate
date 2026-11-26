@@ -34,11 +34,14 @@ impl Args {
     fn conn_limits(&self) -> ConnLimits {
         let handshake_timeout = crate::protocol::secs_to_opt(self.handshake_timeout_secs);
         let idle_timeout = crate::protocol::secs_to_opt(self.idle_timeout_secs);
-        let query_timeout = crate::protocol::secs_to_opt(self.query_timeout_secs);
+        let timeout = relate_core::deadline::TimeoutPolicy::from_secs(
+            self.query_timeout_secs,
+            self.query_timeout_max_secs,
+        );
         ConnLimits {
             handshake_timeout,
             idle_timeout,
-            query_timeout,
+            timeout,
             max_result_bytes: self.max_result_bytes,
             max_connections: self.max_connections,
             // A client that stops pulling is bounded by the same idle

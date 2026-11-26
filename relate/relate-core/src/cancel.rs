@@ -29,6 +29,10 @@ use std::sync::Arc;
 #[derive(Debug, Clone, Default)]
 pub struct CancelToken {
     cancelled: Arc<AtomicBool>,
+    /// Set (before `cancelled`) only by the statement deadline
+    /// ([`crate::deadline`]): the cause that lets the engine answer
+    /// [`crate::Error::TimedOut`] rather than a plain cancellation.
+    timed_out: Arc<AtomicBool>,
 }
 
 impl CancelToken {
@@ -45,6 +49,18 @@ impl CancelToken {
     /// Whether [`Self::cancel`] has been called on this token or any clone.
     pub fn is_cancelled(&self) -> bool {
         self.cancelled.load(Ordering::Acquire)
+    }
+
+    /// Cancel because the statement deadline passed. The cause is stored
+    /// first, so an observer that sees the cancellation also sees why.
+    pub(crate) fn cancel_timed_out(&self) {
+        self.timed_out.store(true, Ordering::Release);
+        self.cancel();
+    }
+
+    /// Whether the cancellation (if any) came from the statement deadline.
+    pub fn timed_out(&self) -> bool {
+        self.timed_out.load(Ordering::Acquire)
     }
 }
 

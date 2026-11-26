@@ -3,6 +3,7 @@ package relate_test
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/relatedb/relate/clients/go"
 )
@@ -120,6 +121,32 @@ func TestConnectNamespaceUnknown(t *testing.T) {
 	}
 	if !strings.HasSuffix(err.Error(), "Graph not found: nope") {
 		t.Fatalf("got %q", err.Error())
+	}
+}
+
+// ADR-0692: a statement past the connection's budget fails with the
+// client-configuration timeout, the connection stays usable, and a zero
+// duration clears the bound.
+func TestStatementTimeoutCancelsAndClears(t *testing.T) {
+	conn := openConn(t)
+	if err := conn.SetStatementTimeout(200 * time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+	_, err := conn.Query("UNWIND range(1, 2000000000) AS x RETURN count(x) AS n")
+	if err == nil {
+		t.Fatal("expected the long statement to time out")
+	}
+	if !strings.Contains(err.Error(), "query timed out after 200ms") {
+		t.Fatalf("got %q", err.Error())
+	}
+	if err := conn.SetStatementTimeout(0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Query("RETURN 1 AS n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.SetStatementTimeout(-time.Second); err == nil {
+		t.Fatal("a negative timeout must be rejected")
 	}
 }
 

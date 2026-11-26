@@ -251,6 +251,20 @@ CE rows.
   reaches the ABI as a NULL name, which selects `"neo4j"`.
 - `conn.setNamespace(name)` — changes the session namespace between
   transactions. Wraps `relate_conn_set_namespace`.
+- `conn.setStatementTimeout(milliseconds)` — bound each following statement
+  (ADR-0692). A statement past its budget is cancelled and `query` throws a
+  `RelateError` with the code
+  `Neo.ClientError.Transaction.TransactionTimedOutClientConfiguration` and the
+  message `query timed out after <N>s|<N>ms`; the connection stays usable.
+  `0` clears the bound (the default: none); a negative or non-integer value
+  throws a client-side `RelateError`. Wraps `relate_conn_set_statement_timeout`.
+
+  ```js
+  conn.setStatementTimeout(200);
+  try { conn.query("UNWIND range(1, 2000000000) AS x RETURN count(x)"); }
+  catch (e) { console.log(e.message); }   // query timed out after 200ms
+  conn.setStatementTimeout(0);
+  ```
 
 Errors throw `RelateError`:
 

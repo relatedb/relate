@@ -241,6 +241,35 @@ public final class Connection {
         try setNamespace(named: name)
     }
 
+    /// Bounds each following statement on this connection to `timeout`
+    /// (ADR-0692). A statement still running past it is cancelled and the
+    /// call throws a `RelateError` with the code
+    /// `Neo.ClientError.Transaction.TransactionTimedOutClientConfiguration`;
+    /// the connection stays usable. `nil` clears the bound (the default: none).
+    public func setStatementTimeout(_ timeout: Duration?) throws(RelateError) {
+        let ms: UInt64
+        if let timeout {
+            // Negative durations carry negative components (even with zero
+            // seconds), so test the duration, not the seconds field.
+            guard timeout >= .zero else {
+                throw RelateError.invalidParameter("statement timeout must not be negative")
+            }
+            let parts = timeout.components
+            let fraction = UInt64((parts.attoseconds + 999_999_999_999_999) / 1_000_000_000_000_000)
+            let (wholeMs, tooBig) = UInt64(parts.seconds).multipliedReportingOverflow(by: 1000)
+            let (total, overflow) = wholeMs.addingReportingOverflow(fraction)
+            guard !tooBig, !overflow else {
+                throw RelateError.invalidParameter("statement timeout is too large")
+            }
+            ms = total
+        } else {
+            ms = 0
+        }
+        var err: UnsafeMutablePointer<CChar>? = nil
+        let status = relate_conn_set_statement_timeout(handle, ms, &err)
+        try check(status, err, "setting the statement timeout")
+    }
+
     /// The one crossing that changes the session namespace; the engine
     /// refuses a name outside its fixed namespaces.
     func setNamespace(named name: String) throws(RelateError) {

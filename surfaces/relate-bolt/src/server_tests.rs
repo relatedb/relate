@@ -233,7 +233,11 @@ fn governance_flags_parse_with_documented_defaults() {
         default_limits.idle_timeout,
         Some(std::time::Duration::from_secs(DEFAULT_IDLE_TIMEOUT_SECS))
     );
-    assert_eq!(default_limits.query_timeout, None);
+    assert_eq!(
+        default_limits.timeout,
+        relate_core::deadline::TimeoutPolicy::SERVED,
+        "the served default is 30 s with no ceiling (ADR-0692)"
+    );
     assert_eq!(default_limits.max_result_bytes, DEFAULT_MAX_RESULT_BYTES);
     assert_eq!(default_limits.max_connections, DEFAULT_MAX_CONNECTIONS);
 
@@ -245,6 +249,7 @@ fn governance_flags_parse_with_documented_defaults() {
     );
     assert_eq!(defaults.idle_timeout_secs, DEFAULT_IDLE_TIMEOUT_SECS);
     assert_eq!(defaults.query_timeout_secs, DEFAULT_QUERY_TIMEOUT_SECS);
+    assert_eq!(defaults.query_timeout_max_secs, 0);
     assert_eq!(defaults.max_result_bytes, DEFAULT_MAX_RESULT_BYTES);
 
     let overridden = Args::try_parse_from([
@@ -363,7 +368,7 @@ fn connection_cap_rejects_over_cap_and_recovers() {
     let limits = ConnLimits {
         handshake_timeout: Some(std::time::Duration::from_secs(5)),
         idle_timeout: Some(std::time::Duration::from_secs(5)),
-        query_timeout: None,
+        timeout: relate_core::deadline::TimeoutPolicy::default(),
         max_result_bytes: crate::cli_args::DEFAULT_MAX_RESULT_BYTES,
         max_connections: 1,
         ..ConnLimits::default()

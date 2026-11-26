@@ -50,6 +50,7 @@ final class NativeLib {
         int relate_database_close(Pointer db);
         int relate_connect_namespace(Pointer db, String name, PointerByReference out, PointerByReference errorJson);
         int relate_conn_set_namespace(Pointer conn, String name, PointerByReference errorJson);
+        int relate_conn_set_statement_timeout(Pointer conn, long timeoutMs, PointerByReference errorJson);
         int relate_disconnect(Pointer conn);
         int relate_query_params(Pointer conn, String cypher, Pointer params,
                 PointerByReference out, PointerByReference errorJson);

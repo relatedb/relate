@@ -268,6 +268,14 @@ impl InTransactionsRows<'_> {
             Ok(()) => Ok(batch_out),
             Err(error) => {
                 self.graph.restore_scratch(snapshot);
+                // A cancellation — the caller's stop or the statement
+                // deadline (ADR-0692) — is the statement's, not the
+                // batch's: `ON ERROR CONTINUE`/`BREAK` must not absorb it
+                // and run on past the deadline. The failed batch is
+                // already rolled back; earlier batches stay committed.
+                if matches!(error, Error::Cancelled) {
+                    return Err(error);
+                }
                 // CALL IN TRANSACTIONS retry: not implemented — see the
                 // LABS-712 follow-up. The projection applies only a
                 // RETRY's explicit THEN fallback (the duration is

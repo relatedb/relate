@@ -62,6 +62,24 @@ pub(crate) fn extra_int_or(
     Ok(extra_int(fields, index, key)?.unwrap_or(default))
 }
 
+/// The `tx_timeout` of a RUN or BEGIN extra (Bolt 3+, ADR-0692): the
+/// request's statement budget, an Int of milliseconds. `None` when absent;
+/// `0` is carried as zero ("no bound", which the server ceiling may still
+/// cap); a negative or non-Int value is a malformed request.
+pub(crate) fn tx_timeout(
+    fields: &[Pack],
+    index: usize,
+) -> Result<Option<std::time::Duration>, String> {
+    match extra_int(fields, index, "tx_timeout")? {
+        None => Ok(None),
+        Some(ms) => u64::try_from(ms)
+            .map(|ms| Some(std::time::Duration::from_millis(ms)))
+            .map_err(|_| {
+                format!("unsupported extra value for tx_timeout: {ms} (must be a non-negative Int)")
+            }),
+    }
+}
+
 /// The HELLO extra's `patch_bolt` list (ADR-0329): the requested patch
 /// names, in list order. A `patch_bolt` that is not a list contributes no
 /// name, and only the string entries of a list are names; a non-string

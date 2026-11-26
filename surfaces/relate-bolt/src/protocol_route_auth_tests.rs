@@ -439,7 +439,7 @@ fn no_timeouts() -> ConnLimits {
     ConnLimits {
         handshake_timeout: None,
         idle_timeout: None,
-        query_timeout: None,
+        timeout: relate_core::deadline::TimeoutPolicy::default(),
         ..ConnLimits::default()
     }
 }

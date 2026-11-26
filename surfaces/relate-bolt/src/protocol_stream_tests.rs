@@ -174,3 +174,41 @@ fn the_pull_idle_timeout_ends_a_stalled_statement() {
     );
     assert_ne!(field(&failure, "code"), REQUEST_INVALID_CODE);
 }
+
+/// ADR-0692: the statement's deadline keeps running while its worker is
+/// parked on a consumer that stopped pulling — with no idle bound at all,
+/// the budget alone ends the statement, and the PULL that needs more
+/// answers the timeout FAILURE.
+#[test]
+fn a_spent_statement_budget_ends_a_statement_parked_on_its_consumer() {
+    let config = ConnConfig {
+        limits: ConnLimits {
+            timeout: relate_core::deadline::TimeoutPolicy {
+                default: Some(Duration::from_millis(300)),
+                ceiling: None,
+            },
+            pull_idle_timeout: None,
+            ..ConnLimits::default()
+        },
+        ..Default::default()
+    };
+    let mut client = connected_client_with(small_pool_db(), config);
+    send_run(&mut client, "UNWIND range(1, 2000000) AS i RETURN i");
+    success_map(read_msg(&mut client));
+    let (records, end) = pull_ending(&mut client, Message::Pull, vec![("n", Pack::Int(10))]);
+    assert_eq!(records.len(), 10);
+    assert!(has_more(&end));
+    std::thread::sleep(Duration::from_millis(900));
+    send_pull(&mut client, Message::Pull, vec![("n", Pack::Int(-1))]);
+    let (records, failure) = read_records(&mut client);
+    assert_eq!(records.len(), 1024 - 10, "the batch in hand pages out");
+    let failure = failure_map(failure);
+    assert_eq!(
+        field(&failure, "code"),
+        relate_error::TRANSACTION_TIMED_OUT_CODE
+    );
+    assert!(
+        field(&failure, "message").contains("query timed out after 300ms"),
+        "{failure:?}"
+    );
+}

@@ -37,6 +37,7 @@ type TxRoute = fn(
     &TxRegistry,
     Option<&str>,
     RequestDialect,
+    relate::TimeoutPolicy,
 ) -> Result<Reply, Reply>;
 
 /// Start [`SLOW_STATEMENT`] in transaction `id` on a scoped thread through
@@ -62,6 +63,7 @@ fn start_slow<'scope>(
             txs,
             None,
             RequestDialect::Plain,
+            relate::TimeoutPolicy::default(),
         );
         let _ = sender.send(outcome);
     });

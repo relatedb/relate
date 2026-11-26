@@ -21,7 +21,7 @@ pub const DEFAULT_MAX_RESULT_BYTES_STR: &str = "256mib";
 pub const DEFAULT_HANDSHAKE_TIMEOUT_SECS: u64 = 5;
 pub const DEFAULT_IDLE_TIMEOUT_SECS: u64 = 300;
 /// `0` disables the per-query timeout.
-pub const DEFAULT_QUERY_TIMEOUT_SECS: u64 = 0;
+pub const DEFAULT_QUERY_TIMEOUT_SECS: u64 = relate_core::deadline::DEFAULT_STATEMENT_TIMEOUT_SECS;
 /// `0` is unlimited (ADR-0333). A positive value is the process cap.
 pub const DEFAULT_MAX_CONNECTIONS: usize = 0;
 
@@ -121,9 +121,12 @@ pub struct Args {
     /// Seconds a connection may stall mid-message before it is closed (default 300; 0 disables)
     #[arg(long, default_value_t = crate::cli_args::DEFAULT_IDLE_TIMEOUT_SECS)]
     pub idle_timeout_secs: u64,
-    /// Seconds a running query may run before it is cancelled through the engine's CancelToken (default 0 disables)
+    /// Seconds a statement may run before it is cancelled, when the request names no `tx_timeout` (default 30; 0 disables the default)
     #[arg(long, default_value_t = crate::cli_args::DEFAULT_QUERY_TIMEOUT_SECS)]
     pub query_timeout_secs: u64,
+    /// Ceiling in seconds over every statement budget, including a request's `tx_timeout` and its "no bound" (default 0: no ceiling)
+    #[arg(long, default_value_t = 0)]
+    pub query_timeout_max_secs: u64,
     /// Maximum logical bytes in one query result before FAILURE (default 256 MiB; 0 disables)
     #[arg(long, value_name = "SIZE", default_value = crate::cli_args::DEFAULT_MAX_RESULT_BYTES_STR, value_parser = parse_cli_size)]
     pub max_result_bytes: u64,

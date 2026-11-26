@@ -173,6 +173,19 @@ relate_status relate_connect_namespace(relate_database db, const char *name, rel
  */
 relate_status relate_conn_set_namespace(relate_connection conn, const char *name, char **error_json);
 
+/*
+ * Bound each following statement on this connection to timeout_ms
+ * milliseconds (ADR-0692). A statement still running past its budget is
+ * cancelled: its relate_query_result is an error result whose
+ * error_json carries the code
+ *   Neo.ClientError.Transaction.TransactionTimedOutClientConfiguration
+ * and the message "query timed out after <N>s|<N>ms", and the connection
+ * stays usable. 0 clears the bound (the default: a connection has none).
+ * The embedded library applies no default timeout; the network surfaces
+ * (Bolt, HTTP, MCP) default to 30 s.
+ */
+relate_status relate_conn_set_statement_timeout(relate_connection conn, uint64_t timeout_ms, char **error_json);
+
 relate_status relate_disconnect(relate_connection conn);
 
 /*

@@ -50,6 +50,10 @@ struct TxRequest {
     include_counters: bool,
     #[serde(default)]
     access_mode: AccessMode,
+    /// The statement budget in seconds (ADR-0692): on a begin it is the
+    /// transaction's, on a later statement that statement's own.
+    #[serde(default)]
+    max_execution_time: Option<f64>,
 }
 
 /// The statement-less transaction answer: `{"bookmarks": []}` (ADR-0237) —
@@ -117,7 +121,14 @@ fn run_tx_statement(
     media_type: ResponseMediaType,
     dialect: RequestDialect,
     success_status: u16,
+    timeout: relate::TimeoutPolicy,
 ) -> Result<Reply, Reply> {
+    // ADR-0692: the statement's budget — its own `maxExecutionTime`, else
+    // the one the transaction's begin carried — resolved against the
+    // server policy; each statement has its own clock.
+    let request = crate::query_api::request_budget(body.max_execution_time)?;
+    let limit = timeout.resolve(request.or(entry.max_execution));
+    entry.conn.set_statement_limit(limit);
     // The body is owned: its parameter map moves into the statement run
     // once, never cloned.
     let TxRequest {
@@ -157,6 +168,7 @@ fn run_tx_statement(
 /// `Connection::begin`, ADR-0028), run the body's optional statement, and
 /// answer `{"transaction": {id, expires}, …}` with 201. A failing begin
 /// statement rolls the fresh transaction back instead of leaking it.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn begin(
     db: &Database,
     database: &str,
@@ -165,8 +177,10 @@ pub(crate) fn begin(
     txs: &TxRegistry,
     owner: Option<&str>,
     dialect: RequestDialect,
+    timeout: relate::TimeoutPolicy,
 ) -> Result<Reply, Reply> {
     let body = parse_tx_body(request_body)?;
+    let max_execution = crate::query_api::request_budget(body.max_execution_time)?;
     // The cap slot is reserved after the sweep and before the connection
     // exists (ADR-0435 §2): an over-cap begin never takes a snapshot pin,
     // an entry the sweep reclaimed frees its slot for this begin, and the
@@ -181,10 +195,15 @@ pub(crate) fn begin(
     // statement ran: nothing can look it up half-open, so the failure
     // path owns the connection outright — one rollback, no registry
     // chase-back.
-    let mut entry = TxEntry::new(conn, body.access_mode, owner.map(str::to_string));
+    let mut entry = TxEntry::new(
+        conn,
+        body.access_mode,
+        owner.map(str::to_string),
+        max_execution,
+    );
     // The route's 201 is the statement run's own success status: the
     // reply is born with it, never edited afterwards.
-    let mut reply = match run_tx_statement(&mut entry, body, media_type, dialect, 201) {
+    let mut reply = match run_tx_statement(&mut entry, body, media_type, dialect, 201, timeout) {
         Ok(reply) => reply,
         Err(reply) => {
             // A failing begin statement rolls the fresh transaction back
@@ -214,6 +233,7 @@ pub(crate) fn run(
     txs: &TxRegistry,
     owner: Option<&str>,
     dialect: RequestDialect,
+    timeout: relate::TimeoutPolicy,
 ) -> Result<Reply, Reply> {
     let body = parse_tx_body(request_body)?;
     // The registry miss folds into the route's 404 through the one lease
@@ -227,7 +247,7 @@ pub(crate) fn run(
     // unlocked: a slow statement in this transaction does not stall
     // another transaction's routes. A statement that unwinds drops the
     // lease, which rolls the transaction back and returns the cap slot.
-    let mut outcome = run_tx_statement(lease.entry(), body, media_type, dialect, 200);
+    let mut outcome = run_tx_statement(lease.entry(), body, media_type, dialect, 200, timeout);
     // The statement completed — failed or not, the client is alive — and
     // returning the lease re-stamps the transaction's activity (ADR-0435
     // §1) and puts it back in the registry.
@@ -252,6 +272,7 @@ pub(crate) fn commit(
     txs: &TxRegistry,
     owner: Option<&str>,
     dialect: RequestDialect,
+    timeout: relate::TimeoutPolicy,
 ) -> Result<Reply, Reply> {
     let body = parse_tx_body(request_body)?;
     // The final statement runs under the same lease as a run's, so the
@@ -265,7 +286,7 @@ pub(crate) fn commit(
     // goes out. No last-activity refresh: the entry leaves the registry, so
     // there is no deadline left to honor (ADR-0435 §1 refreshes operations
     // that keep it alive).
-    let reply = run_tx_statement(lease.entry(), body, media_type, dialect, 200)?;
+    let reply = run_tx_statement(lease.entry(), body, media_type, dialect, 200, timeout)?;
     let mut entry = lease.take();
     if let Err(e) = entry.conn.commit() {
         return Err(run_error(&e));

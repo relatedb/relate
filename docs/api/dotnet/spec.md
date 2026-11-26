@@ -49,6 +49,7 @@ resolution. No release download or custom extraction occurs at runtime.
 | `RelateConnection.Database`, `Namespace`, `CurrentTransaction`, `IsDisposed` | Owning database, session default, current transaction or null, and disposed state. |
 | `Query(cypher, parameters = null)`, `QueryAsync(cypher, parameters = null, cancellationToken)` | One Cypher statement; return a fully materialized `QueryResult`. |
 | `ChangeNamespace(namespace)` | Change the session default between transactions; unknown namespaces fail. |
+| `SetStatementTimeout(timeout)` | Bound each following statement on the connection (ADR-0692); a statement past it is cancelled and throws `RelateException` with code `Neo.ClientError.Transaction.TransactionTimedOutClientConfiguration`. `TimeSpan.Zero` clears the bound (the default: none); a negative value throws `ArgumentOutOfRangeException`. |
 | `BeginTransaction()`, `BeginTransactionAsync(token)` | Start one explicit transaction; a second active transaction fails. |
 | Connection `Dispose()`, `DisposeAsync()` | Idempotently disconnect and roll back an active transaction. |
 | `RelateTransaction.Connection`, `IsActive` | Owner and active state. |

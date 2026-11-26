@@ -30,7 +30,7 @@ handshake is not implemented (ADR-0484).
 > uniquely exposed — TLS (`--tls-cert`/`--tls-key`/`--tls-client-ca`),
 > `--load-csv-dir`, `--no-websocket`,
 > `--allow-plaintext`, `--handshake-timeout-secs`/`--idle-timeout-secs`/
-> `--query-timeout-secs`, `--max-result-bytes`,
+> `--max-result-bytes`,
 > `--checkpoint-interval-secs`, `--wal-dir` — are
 > **library-level only** (embed `relate_bolt::serve`); a follow-up ADR
 > may give serve flags. `--logical-graph-size-limit` is on `relate serve`
@@ -48,12 +48,12 @@ shares one `Arc<Database>`), not `serve`, which opens a store itself.
 | Message | Support |
 | --- | --- |
 | HELLO | The extra map must carry a string `user_agent`; a HELLO without one is rejected before any auth check, at either version (see [HELLO](#hello-adr-0293-adr-0312-adr-0313)). At 4.4 the auth token rides in the HELLO map, per [Authentication](#authentication-adr-0126). SUCCESS metadata: `server` (the agent string — default `"Relate/<version>"` single-sourced from the crate's `CARGO_PKG_VERSION`, overridable with `--identity`/`RELATE_IDENTITY`, ADR-0293), `connection_id` (`conn-N`, unique per listener — required by the Java driver's HelloResponseHandler) and `hints: {"connection.recv_timeout_seconds": 120}` (ADR-0312), plus `patch_bolt: ["utc"]` when the extra's `patch_bolt` asks for the utc patch (see [patch_bolt utc](#patch_bolt-utc-adr-0329)). At 5.4 (ADR-0484) the HELLO does not authenticate: a `bolt_agent` map of string keys and string values is required beside `user_agent`, the auth fields (`scheme`/`principal`/`credentials`) and `patch_bolt` are silently ignored — no acknowledgment key — the hints add `telemetry.enabled: false`, and the session stays in the AUTHENTICATION state until LOGON opens it; the notifications filter keys are accepted in the extra there (see [Notifications](#notifications-adr-0363)). |
-| RUN | `RUN cypher [params] [extra]` then `PULL`/`DISCARD`. The statement field is required: a RUN whose first field is absent or not a string answers FAILURE `Neo.ClientError.Request.Invalid` (`missing RUN statement …` / `unsupported request value for statement: <kind> …`) and enters the failed state (ADR-0342). The extra's `db` selects the namespace for that auto-commit query (ADR-0117 §7); see [Namespace selection](#namespace-selection-adr-0117). The extra's `bookmarks` are accepted and ignored (ADR-0310). Parameter values are decoded per [Parameter value decoding](#parameter-value-decoding-adr-0177). The RUN SUCCESS carries `fields` (the result column names), `columnTypes` (the per-column type names, a Relate extension key; see [Column types](#column-types-adr-0224)), `t_first` (whole milliseconds until the buffered result was available) and, inside an explicit transaction, `qid` (ADR-0311). An `EXPLAIN`/`PROFILE` statement's structured plan rides the **final PULL SUCCESS** instead — Neo4j's placement, so strict clients (cypher-shell) read it (see [Structured plan](#structured-plan-adr-0344-0345-adr-0357)) — and so do the statement's `notifications` when it has any (see [Notifications](#notifications-adr-0363)). See [Results and summaries](#results-and-summaries-adr-0309-adr-0311). |
+| RUN | `RUN cypher [params] [extra]` then `PULL`/`DISCARD`. The statement field is required: a RUN whose first field is absent or not a string answers FAILURE `Neo.ClientError.Request.Invalid` (`missing RUN statement …` / `unsupported request value for statement: <kind> …`) and enters the failed state (ADR-0342). The extra's `db` selects the namespace for that auto-commit query (ADR-0117 §7); see [Namespace selection](#namespace-selection-adr-0117). The extra's `bookmarks` are accepted and ignored (ADR-0310). The extra's `tx_timeout` (integer milliseconds) is the statement's time budget ([Timeouts](#timeouts-adr-0110-adr-0141), ADR-0692). Parameter values are decoded per [Parameter value decoding](#parameter-value-decoding-adr-0177). The RUN SUCCESS carries `fields` (the result column names), `columnTypes` (the per-column type names, a Relate extension key; see [Column types](#column-types-adr-0224)), `t_first` (whole milliseconds until the buffered result was available) and, inside an explicit transaction, `qid` (ADR-0311). An `EXPLAIN`/`PROFILE` statement's structured plan rides the **final PULL SUCCESS** instead — Neo4j's placement, so strict clients (cypher-shell) read it (see [Structured plan](#structured-plan-adr-0344-0345-adr-0357)) — and so do the statement's `notifications` when it has any (see [Notifications](#notifications-adr-0363)). See [Results and summaries](#results-and-summaries-adr-0309-adr-0311). |
 | PULL | `PULL {n, qid}` returns at most `n` buffered RECORD(s) of the result `qid` addresses (`n = -1` drains; `qid` absent or `-1` is the most recent RUN's result). A `n` or `qid` that is present but malformed — not an Int, or an `n` outside `-1` and the non-negative Ints — is a FAILURE `Neo.ClientError.Request.Invalid` and the failed state (ADR-0342); the `-1` defaults apply only when the key is absent, so a present out-of-range `n` (e.g. `-5`) fails instead of draining. A page that leaves records answers exactly `{has_more: true}`; the PULL that takes the last record answers the [ending summary](#results-and-summaries-adr-0309-adr-0311), which carries the `EXPLAIN`/`PROFILE` plan under `plan`/`profile` (ADR-0357, Neo4j's placement) and the statement's `notifications` when it has any (ADR-0363). |
 | DISCARD | `DISCARD {n, qid}` drops at most `n` rows of the addressed result (`n = -1` drops the rest) and answers like PULL: `{has_more: true}` while rows remain, else the ending summary — with the same `plan`/`profile` pair (ADR-0357) and `notifications` list (ADR-0363). A malformed `n` or `qid` is the same FAILURE as PULL (ADR-0342). |
 | RESET | Clears failed state (rolling back an open transaction first) and drops every open result. A failed rollback is a FAILURE — the failed state stays set, so a retrying RESET gets another attempt; it is never reported as a clean reset. A RESET pipelined behind other messages interrupts them: see [RESET priority](#reset-priority-adr-0317). |
 | GOODBYE | Close |
-| BEGIN | Starts an explicit transaction on the session connection (ADR-0028). The extra's `db` selects the transaction's namespace (ADR-0117 §7); its `bookmarks` are accepted and ignored (ADR-0310). BEGIN inside an open transaction is a [protocol breach](#protocol-breaches-adr-0314). |
+| BEGIN | Starts an explicit transaction on the session connection (ADR-0028). The extra's `db` selects the transaction's namespace (ADR-0117 §7); its `bookmarks` are accepted and ignored (ADR-0310); its `tx_timeout` (integer milliseconds) is the time budget of each statement of the transaction (ADR-0692). BEGIN inside an open transaction is a [protocol breach](#protocol-breaches-adr-0314). |
 | COMMIT | One WAL commit of that transaction; SUCCESS is `{bookmark}`, the engine's commit sequence, or `{}` when the transaction wrote nothing (ADR-0310, ADR-0502 §7). Results still open are dropped. COMMIT without a transaction is a [protocol breach](#protocol-breaches-adr-0314). |
 | ROLLBACK | Discard uncommitted writes and every open result; SUCCESS is `{}`. ROLLBACK without a transaction is a [protocol breach](#protocol-breaches-adr-0314). |
 | ROUTE | Single-server self routing table (ADR-0269, ADR-0318): SUCCESS with `rt: {servers: [{addresses: [<self>], role: "WRITE"}, {…, role: "READ"}, {…, role: "ROUTE"}], ttl: 300, db: <db>}`, the roles in that order. `db` is the extra's `db` when it names one, else the home database `"neo4j"`. `<self>` is the routing-context `address` the client dialed when present and non-empty, else the connection's own local socket address (ADR-0140); an operator-set `--advertised-address` is the recorded future step, not a flag today. Answered regardless of the failed state; the auth gate still applies. |
@@ -479,7 +479,8 @@ engine's own text, verbatim. An engine error maps by its typed
 | `Arithmetic` (`/ by zero`, `% by zero`, `ArithmeticError: rounding necessary`) | `Neo.ClientError.Statement.ArithmeticError` |
 | `DatabaseNotFound` (unknown `db` extra or `USE` target) | `Neo.ClientError.Database.DatabaseNotFound` |
 | `UniquenessViolation` | `Neo.ClientError.Schema.ConstraintValidationFailed` |
-| `Cancelled` (`--query-timeout-secs` expired) | `Neo.ClientError.Transaction.TransactionTimedOut` |
+| `TimedOut` (the statement's deadline passed, ADR-0692) | `Neo.ClientError.Transaction.TransactionTimedOut` (the server default or ceiling set the budget) or `Neo.ClientError.Transaction.TransactionTimedOutClientConfiguration` (the request's `tx_timeout` did) |
+| `Cancelled` (the caller's own `CancelToken`) | `Neo.ClientError.Transaction.TransactionTimedOut` |
 | `Conflict` (`write-write conflict`) | `Neo.TransientError.Transaction.Outdated` (retryable) |
 | `Capacity` — the `--logical-graph-size-limit` cap (`capacity exceeded: used=… limit=…`), the per-allocation 256 MiB expression cap (ADR-0463, plain-language detail line), or the per-commit 64 MiB WAL payload cap (ADR-0494, plain-language detail line naming the record and the cap; inside an explicit transaction the refusal arrives with the statement that takes the transaction's redo over it, ADR-0604) | `Neo.ClientError.General.TransactionOutOfMemoryError` |
 | every other `Semantic` and `Execution` | `Neo.ClientError.Statement.SemanticError` |
@@ -581,7 +582,8 @@ retain their own error messages.
 | `--concurrent-logical-workspace-limit <SIZE>` | unset (`RELATE_CONCURRENT_LOGICAL_WORKSPACE_LIMIT`; omit leaves admission off) | Pool capacity in logical bytes (ADR-0452). A positive value turns admission on; the engine does not default a pool. `SIZE` uses the `--logical-graph-size-limit` grammar. `0` is rejected. Off, overlap is not refused and responses carry no workspace receipt fields. On, charges round up to 4096-byte quanta (`CHARGE_QUANTUM_BYTES`); a new admission reserves at least 4096 logical bytes. A new reservation must leave one eighth of the pool free (`reserved + cost + tail <= capacity`, `tail = capacity / 8`). The next reservation that does not fit returns retryable `resource limit exceeded: concurrent-logical-workspace-limit limit=<N>`. A running query may grow into that tail. A set `RELATE_TOKEN_ADMISSION` fails open. |
 | `--handshake-timeout-secs <N>` | `5` | Seconds for the whole connection negotiation: one wall-clock deadline computed at accept, spanning the first-byte read, TLS handshake, post-TLS first-byte peek, WebSocket upgrade read, and Bolt magic/version exchange (ADR-0110, ADR-0141); every read in those loops re-arms the remaining budget, so a client trickling a byte per read window still dies at the deadline. After the version exchange it discharges into the idle timeout. `0` disables the bound. |
 | `--idle-timeout-secs <N>` | `300` | Seconds a connection may stall waiting for the next chunk of a Bolt message before it is closed (ADR-0110). The same budget also bounds the whole window one message may take: the deadline is armed when the message read starts and re-armed per chunk, so a byte-at-a-time trickle cannot hold a message open indefinitely. `0` disables the idle timeout. |
-| `--query-timeout-secs <N>` | `0` (off) | Seconds a single `RUN` query may execute before it is cancelled through the engine's `CancelToken` (ADR-0110/0111). On expiry the server sends `FAILURE` with message `query cancelled` under `Neo.ClientError.Transaction.TransactionTimedOut` (ADR-0307) and the session stays usable; `0` disables the bound. |
+| `--query-timeout-secs <N>` | `30` | The default statement budget in seconds (ADR-0692): used when a `RUN` or `BEGIN` carries no `tx_timeout`. A statement running longer is cancelled through the engine's `CancelToken` and the server sends `FAILURE` with message `query timed out after <N>s` under `Neo.ClientError.Transaction.TransactionTimedOut`; the session stays usable. `0` disables the default. Library-level (`relate serve` has the same flag, also `RELATE_QUERY_TIMEOUT_SECS`). |
+| `--query-timeout-max-secs <N>` | `0` (no ceiling) | Ceiling in seconds over every statement budget, a request's `tx_timeout` and its "no bound" (`tx_timeout: 0`) included (ADR-0692). `0` sets no ceiling. |
 | `--expression-memory-limit <SIZE>` | `256 MiB` (`RELATE_EXPRESSION_MEMORY_LIMIT`; `none` or `0` disables) | Per-allocation expression cap (ADR-0463). `SIZE` uses the `--logical-graph-size-limit` grammar, plus `none` for the explicit opt-out. One value an expression builds may not exceed the cap, and a retaining container's running total is checked too; a long streaming load of many small values is not charged a statement total. Omitted or unset keeps the engine default (256 MiB). |
 | `--max-result-bytes <SIZE>` | `256 MiB` (`268435456`) | Maximum retained bytes per open result before RUN returns a FAILURE naming the limit under `Neo.ClientError.General.TransactionOutOfMemoryError` (ADR-0307): the rows' `Value::logical_bytes()` plus the retained RUN statement text (ADR-0357); the result is discarded (ADR-0110). `SIZE` uses the `--logical-graph-size-limit` grammar (`mb`/`mib`/`gb`/`gib`). `0` disables the cap. |
 | `--identity <STRING>` | `Relate/<version>` (`RELATE_IDENTITY`) | The HELLO SUCCESS `server` agent string (ADR-0293), sent verbatim. The honest default reports Relate; set a Neo4j-shaped value (e.g. `Neo4j/5.26.0`) for tooling like cypher-shell that hard-checks the identity. A spoofed identity may unlock tooling behaviors the server does not implement — it is a compatibility shim, not a Neo4j feature-parity claim. |
@@ -1160,21 +1162,30 @@ defaults apply on every serve-run Bolt surface.
   message open indefinitely. A connection that stalls mid-message — for
   example, declaring a chunk length and then sending fewer bytes — is
   disconnected instead of pinning its thread indefinitely.
-- **Query timeout** (default `0`, off, `--query-timeout-secs`): bounds one
-  `RUN` query. When set, the query runs on the connection's own thread
-  against the engine's `CancelToken` (ADR-0111) while a watchdog thread
-  sleeps the budget (ADR-0233). On
-  expiry the watchdog calls `CancelToken::cancel`; the engine observes the
-  cancellation, returns its typed error (`Cancelled`) promptly, and the
-  server sends `FAILURE` with message `query cancelled` under
-  `Neo.ClientError.Transaction.TransactionTimedOut` (ADR-0307) — at the
-  first PULL or DISCARD of that statement, since cancellation happens while
-  the planned statement executes (ADR-0319). The connection — and its engine
-  `Connection` — survive, so the session stays usable after a `RESET`.
-  `BEGIN`/`COMMIT`/`ROLLBACK` are not bounded; the timeout applies to `RUN`
-  only. For a streamed result (ADR-0682) the bound applies to each wait on
-  the statement — the RUN's, and each PULL's wait for its next batch — not
-  to the time between PULLs.
+- **Statement timeout** (default `30` s, `--query-timeout-secs`, ceiling
+  `--query-timeout-max-secs`; ADR-0692): bounds one statement. The budget is
+  the request's `tx_timeout` (integer milliseconds in the `RUN` extra, or in
+  the `BEGIN` extra for every statement of that transaction, each with its
+  own clock), else the server default, under the ceiling when one is set.
+  `tx_timeout: 0` asks for no bound; a negative or non-Int value is a
+  `Neo.ClientError.Request.Invalid` FAILURE and nothing executes. A request
+  may extend the default as well as shorten it (as in Neo4j), so an
+  operator who needs a hard bound sets the ceiling. The engine enforces it
+  through the `CancelToken` (ADR-0111): on expiry the engine returns its
+  typed `TimedOut` error and the server sends `FAILURE` with message
+  `query timed out after <N>s|<N>ms` under
+  `Neo.ClientError.Transaction.TransactionTimedOut`, or
+  `…TransactionTimedOutClientConfiguration` when the request set the budget
+  — at the first PULL or DISCARD of that statement, since the statement
+  fails while executing (ADR-0319). The clock covers the whole statement:
+  for a streamed result (ADR-0682) it keeps running while the worker waits
+  for the next PULL, so a client that stops pulling loses the statement at
+  its budget and the PULL that comes later answers the FAILURE. Inside
+  `CALL { … } IN TRANSACTIONS` the budget covers all batches; the in-flight
+  batch is rolled back, committed batches stay, and `ON ERROR CONTINUE` does
+  not absorb the timeout. The connection — and its engine `Connection` —
+  survive, so the session stays usable after a `RESET`.
+  `BEGIN`/`COMMIT`/`ROLLBACK` are not themselves bounded.
 - **PULL idle timeout** (default: the idle read timeout, library-level
   `ConnLimits::pull_idle_timeout`, not a command-line flag): a streamed
   statement waits for the PULL that wants its next batch; after this long

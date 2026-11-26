@@ -78,3 +78,4 @@ runs several and returns one envelope per statement.
   checkpointing on wasm32; `:memory:` and OPFS both use the JSON codec.
 
 Full contract: `docs/api/wasm/spec.md` (API, build pipeline, wire envelope).
+- **No statement timeout (ADR-0692):** the browser build has no timer thread, so the engine's statement deadline never fires; run the engine in a Web Worker and terminate it to bound a statement.

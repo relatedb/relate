@@ -59,6 +59,9 @@ pub use binding::{
 };
 pub use clone::CloneOptions;
 pub use connection::{Connection, Executed, ExecutionFailure, StreamEvent};
+pub use relate_core::deadline::{
+    Limit as StatementLimit, TimeoutPolicy, DEFAULT_STATEMENT_TIMEOUT_SECS,
+};
 /// A cooperative cancellation flag for a running query (ADR-0111).
 ///
 /// A transport (or any caller) holds a handle and calls [`CancelToken::cancel`]

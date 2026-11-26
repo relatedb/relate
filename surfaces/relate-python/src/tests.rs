@@ -149,3 +149,4 @@ mod namespace_tests;
 mod params_tests;
 mod result_tests;
 mod temporal_tests;
+mod timeout_tests;

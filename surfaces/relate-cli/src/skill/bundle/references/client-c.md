@@ -96,3 +96,4 @@ explicit transaction — `"relate:<n>"`, the engine's commit sequence.
 
 Full contract: `docs/api/c/spec.md` (symbol table, ownership, walker, params
 builder, bookmarks, threading, panic safety).
+- **Statement timeout (ADR-0692):** `relate_conn_set_statement_timeout(conn, ms, &err)` bounds each statement on that connection (`0` clears; the embedded default is none). A statement past it is an *error result* (`relate_result_is_error`, code `…TransactionTimedOutClientConfiguration`), not a failed call; the connection stays usable.

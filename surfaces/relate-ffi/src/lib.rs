@@ -122,6 +122,10 @@ mod tabular_tests;
 mod tabular_namespace_tests;
 
 #[cfg(test)]
+#[path = "tests/tabular_timeout.rs"]
+mod tabular_timeout_tests;
+
+#[cfg(test)]
 #[path = "tests/tabular_result_metadata.rs"]
 mod tabular_result_metadata_tests;
 

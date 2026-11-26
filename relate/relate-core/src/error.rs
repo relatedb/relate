@@ -281,6 +281,14 @@ pub enum Error {
     /// `Execution("query cancelled")` rendering.
     #[error("query cancelled")]
     Cancelled,
+    /// A statement stopped because its deadline passed (the statement
+    /// timeout, ADR-0692). `requested` is true when the limit came from
+    /// the request (a driver's `tx_timeout`, an HTTP `maxExecutionTime`)
+    /// rather than the server default; surfaces map it to
+    /// `TransactionTimedOutClientConfiguration` against
+    /// `TransactionTimedOut`.
+    #[error("query timed out after {}", crate::deadline::format_limit(*.limit_ms))]
+    TimedOut { limit_ms: u64, requested: bool },
     #[error("write-write conflict")]
     Conflict,
     /// A capacity refusal. `kind` selects the user-facing detail: the
@@ -585,6 +593,15 @@ impl Error {
     /// `"query cancelled"` contract string.
     pub fn cancelled() -> Self {
         Self::Cancelled
+    }
+
+    /// The statement-deadline error (see [`crate::deadline`]).
+    pub fn timed_out(limit: std::time::Duration, requested: bool) -> Self {
+        Self::TimedOut {
+            // Rounded up, so a sub-millisecond budget reads `1ms`, never `0s`.
+            limit_ms: u64::try_from(limit.as_nanos().div_ceil(1_000_000)).unwrap_or(u64::MAX),
+            requested,
+        }
     }
 
     pub fn conflict() -> Self {

@@ -68,6 +68,9 @@ internal static unsafe partial class NativeMethods
     internal static partial RelateStatus relate_conn_set_namespace(ConnectionHandle conn, string name, nint* errorJson);
 
     [LibraryImport(LibraryName)]
+    internal static partial RelateStatus relate_conn_set_statement_timeout(ConnectionHandle conn, ulong timeoutMs, nint* errorJson);
+
+    [LibraryImport(LibraryName)]
     internal static partial RelateStatus relate_disconnect(nint conn);
 
     [LibraryImport(LibraryName)]

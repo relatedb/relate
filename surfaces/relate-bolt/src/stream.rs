@@ -60,6 +60,9 @@ pub(crate) struct StreamHandle {
     worker: Option<JoinHandle<()>>,
 }
 
+/// How often a statement parked on its consumer checks its deadline.
+const PARK_POLL: Duration = Duration::from_millis(100);
+
 impl StreamHandle {
     /// Start `cypher` on a worker that owns `conn` until the statement ends.
     /// A consumer that waits longer than `idle` for a demand stops the
@@ -85,6 +88,7 @@ impl StreamHandle {
         let (demand, demand_rx) = channel::<Demand>();
         let token = CancelToken::new();
         let worker_token = token.clone();
+        let parked_token = token.clone();
         let worker = std::thread::Builder::new()
             .name("relate-bolt-stream".into())
             // The statement runs on this thread: it needs the engine's
@@ -115,9 +119,26 @@ impl StreamHandle {
                         if batches.send(Event::Batch(rows)).is_err() {
                             return Ok(BatchFlow::Stop);
                         }
-                        let demanded = match idle {
-                            Some(idle) => demand_rx.recv_timeout(idle),
-                            None => demand_rx.recv().map_err(|_| RecvTimeoutError::Disconnected),
+                        // Parked on the consumer: the statement's deadline
+                        // (ADR-0692) keeps running, so the wait polls the
+                        // token and a spent budget ends the statement here
+                        // instead of at the next PULL.
+                        let parked = Instant::now();
+                        let demanded = loop {
+                            if parked_token.is_cancelled() {
+                                return Err(relate::Error::Cancelled);
+                            }
+                            let slice = match idle {
+                                Some(idle) => match idle.checked_sub(parked.elapsed()) {
+                                    Some(left) => left.min(PARK_POLL),
+                                    None => break Err(RecvTimeoutError::Timeout),
+                                },
+                                None => PARK_POLL,
+                            };
+                            match demand_rx.recv_timeout(slice) {
+                                Err(RecvTimeoutError::Timeout) => {}
+                                other => break other,
+                            }
                         };
                         match demanded {
                             Ok(Demand::Resume) => Ok(BatchFlow::Continue),
@@ -179,26 +200,19 @@ impl StreamHandle {
     }
 
     /// The next worker event, ticking a NOOP onto `out` each
-    /// `keep_alive` the worker is still busy (ADR-0312) and cancelling the
-    /// statement once one wait outlasts `query_timeout` (ADR-0110,
-    /// ADR-0111; the engine then answers its typed cancellation as the
-    /// `Done` result). The wait that returns `Done` also joins the worker.
+    /// `keep_alive` the worker is still busy (ADR-0312). The statement's
+    /// deadline is the engine's (ADR-0692): it answers its typed timeout as
+    /// the `Done` result. The wait that returns `Done` also joins the
+    /// worker.
     pub(crate) fn wait<W: Write>(
         &mut self,
         out: &mut W,
         keep_alive: Duration,
-        query_timeout: Option<Duration>,
     ) -> std::io::Result<Event> {
         require_interval(keep_alive)?;
-        let started = Instant::now();
-        let mut last_noop = started;
-        let mut cancelled = false;
+        let mut last_noop = Instant::now();
         loop {
-            let tick = match query_timeout.filter(|_| !cancelled) {
-                Some(limit) => keep_alive.min(limit.saturating_sub(started.elapsed())),
-                None => keep_alive,
-            };
-            match self.events.recv_timeout(tick.max(Duration::from_millis(1))) {
+            match self.events.recv_timeout(keep_alive) {
                 Ok(event) => {
                     if matches!(event, Event::Done(_)) {
                         self.join();
@@ -206,10 +220,6 @@ impl StreamHandle {
                     return Ok(event);
                 }
                 Err(RecvTimeoutError::Timeout) => {
-                    if query_timeout.is_some_and(|limit| started.elapsed() >= limit) && !cancelled {
-                        self.token.cancel();
-                        cancelled = true;
-                    }
                     if last_noop.elapsed() >= keep_alive {
                         out.write_all(&NOOP).and_then(|()| out.flush())?;
                         last_noop = Instant::now();

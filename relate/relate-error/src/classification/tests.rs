@@ -80,6 +80,16 @@ fn every_engine_variant_carries_its_adr_0307_code_and_stage() {
             Runtime,
         ),
         (Error::cancelled(), TRANSACTION_TIMED_OUT_CODE, Runtime),
+        (
+            Error::timed_out(std::time::Duration::from_secs(30), false),
+            TRANSACTION_TIMED_OUT_CODE,
+            Runtime,
+        ),
+        (
+            Error::timed_out(std::time::Duration::from_secs(5), true),
+            TRANSACTION_TIMED_OUT_CLIENT_CONFIGURATION_CODE,
+            Runtime,
+        ),
         (Error::conflict(), OUTDATED_CODE, Runtime),
         (
             Error::capacity(7, 5),

@@ -222,6 +222,8 @@ fn classify(e: &relate::Error) -> Classified {
         E::Execution(_) | E::Arithmetic(ArithmeticFailure::RoundingNecessary) | E::Cancelled => {
             (Fatal, ErrorFamily::Execution)
         }
+        // The statement deadline (ADR-0692) is the `--timeout` class, exit 7.
+        E::TimedOut { .. } => (ErrorClass::Timeout, ErrorFamily::Execution),
         E::Conflict => (Conflict, ErrorFamily::Conflict),
         // The capacity family — the graph cap, the expression cap and the
         // per-record WAL payload cap (ADR-0494) — is the one capacity

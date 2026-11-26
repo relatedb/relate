@@ -150,6 +150,7 @@ try CypherValue.Vector(mlMultiArray)                  // a Core ML output, any s
 - **No polygon geometry support** — the engine's geospatial surface is the
   point: `point.distance` and `point.withinBBox` are native, and line/polygon
   work belongs in Swift (`MapKit`, `shapely`-style geometry) over properties.
+- **Statement timeout (ADR-0692):** `try conn.setStatementTimeout(.seconds(5))` bounds each statement on the connection (`nil` clears; the default is none). A statement past it throws `.engine` with code `…TransactionTimedOutClientConfiguration`; the connection stays usable.
 
 ## Spec
 

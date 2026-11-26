@@ -156,6 +156,25 @@ public class Database implements AutoCloseable {
                     "relate_conn_set_namespace", err);
         }
 
+        /**
+         * Bound each following statement on this connection to {@code timeout}
+         * (ADR-0692). A statement still running past it is cancelled and
+         * {@link #query} throws a {@link RelateException} whose message is
+         * {@code query timed out after <N>s|<N>ms} (code
+         * {@code Neo.ClientError.Transaction.TransactionTimedOutClientConfiguration});
+         * the connection stays usable. {@link java.time.Duration#ZERO} clears the
+         * bound (the default: none). A negative duration is rejected.
+         */
+        public synchronized void setStatementTimeout(java.time.Duration timeout) {
+            ensureOpen();
+            if (timeout.isNegative()) {
+                throw new IllegalArgumentException("statement timeout must not be negative");
+            }
+            PointerByReference err = new PointerByReference();
+            NativeLib.check(NativeLib.lib().relate_conn_set_statement_timeout(handle, (timeout.toNanos() + 999_999L) / 1_000_000L, err),
+                    "relate_conn_set_statement_timeout", err);
+        }
+
         /** Open an explicit transaction (statements run inside it until commit/rollback). */
         public synchronized void begin() {
             ensureOpen();

@@ -450,4 +450,12 @@ export class Connection {
   rollback(): void;
   /** Change the session namespace between transactions (case-insensitive). */
   setNamespace(name: string): void;
+  /**
+   * Bound each following statement on this connection to `milliseconds`
+   * (ADR-0692). A statement still running past it is cancelled and
+   * `query` throws a `RelateError` with the code
+   * `Neo.ClientError.Transaction.TransactionTimedOutClientConfiguration`;
+   * the connection stays usable. `0` clears the bound (the default).
+   */
+  setStatementTimeout(milliseconds: number): void;
 }

@@ -445,5 +445,12 @@ conn.setNamespace("NEO4J");             // names match case-insensitively
   `Connection.setNamespace(String)` → `relate_conn_set_namespace`.
 - An unknown name throws `RelateException` with a message ending
   `Graph not found: <name>` (ADR-0146).
+- `Connection.setStatementTimeout(Duration)` → `relate_conn_set_statement_timeout`
+  (ADR-0692): bounds each following statement; a statement past it is
+  cancelled and `query` throws `RelateException` with the message
+  `query timed out after <N>s|<N>ms` (code
+  `Neo.ClientError.Transaction.TransactionTimedOutClientConfiguration`); the
+  connection stays usable. `Duration.ZERO` clears the bound (the default:
+  none); a negative duration throws `IllegalArgumentException`.
 - `setNamespace` is refused while an explicit transaction is open, with a
   message ending `Cannot change the namespace while a transaction is open.`

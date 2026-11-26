@@ -432,6 +432,7 @@ fn exec_relate_stmt(exec: &mut Exec<'_>, stmt: &str, at: Option<errors::Position
             println!("  .begin / .commit / .rollback / .checkpoint");
             println!("  .info");
             println!("  .timer on|off");
+            println!("  .timeout [DURATION|off]");
             println!("  .quit");
             0
         }
@@ -446,6 +447,32 @@ fn exec_relate_stmt(exec: &mut Exec<'_>, stmt: &str, at: Option<errors::Position
                     println!("Timer: off");
                 }
                 _ => println!("Usage: .timer on|off"),
+            }
+            0
+        }
+        ".timeout" => {
+            // ADR-0692: show, set or clear the per-statement budget, with
+            // the same value grammar as `--timeout`.
+            match stmt.split_whitespace().nth(1) {
+                None => match exec.timeout.filter(|limit| !limit.is_zero()) {
+                    Some(limit) => println!("Timeout: {limit:?}"),
+                    None => println!("Timeout: off"),
+                },
+                Some("off") => {
+                    exec.timeout = None;
+                    println!("Timeout: off");
+                }
+                Some(value) => match crate::timeout::parse_timeout(value) {
+                    Ok(limit) if limit.is_zero() => {
+                        exec.timeout = None;
+                        println!("Timeout: off");
+                    }
+                    Ok(limit) => {
+                        exec.timeout = Some(limit);
+                        println!("Timeout: {limit:?}");
+                    }
+                    Err(message) => println!("Usage: .timeout [DURATION|off] ({message})"),
+                },
             }
             0
         }

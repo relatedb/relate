@@ -120,6 +120,11 @@ pub(crate) struct Session {
     /// — stored by [`Self::begin_tx`], restored to the connection
     /// config by [`Self::end_tx`] together with the results.
     tx_notifications: NotificationConfig,
+    /// The `tx_timeout` the transaction's BEGIN carried (ADR-0692): the
+    /// request value every statement of the transaction resolves its
+    /// budget from, each statement with its own clock. Cleared by
+    /// [`Self::end_tx`].
+    tx_timeout: Option<std::time::Duration>,
     /// Host counter for a finished query. Shared by every connection of
     /// the listener; `None` on a server that does not count.
     on_query: Option<Arc<dyn Fn(QueryOutcome) + Send + Sync>>,
@@ -148,6 +153,7 @@ impl Session {
             dialect: Dialect::new(BoltPatches::default(), version),
             notifications: NotificationConfig::default(),
             tx_notifications: NotificationConfig::default(),
+            tx_timeout: None,
             on_query: config.on_query.clone(),
         }
     }
@@ -491,13 +497,17 @@ impl Session {
             Ok(config) => config,
             Err(parse_failure) => return self.fail_metadata_notifications(stream, &parse_failure),
         };
+        let tx_timeout = match crate::fields::tx_timeout(fields, 0) {
+            Ok(timeout) => timeout,
+            Err(message) => return self.fail_with_code(stream, REQUEST_INVALID_CODE, &message),
+        };
         if let Err(e) = apply_extra_db(self.conn(), fields, 0) {
             return self.fail_engine(stream, &e);
         }
         if let Err(e) = self.conn().begin() {
             return self.fail_engine(stream, &e);
         }
-        self.begin_tx(tx_notifications);
+        self.begin_tx(tx_notifications, tx_timeout);
         send_success(stream, vec![])?;
         Ok(Flow::Continue)
     }
@@ -508,8 +518,13 @@ impl Session {
     /// config itself at 4.4, where the keys are ignored — and the empty
     /// result store a transaction starts with. [`Self::end_tx`] is the
     /// mirrored end every transaction-ending path shares.
-    fn begin_tx(&mut self, notifications: NotificationConfig) {
+    fn begin_tx(
+        &mut self,
+        notifications: NotificationConfig,
+        timeout: Option<std::time::Duration>,
+    ) {
         self.tx_notifications = notifications;
+        self.tx_timeout = timeout;
         self.clear_results();
     }
 
@@ -521,6 +536,7 @@ impl Session {
     fn end_tx(&mut self) {
         self.clear_results();
         self.tx_notifications = self.notifications.clone();
+        self.tx_timeout = None;
     }
 
     /// COMMIT (0x12): one WAL commit under the NOOP keep-alive (ADR-0312);
@@ -621,6 +637,24 @@ impl Session {
         if let Err(e) = apply_extra_db(self.conn(), fields, 2) {
             return self.fail_engine(stream, &e);
         }
+        // ADR-0692: this statement's budget — the request's `tx_timeout`
+        // (the BEGIN's inside a transaction, the RUN's otherwise, each
+        // statement with its own clock) resolved against the server policy
+        // and handed to the engine, which owns the deadline.
+        // A malformed `tx_timeout` fails the RUN wherever it rides; inside a
+        // transaction a well-formed one is ignored (Bolt sends no extra
+        // there, and the BEGIN's value is the transaction's).
+        let run_timeout = match crate::fields::tx_timeout(fields, 2) {
+            Ok(timeout) => timeout,
+            Err(message) => return self.fail_with_code(stream, REQUEST_INVALID_CODE, &message),
+        };
+        let request = if in_transaction {
+            self.tx_timeout
+        } else {
+            run_timeout
+        };
+        let limit = config.limits.timeout.resolve(request);
+        self.conn().set_statement_limit(limit);
         // ADR-0319: a failure before execution fails the RUN. An auto-commit
         // statement outside a pipelined batch streams (ADR-0682); every
         // other one is staged whole (`session_stream.rs`).

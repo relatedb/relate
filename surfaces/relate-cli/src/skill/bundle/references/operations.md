@@ -44,6 +44,11 @@ imported by copying it to `<dir>/graph.json` before opening.
 - If a second process must access the same data, serve the Bolt surface
   (`relate serve --bolt PORT --database PATH`, ADR-0368) and connect
   clients to it — it serializes access.
+- Served statements run under a 30 s budget by default
+  (`--query-timeout-secs N`, `0` disables; `--query-timeout-max-secs N`
+  caps every request, ADR-0692). Long loads or computes pass a larger
+  per-request value (Bolt `tx_timeout`, HTTP `maxExecutionTime`) — or run
+  embedded, where no default applies.
 - To serve a store while another process writes it, run
   `relate serve --read-only` (or `--read-only=live` to keep showing the
   writer's commits) on the same directory (ADR-0306): the serve takes no writer lease,

@@ -5,6 +5,7 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use relate_core::{ce_messages, Namespace};
 use relate_executor::ExecGraph;
@@ -93,6 +94,10 @@ pub struct Connection {
     /// the assertion method records nothing.
     #[cfg(not(target_arch = "wasm32"))]
     caller_stack_asserted: bool,
+    /// The wall-clock budget of each statement on this connection
+    /// (ADR-0692); `None` (the default) is no bound. The surfaces set it
+    /// per statement from their policy and the request.
+    statement_timeout: Option<relate_core::deadline::Limit>,
     /// How many times this connection has spawned its worker. One across
     /// every later statement, including after a caught worker panic.
     #[cfg(all(test, not(target_arch = "wasm32")))]
@@ -121,6 +126,7 @@ pub(crate) fn fresh(inner: Arc<Shared>, namespace: Namespace) -> Connection {
         query_worker: None,
         #[cfg(not(target_arch = "wasm32"))]
         caller_stack_asserted: false,
+        statement_timeout: None,
         #[cfg(all(test, not(target_arch = "wasm32")))]
         worker_spawns: 0,
         #[cfg(all(test, not(target_arch = "wasm32")))]
@@ -243,6 +249,42 @@ impl Connection {
         }
         // wasm32: no worker exists to bypass — every statement already
         // runs on the caller's thread, so nothing is recorded.
+    }
+
+    /// Bound each following statement on this connection to `limit`
+    /// (ADR-0692): past it the statement is cancelled and fails with
+    /// [`crate::Error::TimedOut`]. `None` (the default) is no bound.
+    /// The caller chose the value, so a timeout reports the
+    /// client-configuration code; a server policy's resolved answer goes
+    /// through [`Self::set_statement_limit`].
+    ///
+    /// ```
+    /// use std::time::Duration;
+    /// let db = relate::Database::open(":memory:").unwrap();
+    /// let mut conn = db.connect().unwrap();
+    /// conn.set_statement_timeout(Some(Duration::from_secs(5)));
+    /// assert!(conn.query("RETURN 1 AS n").is_ok());
+    /// ```
+    pub fn set_statement_timeout(&mut self, limit: Option<Duration>) {
+        self.statement_timeout =
+            limit
+                .filter(|budget| !budget.is_zero())
+                .map(|budget| relate_core::deadline::Limit {
+                    budget,
+                    requested: true,
+                });
+    }
+
+    /// [`Self::set_statement_timeout`] from a resolved
+    /// [`relate_core::deadline::Limit`] (a surface's `TimeoutPolicy::resolve`
+    /// answer): the one place the budget/requested split is owned.
+    pub fn set_statement_limit(&mut self, limit: Option<relate_core::deadline::Limit>) {
+        self.statement_timeout = limit.filter(|limit| !limit.budget.is_zero());
+    }
+
+    /// The statement budget set by [`Self::set_statement_timeout`].
+    pub fn statement_timeout(&self) -> Option<Duration> {
+        self.statement_timeout.map(|l| l.budget)
     }
 
     pub fn query(&mut self, cypher: &str) -> Result<QueryResult> {
@@ -493,7 +535,22 @@ impl Connection {
         // the fast path for a connection whose caller asserted the
         // worker's own stack budget, the worker body for every other — so
         // this shared epilogue stays mode-free.
-        let outcome = self.dispatch_query(cypher, params, token, heartbeat, stream);
+        let _deadline = relate_core::deadline::arm(token, self.statement_timeout.map(|l| l.budget));
+        let mut outcome = self.dispatch_query(cypher, params, token, heartbeat, stream);
+        if let (true, Some(limit)) = (token.timed_out(), self.statement_timeout) {
+            // The deadline's cause rewrites the cancellation, whether the
+            // statement failed outright or as a staged execution failure.
+            let timed_out = || crate::Error::timed_out(limit.budget, limit.requested);
+            match &mut outcome.result {
+                Err(error @ crate::Error::Cancelled) => *error = timed_out(),
+                Ok(Executed::Failed(failure))
+                    if matches!(failure.error, crate::Error::Cancelled) =>
+                {
+                    failure.error = timed_out();
+                }
+                _ => {}
+            }
+        }
         if matches!(outcome.result, Ok(Executed::Rows(_))) {
             log_logical_bytes(&self.inner);
         }

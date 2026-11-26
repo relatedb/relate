@@ -60,7 +60,9 @@ pub(crate) fn serve<W: Write + Send>(
         params,
         include_counters,
         media_type,
+        limit,
     } = pending;
+    conn.set_statement_limit(limit);
     // The session namespace is the statement's: the engine streams a
     // statement only when it has no `USE` clause (`streamable_part`), so
     // nothing re-routes it, and any statement with one lands and is

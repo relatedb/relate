@@ -18,9 +18,10 @@ use crate::v2_envelope::ReplyBody;
 use relate_error::{GQLSTATUS_DATABASE_NOT_FOUND, GQLSTATUS_GENERAL};
 
 /// The request body: `statement` (required), `parameters` (optional object of
-/// `$name` bindings), `includeCounters` (optional, default false). Everything
-/// else the reference API carries (`accessMode`, `impersonatedUser`,
-/// `maxExecutionTime`, `txConfig`) is out of the charter subset and ignored
+/// `$name` bindings), `includeCounters` (optional, default false) and
+/// `maxExecutionTime` (optional, seconds: the statement's budget, ADR-0692).
+/// Everything else the reference API carries (`accessMode`,
+/// `impersonatedUser`, `txConfig`) is out of the charter subset and ignored
 /// by serde.
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -30,8 +31,25 @@ pub struct StatementRequest {
     pub parameters: Option<Map<String, Json>>,
     #[serde(default)]
     pub include_counters: bool,
+    #[serde(default)]
+    pub max_execution_time: Option<f64>,
 }
 
+/// A request's `maxExecutionTime` (seconds) as the budget it asks for
+/// (ADR-0692): absent is `None` (the server default applies), `0` asks for
+/// no bound, and a negative, NaN or infinite value is a 400. The one decode
+/// the statement route and the transaction routes share.
+pub(crate) fn request_budget(seconds: Option<f64>) -> Result<Option<std::time::Duration>, Reply> {
+    match seconds {
+        None => Ok(None),
+        Some(s) if s.is_finite() && s >= 0.0 => std::time::Duration::try_from_secs_f64(s)
+            .map(Some)
+            .map_err(|_| bad_request("maxExecutionTime is out of range")),
+        Some(_) => Err(bad_request(
+            "maxExecutionTime must be a non-negative number of seconds",
+        )),
+    }
+}
 /// Whether `handle` still has to call `check_authorization`.
 pub(crate) enum CredentialGate {
     /// `read_admitted_request` already accepted the credential.
@@ -61,6 +79,7 @@ fn auth_failure(auth: &relate_auth::AuthConfig, err: relate_auth::AuthError) -> 
 /// The auto-commit route's statement is not run here: the answer carries it
 /// pending, for the server to run while it writes (`crate::streamed`,
 /// ADR-0682); [`Answer::materialize`] collects it instead.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn handle_pending(
     db: &Database,
     request: &Request,
@@ -69,6 +88,7 @@ pub(crate) fn handle_pending(
     txs: &TxRegistry,
     gate: CredentialGate,
     extension: Option<&dyn crate::HttpExtension>,
+    timeout: relate::TimeoutPolicy,
 ) -> Answer {
     // The one discovery predicate, surface-owned (the public `GET /`
     // document is a Query API fact, not a wire-layer one): the gate calls it
@@ -119,7 +139,7 @@ pub(crate) fn handle_pending(
     // `?` keeps the guard order the arm states, without a match per
     // guard (the owner lookup alone would otherwise be spelled once per
     // branch).
-    match route(db, request, auth, database, rest, media_type, txs) {
+    match route(db, request, auth, database, rest, media_type, txs, timeout) {
         Ok(answer) => answer,
         Err(reply) => reply.into(),
     }
@@ -137,6 +157,7 @@ fn route(
     rest: &[&str],
     media_type: crate::reply::ResponseMediaType,
     txs: &TxRegistry,
+    timeout: relate::TimeoutPolicy,
 ) -> Result<Answer, Reply> {
     match rest {
         // The auto-commit statement route: POST-only, its parameter
@@ -156,12 +177,14 @@ fn route(
             // reply is written (ADR-0682).
             let params = request_params(dialect, body.parameters.as_ref())
                 .map_err(|message| bad_request(&message))?;
+            let limit = timeout.resolve(request_budget(body.max_execution_time)?);
             Ok(Answer::pending(PendingStatement {
                 conn,
                 statement: body.statement,
                 params,
                 include_counters: body.include_counters,
                 media_type,
+                limit,
             }))
         }
         // The managed-transaction routes (ADR-0237). Every statement-
@@ -177,6 +200,7 @@ fn route(
                 txs,
                 owner.as_deref(),
                 dialect,
+                timeout,
             )
             .map(Answer::Ready)
         }
@@ -196,6 +220,7 @@ fn route(
                         txs,
                         owner.as_deref(),
                         dialect,
+                        timeout,
                     )
                     .map(Answer::Ready)
                 }
@@ -216,6 +241,7 @@ fn route(
                 txs,
                 owner.as_deref(),
                 dialect,
+                timeout,
             )
             .map(Answer::Ready)
         }
@@ -367,3 +393,7 @@ mod tx_cap_tests;
 #[cfg(test)]
 #[path = "tx_lease_tests.rs"]
 mod tx_lease_tests;
+
+#[cfg(test)]
+#[path = "statement_timeout_tests.rs"]
+mod statement_timeout_tests;

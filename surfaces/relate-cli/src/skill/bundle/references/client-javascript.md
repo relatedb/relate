@@ -141,3 +141,4 @@ shared (acyclic) reference binds at each place it appears.
 
 Full contract: `docs/api/javascript/spec.md` (types, errors, lifecycle,
 namespaces).
+- **Statement timeout (ADR-0692):** `conn.setStatementTimeout(ms)` bounds each statement on the connection (`0` clears; the default is none). A statement past it throws a `RelateError` (`query timed out after …`); the connection stays usable.
