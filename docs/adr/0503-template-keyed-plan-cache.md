@@ -301,3 +301,10 @@ observe.
   dynamic-operand exclusion, the typed auto-parameter names, the payload
   boundary's value-depth guard, the bound float/integer site walk, and a
   single uncached retry on type-error-class execution failures.
+- Extended by [[adr/0687-plan-cache-token-footprint-invalidation]]: a plan no
+  longer re-plans on every commit. An entry carries its token footprint and a
+  per-token last-changed table over the interner ids, with a full-invalidation
+  epoch for schema DDL and graph replacement; cardinality drift past 2x marks
+  it dirty and its measured plan grade decides the re-plan.
+  `PlanCacheOutcome::ReplanGenerationMismatch` becomes
+  `PlanCacheOutcome::Replan` on every surface.

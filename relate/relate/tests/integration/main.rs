@@ -61,6 +61,8 @@ mod generator_batch_tail;
 mod index_constraint_coexistence;
 mod inf_nan_keywords;
 mod integer_argument_error_classes;
+mod interleaved_replan_evidence;
+mod interleaved_replan_measure;
 mod invalid_unicode_character;
 mod json_snapshot_recovery;
 mod keyword_aliases;

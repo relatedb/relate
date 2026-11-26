@@ -11,6 +11,7 @@
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use web_time::Instant;
 
@@ -28,65 +29,13 @@ use super::admission::Admission;
 use super::cache::CacheUse;
 use super::outcome::{ArmOutput, ArmRun, Executed, QueryOutcome};
 use super::render::RenderFacts;
+use super::reservation::RetryHost;
 use super::txn::{OpenTxn, TxnRun};
 use super::Connection;
 use crate::commit::commit_write;
 use crate::gate::ResultStamp;
 use crate::phase_timing::TimingStamp;
 use crate::{CancelToken, Error, QueryResult, Result, Value};
-
-/// Where REL8-1120's optimistic-hit retry leg runs its uncached
-/// re-admission — the parse-bearing tail: on this thread (the worker
-/// body, the escalation arm, or the asserted fast path's inline arm,
-/// whose stacks carry the parser's nesting-proportional recursion), or
-/// on the query worker (the cache-hit inline route's arm, ADR-0663,
-/// whose thread never asserted that budget).
-#[derive(Clone, Copy)]
-pub(super) enum RetryHost {
-    ThisThread,
-    /// The query-worker host — native only: wasm32 has no worker, so
-    /// the enum itself carries no `Worker` variant there and the retry
-    /// below runs in place on the caller (the platform's only thread).
-    #[cfg(not(target_arch = "wasm32"))]
-    Worker,
-}
-
-/// The statement's token-budget reservation as one owner: the reserved
-/// ledger and its observation key as one pair — always `Some` together —
-/// plus the consuming half of its lifecycle, `settle` (observe the peak,
-/// keep the ledger alive on a finished result). The two ambient steps —
-/// charging the retained rows and attaching the receipt — stay the free
-/// functions in `dispatch.rs`: they run on the thread-local ledger the
-/// admission guard installs, and `LedgerGuard`'s exclusive-borrow lifetime
-/// cannot be co-owned with the ledger it guards, so the owner is not
-/// borrowable while the guard is armed. Constructed by
-/// [`Connection::reserve_statement`].
-struct StatementReservation {
-    ledger: relate_core::tokens::TokenLedger,
-    key: crate::token_budget::PeakKey,
-    /// Plan bytes reserved for an uncached run. Dropped with the
-    /// reservation, which is the end of the statement.
-    plan: Option<crate::token_budget::PlanHold>,
-}
-
-impl StatementReservation {
-    /// Settle the reservation: observe the ledger's peak against its key,
-    /// then hand the ledger to the finished result it charged (its charge
-    /// transfers with the rows); any other outcome drops it here. Runs
-    /// after the admission guard dropped — the ledger moves once the
-    /// window closed.
-    fn settle(self, budget: &crate::token_budget::TokenBudget, outcome: &mut QueryOutcome) {
-        budget.observe(
-            self.key,
-            self.ledger
-                .receipt(relate_core::TokenOutcome::Success)
-                .peak_logical_bytes,
-        );
-        if let Ok(Executed::Rows(result)) = outcome.result.as_mut() {
-            result._retained_ledger = Some(Box::new(self.ledger));
-        }
-    }
-}
 
 /// The dispatch-only inputs bundled so `dispatch` stays under
 /// `clippy::too_many_arguments`: the stamp; the statement's start
@@ -379,12 +328,17 @@ impl Connection {
             timing,
             effective,
             memory,
+            cache_template,
             preview,
         } = admission;
         let params = effective.as_ref().unwrap_or(budget_params);
         // LABS-1120: the admission's timing facts ride as the one carrier
         // — the same bundle the stamping tail consumes, no re-shaping here.
-        let logical = logical.as_ref();
+        // The admitted plan's `Arc` is the identity the grade seam checks
+        // (ADR-0687 decision 6), so it stays named beside the borrowed view
+        // the dispatch reads.
+        let admitted_plan = logical;
+        let logical = admitted_plan.as_ref();
         // The admission gates between the EXPLAIN early return and dispatch:
         // the ADR-0308 parameter-completeness check and the ADR-0116 §2
         // SHOW DATABASES + NEXT restriction. One named seam.
@@ -439,6 +393,13 @@ impl Connection {
             stream.rename_columns(super::columns::authored_renames(logical, cypher, preview));
             stream.sink()
         });
+        // ADR-0687 decision 6: a cache-served statement's execution grades
+        // its entry — one named seam, like the stages around it. The probe
+        // spans the dispatch alone; the fold waits for the statement's final
+        // outcome at the end of the epilogue.
+        let grade_probe = cache_template
+            .is_some()
+            .then(relate_executor::GradeProbe::begin);
         let mut outcome = self.dispatch(logical, params, parse_plan_ns, cypher, token, ctx, stream);
         // `commit_write` reserves returned rows before it appends to the
         // WAL, so an auto-commit write's result is exempt from the charge
@@ -489,87 +450,47 @@ impl Connection {
                 preview,
             );
         }
+        // ADR-0687 decision 6: the grade is the plan's work, folded only
+        // once the statement's whole epilogue has run — the retained rows'
+        // charge, the PROFILE enrichment, the receipt and the settle — and
+        // left the result it grades. A statement the user sees fail grades
+        // nothing, and the write is keyed on the admitted plan's identity,
+        // so a re-plan landing after the lookup cannot absorb a superseded
+        // plan's reading.
+        self.grade_served_execution(
+            cache_template.as_deref(),
+            &admitted_plan,
+            grade_probe,
+            &outcome,
+        );
         outcome
     }
 
-    /// Reserve the statement's token budget ([`StatementReservation`]'s
-    /// constructor): `None` when the budget is off — the off state's one
-    /// representation, and the off path pays no key construction
-    /// (`TokenBudget::reserve_keyed` constructs the key only when on) —
-    /// the reserved ledger and its observation key otherwise. The
-    /// admission guard is armed by the caller — see the owner's doc.
-    fn reserve_statement(
+    /// Grade a cache-served statement's entry with what its execution
+    /// measured (ADR-0687 decision 6): the run's store reads, taken around
+    /// the dispatch alone — never through the PROFILE sink — and folded into
+    /// the entry after the run and its whole epilogue, so no cache lock spans
+    /// it. Every path that no entry served has no probe and grades nothing;
+    /// a failed run's reads are not the plan's work, so only the statement's
+    /// *final* result grades. `admitted_plan` is the plan the run served, and
+    /// the fold is identity-checked against it: a re-plan that landed between
+    /// the lookup and this write must not absorb the superseded plan's
+    /// reading.
+    fn grade_served_execution(
         &self,
-        cypher: &str,
-        params: &BTreeMap<String, Value>,
-    ) -> Result<Option<StatementReservation>> {
-        Ok(self
-            .inner
-            .resolved
-            .budget
-            .reserve_keyed(|| self.inner.commit_ts(), cypher, params)
-            .transpose()?
-            .map(|(ledger, key)| StatementReservation {
-                ledger,
-                key,
-                plan: None,
-            }))
-    }
-
-    /// Charge the plan that is about to run. A hit is already on the cache
-    /// ledger, and the statement reservation above is the workspace check
-    /// that sees that charge. An original compile reserves its plan on the
-    /// statement. A cacheable miss reserves on the cache ledger only when
-    /// the admission ceiling still has room.
-    fn charge_plan(
-        &self,
-        memory: super::cache::PlanMemory,
-        reservation: &mut Option<StatementReservation>,
-    ) -> Result<()> {
-        use super::cache::PlanMemory;
-        use crate::token_budget::HoldAttempt;
-
-        let budget = &self.inner.resolved.budget;
-        // Park a hold on the statement reservation. A hold exists only
-        // when the budget is on, and the budget is on exactly when
-        // `reserve_statement` produced a reservation — so a held plan
-        // without one is a broken invariant, not a case to drop.
-        let park = |reservation: &mut Option<StatementReservation>, hold| {
-            reservation
-                .as_mut()
-                .expect("a plan hold implies an enabled budget, hence a statement reservation")
-                .plan = Some(hold);
+        cache_template: Option<&str>,
+        admitted_plan: &Arc<LogicalPlan>,
+        probe: Option<relate_executor::GradeProbe>,
+        outcome: &QueryOutcome,
+    ) {
+        let (Some(template), Some(probe)) = (cache_template, probe) else {
+            return;
         };
-        match memory {
-            PlanMemory::Cached => Ok(()),
-            PlanMemory::Statement(bytes) => match budget.try_hold_admitted(bytes) {
-                HoldAttempt::Off => Ok(()),
-                HoldAttempt::Held(hold) => {
-                    park(reservation, hold);
-                    Ok(())
-                }
-                HoldAttempt::Refused => Err(budget.plan_refusal(bytes)),
-            },
-            PlanMemory::Cacheable(pending) => {
-                let bytes = pending.bytes;
-                match budget.try_hold_admitted(bytes) {
-                    HoldAttempt::Off => self.publish_cache_entry(pending, None),
-                    HoldAttempt::Held(hold) => self.publish_cache_entry(pending, Some(hold)),
-                    HoldAttempt::Refused => {
-                        // The cache ceiling refused the entry: the plan is
-                        // not published, and the statement carries it with
-                        // running-query growth when the pool allows. `Off`
-                        // cannot follow a `Refused` (same budget); a refused
-                        // grow leaves the plan uncharged by design — the
-                        // statement already holds its own reservation.
-                        if let HoldAttempt::Held(hold) = budget.try_hold_grow(bytes) {
-                            park(reservation, hold);
-                        }
-                    }
-                }
-                Ok(())
-            }
+        let reads = probe.finish();
+        if outcome.staged_failure().is_some() || outcome.result.is_err() {
+            return;
         }
+        crate::plan_cache::lock(&self.inner).record_grade(template, admitted_plan, reads as f64);
     }
 
     /// The normal statement dispatch: explicit-transaction overlay,

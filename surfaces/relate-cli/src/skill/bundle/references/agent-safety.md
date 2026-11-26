@@ -60,8 +60,8 @@ transaction. `--read-only` is the fence for that.
   as complete. The `--json` / `--mode envelope` riders and `--toon`'s
   terminal entries carry every statement's `"timings"` object (the phase
   split and the fine sub-split, in milliseconds) and the `"planCache"`
-  outcome (`miss` / `hit-raw-fastpath` / `hit-template` /
-  `replan-generation-mismatch` / `bypassed`) on every run; in `--jsonl`
+  outcome (`miss` / `hit-raw-fastpath` / `hit-template` / `replan` /
+  `bypassed`) on every run; in `--jsonl`
   that terminal line is the `--timings` opt-in (default off — the stream
   is pure rows), so pass the flag to read where a slow statement spends
   its time and whether the plan cache served it). Raise it

@@ -18,6 +18,7 @@ mod cache;
 mod columns;
 mod outcome;
 mod render;
+mod reservation;
 mod staged;
 mod stats_pump;
 mod stream;

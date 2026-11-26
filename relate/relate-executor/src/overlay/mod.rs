@@ -10,6 +10,7 @@ use relate_planner::LogicalPlan;
 use crate::csv::CsvReader;
 use crate::exec::kernels::construct_memo::ConstructMemos;
 use crate::graph::{Graph, Procedure, QueryStats, SchemaSnapshot};
+use crate::row::Row;
 
 mod budget;
 mod idlists;
@@ -406,13 +407,20 @@ impl<'a> ExecGraph<'a> {
     /// same call — so no entry can produce a reset-but-undeclared
     /// statement. Every statement entry calls this and nothing else; the
     /// budget tests call it with an empty plan for the reset alone.
-    pub(crate) fn begin_statement(&self, plan: &LogicalPlan) {
+    ///
+    /// The returned row is the statement's single root seed — the row its
+    /// driving operator starts from, minted here so both entries take it from
+    /// one home instead of fabricating it inline. A statement root drives
+    /// exactly one row (ADR-0687 decision 6), which is why the plan grade
+    /// measures store reads per execution and divides by no input count.
+    pub(crate) fn begin_statement(&self, plan: &LogicalPlan) -> Row {
         self.csv.begin_statement();
         self.reset_statement();
         self.nested_evals().reset();
         self.expression_budget.reset();
         self.spelled.reset();
         crate::exec::declare_plan_names(self, plan);
+        Row::new()
     }
 
     /// Record names the statement declares: the `__`-prefixed ones are the

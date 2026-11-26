@@ -865,7 +865,14 @@ pub(crate) fn execute_part_read_seeded(
 
 /// [`execute_part_read_seeded`] for the admitted streamable part (ADR-0682):
 /// the terminal `RETURN` hands its batches to `sink`. No PROFILE site — a
-/// PROFILE run keeps the materialized terminal — and no enclosing scope.
+/// PROFILE run keeps the materialized terminal — and no enclosing scope. It
+/// takes the statement's seed rows like its seeded twin: only the statement
+/// entry hands rows down, never a token.
+///
+/// This route never reaches the seeded entries' walk, yet its rows are
+/// produced while `read_part` runs (the consumer is fed inline by the
+/// terminal), so the probe armed around the dispatch reads a complete grade
+/// when the entry returns.
 pub(crate) fn execute_part_read_streamed(
     graph: &ExecGraph<'_>,
     part: StreamablePart<'_>,

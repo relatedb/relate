@@ -18,6 +18,8 @@ mod open_config;
 mod phase_timing;
 mod plan_bytes;
 mod plan_cache;
+mod plan_footprint;
+mod plan_grade;
 mod plan_node;
 mod procedures;
 mod profile;
@@ -33,6 +35,7 @@ pub mod test_opts;
 #[cfg(test)]
 mod tests;
 mod token_budget;
+mod token_changes;
 
 use std::path::PathBuf;
 use std::str::FromStr;

@@ -34,9 +34,14 @@ one window each, never two), and `QueryResult::result_generation_ms()`
 sits inside `execute_ms()` (the buffered executor result's conversion into
 the `QueryResult`; `0.0` on `EXPLAIN`, whose render is itself its result
 generation). Beside them, `QueryResult::plan_cache()` reports which
-plan-cache stage (ADR-0503) served the statement — `miss` /
-`hit-raw-fastpath` / `hit-template` / `replan-generation-mismatch` /
-`bypassed` — the fact that explains a hit's near-zero `parse_ms()` and its
-zero fine parse sub-windows. The example pins all of these invariants and
-observes a miss turn into a raw fast-path hit; its output prints each
-statement's fine split and plan-cache outcome beside the coarse three.
+plan-cache stage (ADR-0503, ADR-0687) served the statement — `miss` /
+`hit-raw-fastpath` / `hit-template` / `replan` / `bypassed` — where
+`replan` is a hit that rebuilt its plan from the cached lowered AST before
+serving (the store-wide epoch moved, the per-key value statistics the plan
+read changed (ADR-0700), an absent-name entry saw a commit, or the plan's
+grade degraded; ADR-0687's footprint invalidation re-stamps or marks a
+drifted entry dirty but keeps serving it). The outcome is the fact that explains a
+hit's near-zero `parse_ms()` and its zero fine parse sub-windows. The
+example pins all of these invariants and observes a miss turn into a raw
+fast-path hit; its output prints each statement's fine split and plan-cache
+outcome beside the coarse three.

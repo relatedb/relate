@@ -19,6 +19,7 @@ mod sealed;
 mod sealed_arena;
 mod services;
 mod spatial_profile;
+mod token_changes;
 
 #[test]
 fn schema_capture_never_waits_for_theater_while_holding_catalog() {

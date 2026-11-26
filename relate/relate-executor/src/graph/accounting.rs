@@ -312,8 +312,8 @@ impl Graph {
         let after_shape = self.rel_chain_shape(id);
         let after_bytes = self.visible_rel_account(id);
         if after_shape != before_shape {
-            let growth = crate::memory::chain_bytes(after_shape, rel_version_stride()) as i64
-                - crate::memory::chain_bytes(before_shape, rel_version_stride()) as i64;
+            let growth =
+                crate::memory::chain_growth(before_shape, after_shape, rel_version_stride());
             self.charge(after_bytes as i64 + growth);
         } else {
             self.charge(after_bytes as i64 - before_bytes as i64);
@@ -350,8 +350,8 @@ impl Graph {
                 .as_ref()
                 .map(|n| crate::memory::live_node_account(n, &charge))
                 .unwrap_or(0);
-            let growth = crate::memory::chain_bytes(after_shape, node_version_stride()) as i64
-                - crate::memory::chain_bytes(before_shape, node_version_stride()) as i64;
+            let growth =
+                crate::memory::chain_growth(before_shape, after_shape, node_version_stride());
             self.charge(added as i64 + growth);
         } else {
             self.charge_node_swap(before, after.as_ref());

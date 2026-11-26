@@ -200,7 +200,7 @@ fn schema_presence_reads_never_false_positive_an_absent_name() {
     // SET and MERGE-style writes intern their keys too.
     g.begin_write().unwrap();
     g.set_property_node(a, "set_key", Value::Int(2));
-    g.merge_properties_node(b, &BTreeMap::from([("merge_key".into(), Value::Int(3))]));
+    g.set_property_node(b, "merge_key", Value::Int(3));
     g.commit_write();
     assert!(g.has_property_key("set_key"));
     assert!(g.has_property_key("merge_key"));

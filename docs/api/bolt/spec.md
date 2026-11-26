@@ -1256,8 +1256,8 @@ follows:
   zero on `EXPLAIN`, whose render is itself its result generation), each
   Float seconds — the plan-cache outcome `plan_cache` (a String:
   `miss` / `hit-raw-fastpath` / `hit-template` /
-  `replan-generation-mismatch` / `bypassed`) and `db` (the namespace it
-  ran in). It adds `stats` when any
+  `replan` / `bypassed`, the vocabulary of ADR-0687) and `db` (the
+  namespace it ran in). It adds `stats` when any
   counter is non-zero, `bookmark` after an auto-commit statement that
   committed a write ([Bookmarks](#bookmarks-adr-0310)), the query `notifications` when the
   statement has any ([Notifications](#notifications-adr-0363)), and the

@@ -39,6 +39,9 @@ impl Graph {
         if added_ids.is_empty() {
             return;
         }
+        // ADR-0687: the added label ids are the footprint tokens whose row
+        // counts just moved.
+        self.note_changed_tokens(added_ids.iter().copied());
         // ADR-0439: adding a constraint label introduces the node's
         // constrained tuple; capture the before-image now. A label no
         // constraint carries cannot change any tuple — the map's scope is
@@ -138,6 +141,9 @@ impl Graph {
         // degree-stats family calls below ride the family's own
         // empty-set early returns.
         if !actually_removed.is_empty() {
+            // ADR-0687: the removed label ids are the footprint tokens whose
+            // row counts just moved.
+            self.note_changed_tokens(actually_removed.iter().copied());
             // The effect, not the request: the WAL row records the names
             // the node actually lost (the add and overlay twins' policy,
             // ADR-0309), derived from the effect ids through the

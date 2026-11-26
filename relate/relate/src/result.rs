@@ -407,7 +407,7 @@ impl QueryResult {
 
     /// The statement's plan-cache outcome (LABS-1120): which ADR-0503
     /// stage served the plan — `HitTemplate` / `HitRawFastPath` /
-    /// `ReplanGenerationMismatch` / `Miss` / `Bypassed`,
+    /// `Replan` / `Miss` / `Bypassed`,
     /// rendered on every machine-readable surface through
     /// [`PlanCacheOutcome::as_str`]. The fact that explains a hit's
     /// near-zero [`QueryResult::parse_ms`] and zero fine parse
@@ -584,9 +584,10 @@ mod tests {
     /// reachable outcome in one session: the first run of a template
     /// misses; the same text again hits the raw fast path (stage 1); a
     /// different literal on the same template hits the template key
-    /// (stage 2); a write bumps the stats generation, so the next read
-    /// re-plans from the carried AST; and the plan-tree path (EXPLAIN)
-    /// bypasses the cache entirely.
+    /// (stage 2); a schema change (CREATE INDEX) moves ADR-0687's
+    /// full-invalidation epoch, so the next read re-plans from the
+    /// carried AST; and the plan-tree path (EXPLAIN) bypasses the cache
+    /// entirely.
     #[test]
     fn plan_cache_outcome_distinguishes_miss_raw_template_replan_and_bypass() {
         use crate::PlanCacheOutcome;
@@ -617,11 +618,12 @@ mod tests {
             templated_lex_parse, 0.0,
             "a hit parses nothing: the fine parse sub-windows are zero"
         );
-        // A write bumps the stats generation: the next hit re-plans from
-        // the entry's carried AST under the fresh generation.
-        conn.query("CREATE (:Person {name: 'b', age: 1})").unwrap();
+        // Schema DDL moves ADR-0687's full-invalidation epoch: the next
+        // hit re-plans from the entry's carried AST.
+        conn.query("CREATE INDEX person_name FOR (n:Person) ON (n.name)")
+            .unwrap();
         let (replanned, _) = read(&mut conn, "a");
-        assert_eq!(replanned, PlanCacheOutcome::ReplanGenerationMismatch);
+        assert_eq!(replanned, PlanCacheOutcome::Replan);
         // A caller parameter map carrying the reserved `__AUTO_*__` prefix
         // disables the cache for the statement entirely — no stage, not
         // even the raw lookup — while the statement itself runs normally.

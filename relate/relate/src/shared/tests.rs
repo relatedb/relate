@@ -159,3 +159,44 @@ fn install_reloaded_with_a_poisoned_wal_lock_mutates_nothing() {
     let wal = shared.wal.lock().unwrap_or_else(|err| err.into_inner());
     assert_eq!(wal.lsn, live_lsn);
 }
+
+/// ADR-0687: a graph replacement is the wholesale change no token footprint
+/// describes. The reload moves the full-invalidation epoch past every entry
+/// and re-bases the per-token table whole — the replacement graph's interner
+/// ids are unrelated to the installed graph's, so no stamp may cross the
+/// swap.
+#[test]
+fn install_reloaded_rebases_the_token_table_and_advances_the_epoch() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("db");
+    let uri = path.to_str().unwrap();
+    let db = Database::open_with(uri, writable()).unwrap();
+    db.connect().unwrap().execute("CREATE (:Seed)").unwrap();
+    db.checkpoint().unwrap();
+    let shared = db.shared();
+    // The pair a reload would install, loaded beside the live store.
+    let (graph, wal) = open_store_readonly(&shared.store).unwrap();
+    // A later commit stamps its own token on the live table.
+    db.connect().unwrap().execute("CREATE (:Live)").unwrap();
+    let seed = crate::tests::token_id(&shared, "Seed");
+    let epoch_before = shared.lock_token_changes().epoch();
+    assert!(
+        shared.lock_token_changes().last_changed(seed) != 0,
+        "the seed commit stamped its label"
+    );
+
+    let publication = begin_reload_swap(&shared).unwrap();
+    shared
+        .install_reloaded(&publication, graph, wal, None)
+        .unwrap();
+    drop(publication);
+
+    let table = shared.lock_token_changes();
+    assert_eq!(table.epoch(), epoch_before + 1, "the swap moves the epoch");
+    assert_eq!(
+        table.last_changed(seed),
+        0,
+        "the replacement drops every slot"
+    );
+    assert!(table.stamped_tokens().is_empty());
+}

@@ -84,6 +84,14 @@ pub(super) struct Admission {
     /// A cacheable miss is charged on the cache ledger after the statement
     /// reservation, when the ceiling has room.
     pub(super) memory: PlanMemory,
+    /// The cache entry this plan was served from (ADR-0687 decision 6):
+    /// the template key the statement's execution records its plan grade
+    /// against, read after the run so no cache lock spans it. The fold is
+    /// identity-checked against this admission's own `logical` `Arc`, so a
+    /// re-plan landing in between cannot receive the superseded plan's
+    /// reading. `None` on every uncached path — a plan the cache never
+    /// served has no entry to grade.
+    pub(super) cache_template: Option<Arc<str>>,
     /// The store's resolved preview set, read once under the publication
     /// guard before the cache lookup (ADR-0378's one owner): every
     /// consumer after admission — the uncached parse already inside, and
@@ -254,11 +262,11 @@ impl Connection {
     /// The cache-hit admission path (ADR-0503 stage 3): the entry's
     /// handles ride out of the lookup, so an eviction after it cannot
     /// fail the hit (the Arcs keep the plan valid; freshness is the
-    /// generation check under the guard), and the caller receives the
-    /// already-merged effective map (it merges nothing). The lookup was
-    /// the whole PARSE window, so the fine sub-split stamps the true
-    /// zero and the outcome explains it; the hit verification below (the
-    /// bound float/integer site check) runs inside the PLAN window —
+    /// footprint, epoch and grade checks under the guard), and the caller
+    /// receives the already-merged effective map (it merges nothing). The
+    /// lookup was the whole PARSE window, so the fine sub-split stamps the
+    /// true zero and the outcome explains it; the hit verification below
+    /// (the bound float/integer site check) runs inside the PLAN window —
     /// armed before it, closed after — so its cost stays measured in the
     /// coarse `plan` duration, never hidden from the envelope.
     fn admit_hit(
@@ -270,15 +278,16 @@ impl Connection {
         preview: relate_core::PreviewFeatures,
     ) -> Result<Option<Admission>> {
         let parse = clocks.parse_started.elapsed();
-        // LABS-832: the PLAN phase — the generation check, a possible
-        // replan from the carried AST, the hit verification, and the
-        // admission gates.
+        // LABS-832: the PLAN phase — the freshness admission (footprint,
+        // epoch and grade), a possible replan from the carried AST, the
+        // hit verification, and the admission gates.
         let plan_started = Instant::now();
         let CacheHit {
             plan,
             stamp,
             effective,
             outcome,
+            template,
         } = self.admit_from_cache(cypher, hit.handles, hit.stage, &hit.values, params)?;
         // A shared plan was compiled for one literal value. The two
         // value-dependent classes that survive to a hit each have exactly
@@ -322,6 +331,7 @@ impl Connection {
             },
             Some(effective),
             PlanMemory::Cached,
+            Some(template),
         )))
     }
 
@@ -382,7 +392,8 @@ impl Connection {
                         plan_cache: cache,
                     },
                     Some(compiled.effective),
-                    PlanMemory::Cacheable(compiled.pending),
+                    PlanMemory::Cacheable(Box::new(compiled.pending)),
+                    None,
                 );
                 if cache_insert_eligible(&admission, cypher) {
                     return Ok(admission);
@@ -420,6 +431,7 @@ impl Connection {
             },
             None,
             PlanMemory::Statement(bytes),
+            None,
         ))
     }
 }
@@ -503,6 +515,7 @@ fn stage_admission(
     timing: crate::phase_timing::AdmissionTiming,
     effective: Option<BTreeMap<String, Value>>,
     memory: PlanMemory,
+    cache_template: Option<Arc<str>>,
 ) -> Admission {
     Admission {
         started: clocks.started,
@@ -514,6 +527,7 @@ fn stage_admission(
         timing,
         effective,
         memory,
+        cache_template,
         preview: staged.preview,
     }
 }
@@ -541,14 +555,15 @@ struct StagedPlan {
 /// planner folds a `CALL { … }` subquery as `Access::WRITE` and a
 /// `FOREACH` as a write clause, so neither can classify `r` — the
 /// exclusion is enforced where it is owned, never re-encoded here.
-/// Writes never insert and self-invalidate every reader through the
-/// generation bump. One more exclusion, found in review: a plan carrying
-/// a **dynamic name operand** (dynamic label or property key) never
-/// inserts — the front validates such operands against bound *values* at
-/// lowering time (LABS-709, with a content half an empty or null-byte
-/// name beyond its type half), and a hit skips lowering, so caching it
-/// would let a later statement's values escape that admission check.
-/// Such statements stay uncached, never silently unvalidated.
+/// Writes never insert; a write's commit advances the generation and stamps
+/// the tokens it changed, so a reader whose footprint reads one re-decides
+/// at that stamp, not every reader re-planning. One more exclusion, found
+/// in review: a plan carrying a **dynamic name operand** (dynamic label or
+/// property key) never inserts — the front validates such operands against
+/// bound *values* at lowering time (LABS-709, with a content half an empty
+/// or null-byte name beyond its type half), and a hit skips lowering, so
+/// caching it would let a later statement's values escape that admission
+/// check. Such statements stay uncached, never silently unvalidated.
 pub(super) fn cache_insert_eligible(admission: &Admission, cypher: &str) -> bool {
     admission.preamble == PreambleMode::Execute
         && cypher.len() <= MAX_CACHED_STATEMENT_BYTES

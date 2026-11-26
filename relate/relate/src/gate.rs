@@ -203,6 +203,21 @@ impl Connection {
         }
     }
 
+    /// The plan's token footprint and the per-token counts it was planned
+    /// against (ADR-0687), under the caller's read guard: the same
+    /// [`crate::stats::GraphPatternStats`] construction (ADR-0218) the
+    /// plan was compiled with, so a recorded count is the one the planner
+    /// was told. The caller holds the guard across both the plan and this
+    /// capture, so no commit can publish between them.
+    pub(crate) fn footprint_under_guard(
+        &self,
+        plan: &LogicalPlan,
+        params: &BTreeMap<String, Value>,
+    ) -> crate::plan_footprint::PlanFootprint {
+        let stats = crate::stats::GraphPatternStats::new(&self.inner.graph, params);
+        crate::plan_footprint::plan_footprint(plan, &stats)
+    }
+
     /// The gate-and-classification half of [`Self::plan_gate_classify`],
     /// under the caller's read guard — the one sequence every statement's
     /// admission ends with, cached plan or fresh (ADR-0503: the cache
