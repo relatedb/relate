@@ -9,8 +9,8 @@ use crate::packstream::Pack;
 use crate::requests::Message;
 use crate::testutil::{
     assert_closes, failure_map, field, read_msg, read_records, read_route_rt, send_begin,
-    send_commit, send_pull, send_reset, send_rollback, send_run_legacy, send_run_with, send_struct,
-    success_map,
+    send_commit, send_pull, send_reset, send_rollback, send_route, send_run_legacy, send_run_with,
+    send_struct, success_map,
 };
 use std::net::TcpStream;
 
@@ -28,18 +28,21 @@ fn hello(client: &mut TcpStream) -> Vec<(Pack, Pack)> {
 /// SUCCESS map.
 type RunAndPull = (Vec<(Pack, Pack)>, Vec<Pack>, Vec<(Pack, Pack)>);
 
-/// Send RUN `cypher` at 4.4 — `extra` as its extra map through testutil's
-/// [`send_run_with`], the absent-extra legacy form through
-/// [`send_run_legacy`] when `None` — then PULL -1; return the RUN SUCCESS
-/// map, the RECORD first columns, and the final PULL SUCCESS map.
-fn run_and_pull(
-    client: &mut TcpStream,
-    cypher: &str,
-    extra: Option<Vec<(&str, Pack)>>,
-) -> RunAndPull {
-    match extra {
-        Some(entries) => send_run_with(client, cypher, entries),
-        None => send_run_legacy(client, cypher),
+/// The wire form of the RUN [`run_and_pull`] sends.
+enum RunShape<'a> {
+    /// The two-field form with no extra map ([`send_run_legacy`]).
+    Legacy,
+    /// The three-field form carrying these extra entries ([`send_run_with`]).
+    Extra(Vec<(&'a str, Pack)>),
+}
+
+/// Send RUN `cypher` at 4.4 in the `shape` wire form, then PULL -1; return
+/// the RUN SUCCESS map, the RECORD first columns, and the final PULL SUCCESS
+/// map.
+fn run_and_pull(client: &mut TcpStream, cypher: &str, shape: RunShape) -> RunAndPull {
+    match shape {
+        RunShape::Extra(entries) => send_run_with(client, cypher, entries),
+        RunShape::Legacy => send_run_legacy(client, cypher),
     }
     let run_success = success_map(read_msg(client));
     send_pull(client, Message::Pull, vec![("n", Pack::Int(-1))]);
@@ -72,7 +75,7 @@ fn run_extra_db_selects_the_namespace_for_that_request() {
     let (_, records, pull) = run_and_pull(
         &mut client,
         "SHOW DATABASES",
-        Some(db_extra(Pack::String("system_ontologies".into()))),
+        RunShape::Extra(db_extra(Pack::String("system_ontologies".into()))),
     );
     // ADR-0229: system_ontologies answers administration commands, not
     // graph queries.
@@ -80,7 +83,7 @@ fn run_extra_db_selects_the_namespace_for_that_request() {
     assert_eq!(success_db(&pull), "system_ontologies");
 
     // No carry-over: the next RUN without `db` is back in `neo4j`.
-    let (_, _, pull) = run_and_pull(&mut client, "MATCH (n) RETURN count(n)", None);
+    let (_, _, pull) = run_and_pull(&mut client, "MATCH (n) RETURN count(n)", RunShape::Legacy);
     assert_eq!(success_db(&pull), "neo4j");
 }
 
@@ -89,19 +92,23 @@ fn run_extra_db_absent_null_or_empty_means_neo4j() {
     let mut client = crate::testutil::connected_client();
 
     // No extra map at all.
-    let (_, _, pull) = run_and_pull(&mut client, "RETURN 1 AS n", None);
+    let (_, _, pull) = run_and_pull(&mut client, "RETURN 1 AS n", RunShape::Legacy);
     assert_eq!(success_db(&pull), "neo4j");
     // Extra map without a `db` key.
-    let (_, _, pull) = run_and_pull(&mut client, "RETURN 1 AS n", Some(vec![]));
+    let (_, _, pull) = run_and_pull(&mut client, "RETURN 1 AS n", RunShape::Extra(vec![]));
     assert_eq!(success_db(&pull), "neo4j");
     // `db: null`.
-    let (_, _, pull) = run_and_pull(&mut client, "RETURN 1 AS n", Some(db_extra(Pack::Null)));
+    let (_, _, pull) = run_and_pull(
+        &mut client,
+        "RETURN 1 AS n",
+        RunShape::Extra(db_extra(Pack::Null)),
+    );
     assert_eq!(success_db(&pull), "neo4j");
     // `db: ""`.
     let (_, _, pull) = run_and_pull(
         &mut client,
         "RETURN 1 AS n",
-        Some(db_extra(Pack::String(String::new()))),
+        RunShape::Extra(db_extra(Pack::String(String::new()))),
     );
     assert_eq!(success_db(&pull), "neo4j");
 }
@@ -118,7 +125,7 @@ fn begin_extra_db_selects_the_transaction_namespace() {
 
     // A RUN inside the transaction carries no `db` and runs in the
     // BEGIN-time namespace.
-    let (_, records, pull) = run_and_pull(&mut client, "SHOW DATABASES", None);
+    let (_, records, pull) = run_and_pull(&mut client, "SHOW DATABASES", RunShape::Legacy);
     assert_eq!(records.len(), 3);
     assert_eq!(success_db(&pull), "system_ontologies");
 
@@ -126,7 +133,7 @@ fn begin_extra_db_selects_the_transaction_namespace() {
     success_map(read_msg(&mut client));
 
     // After COMMIT an auto-commit RUN without `db` is back in `neo4j`.
-    let (_, _, pull) = run_and_pull(&mut client, "MATCH (n) RETURN count(n)", None);
+    let (_, _, pull) = run_and_pull(&mut client, "MATCH (n) RETURN count(n)", RunShape::Legacy);
     assert_eq!(success_db(&pull), "neo4j");
 }
 
@@ -171,7 +178,7 @@ fn unknown_db_on_run_or_begin_fails_with_the_ce_text() {
     // RESET, then the session is usable again in `neo4j`.
     send_reset(&mut client);
     success_map(read_msg(&mut client));
-    let (_, _, pull) = run_and_pull(&mut client, "RETURN 1 AS n", None);
+    let (_, _, pull) = run_and_pull(&mut client, "RETURN 1 AS n", RunShape::Legacy);
     assert_eq!(success_db(&pull), "neo4j");
 }
 
@@ -197,7 +204,7 @@ fn non_canonical_db_casing_echoes_the_canonical_namespace() {
     let (_, _, pull) = run_and_pull(
         &mut client,
         "SHOW DATABASES",
-        Some(db_extra(Pack::String("SYSTEM".into()))),
+        RunShape::Extra(db_extra(Pack::String("SYSTEM".into()))),
     );
     assert_eq!(success_db(&pull), "system");
 }
@@ -214,7 +221,7 @@ fn use_target_query_echoes_the_namespace_the_query_ran_in() {
     let (_, records, pull) = run_and_pull(
         &mut client,
         "USE system CALL db.info() YIELD name RETURN name",
-        None,
+        RunShape::Legacy,
     );
     assert_eq!(records, vec![Pack::String("system".into())]);
     assert_eq!(success_db(&pull), "system");
@@ -275,11 +282,7 @@ fn discard_success_carries_db_and_hello_is_unchanged() {
     // ROUTE (added on main by #144) answers the single-server routing
     // table; with no extra `db` it reports the home database "neo4j"
     // (ADR-0318).
-    send_struct(
-        &mut client,
-        Message::Route.signature(),
-        vec![Pack::Map(vec![])],
-    );
+    send_route(&mut client, vec![], vec![]);
     let rt = read_route_rt(&mut client);
     assert_eq!(field(&rt, "db"), "neo4j");
 }
@@ -299,7 +302,7 @@ fn run_extra_db_inside_a_transaction_is_ignored() {
     let (_, records, pull) = run_and_pull(
         &mut client,
         "SHOW DATABASES",
-        Some(db_extra(Pack::String("neo4j".into()))),
+        RunShape::Extra(db_extra(Pack::String("neo4j".into()))),
     );
     assert_eq!(records.len(), 3);
     assert_eq!(success_db(&pull), "system");
