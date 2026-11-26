@@ -78,6 +78,40 @@ const AWAIT_INDEX_TIMEOUT: ProcArgMeta = ProcArgMeta::with_default(
 /// `catalog-only` entries below are inventory rows the corpus lists but
 /// never calls — listed, with no engine operation behind them.
 pub static BUILTIN_PROCEDURE_SIGNATURES: &[ProcSignature] = &[
+    // The compat-callables rows (ADR-0699): foreign procedure names
+    // re-implemented as Cypher bodies by the query front-end (`relate_front::
+    // compat_callables`) — the CALL is rewritten away before lowering, so
+    // `rows` stays `None` and the dispatch answers a bypassed rewrite with an
+    // authored error. Pinned to the front-end table (parameters with their
+    // default positions, yield columns, descriptions) by the drift-guard
+    // test in `procedure_registry`'s tests; engine classification
+    // (`writes`, `executable`, `listed`) lives in these rows alone. The
+    // seed set answers neo4j-graphrag's writer (relatedb/relate#862).
+    ProcSignature::write("apoc.create.addLabels")
+        .described("Compatibility (ADR-0699): adds the labels through Cypher's dynamic labels — `SET nodes:$(labels)`.")
+        .writes()
+        .args(&[
+            ProcArgMeta::described("nodes", "The node to add the labels to.", "NODE"),
+            ProcArgMeta::described("labels", "The labels to add.", "LIST<STRING>"),
+        ])
+        .returns(&[ProcArgMeta::described("node", "The node with the labels added.", "NODE")]),
+    ProcSignature::write("apoc.merge.relationship")
+        .described("Compatibility (ADR-0699): merges through Cypher's dynamic relationship types — `MERGE (start)-[r:$(relType)]->(end) ON CREATE SET r += … ON MATCH SET r += …`. `identProps` is accepted and ignored (callers pass `{}`).")
+        .writes()
+        .args(&[
+            ProcArgMeta::described("start", "The start node of the relationship.", "NODE"),
+            ProcArgMeta::described("relType", "The type of the relationship.", "STRING"),
+            ProcArgMeta::described("identProps", "Properties that identify the relationship. Accepted and ignored.", "MAP"),
+            ProcArgMeta::described("onCreateProps", "Properties merged when the relationship is created.", "MAP"),
+            ProcArgMeta::described("end", "The end node of the relationship.", "NODE"),
+            ProcArgMeta::with_default(
+                "onMatchProps",
+                "Properties merged when the relationship is matched.",
+                "MAP",
+                "{}",
+            ),
+        ])
+        .returns(&[ProcArgMeta::described("rel", "The merged relationship.", "RELATIONSHIP")]),
     // Neo4j 2026.05 still lists the older singular
     // `db.awaitIndex` alongside the current plural
     // `db.awaitIndexes` (see the worked "Combining all
@@ -109,6 +143,26 @@ pub static BUILTIN_PROCEDURE_SIGNATURES: &[ProcSignature] = &[
         .works_on_system()
         .described("Clears all query caches.")
         .executable(false),
+    ProcSignature::write("db.create.setNodeVectorProperty")
+        .described("Compatibility (ADR-0699): stores the embedding as a list property — the Cypher `SET node[key] = vector` the dynamic property key expresses.")
+        .writes()
+        .args(&[
+            ProcArgMeta::described("node", "The node on which the new property will be stored.", "NODE"),
+            ProcArgMeta::described("key", "The name of the new property.", "STRING"),
+            ProcArgMeta::described("vector", "The embedding to store.", "LIST<FLOAT>"),
+        ]),
+    ProcSignature::write("db.create.setRelationshipVectorProperty")
+        .described("Compatibility (ADR-0699): stores the embedding as a list property — the Cypher `SET relationship[key] = vector` the dynamic property key expresses.")
+        .writes()
+        .args(&[
+            ProcArgMeta::described(
+                "relationship",
+                "The relationship on which the new property will be stored.",
+                "RELATIONSHIP",
+            ),
+            ProcArgMeta::described("key", "The name of the new property.", "STRING"),
+            ProcArgMeta::described("vector", "The embedding to store.", "LIST<FLOAT>"),
+        ]),
     ProcSignature::write("db.createLabel")
         .described("Create a label")
         .writes()

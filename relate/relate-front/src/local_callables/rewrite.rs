@@ -53,7 +53,8 @@ use relate_parser::{
 use relate_names::SmallName;
 
 use super::validate::terminal_names;
-use super::{walker_error, Resolver};
+use super::Resolver;
+use crate::ast::tree::walker_error;
 
 /// The weight of a cloned local-callable body: one per visited
 /// statement, clause, and expression node (the whole-tree walker in

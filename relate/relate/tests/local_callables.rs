@@ -582,3 +582,51 @@ fn unit_output_conditional_procedure_body_stays_callable() {
         .unwrap();
     assert_eq!(ints(&result), vec![1]);
 }
+
+/// ADR-0699 precedence, end to end behind the gate: a user `DEFINE` of a
+/// compat-callables name wins over the table entry — the user's body runs
+/// (a different label than the table's `SET nodes:$(labels)` would set),
+/// and the resolver's unit-wide name registry never sees the injected
+/// duplicate.
+#[test]
+fn a_user_define_of_a_compat_callable_name_wins() {
+    let mut c = gated_connection();
+    c.query("CREATE (n:Base)").unwrap();
+    let result = c
+        .query(
+            "DEFINE PROCEDURE apoc.create.addLabels(nodes, labels) { \
+               SET nodes:UserDefined \
+               RETURN nodes AS node \
+             } \
+             MATCH (n:Base) \
+             CALL apoc.create.addLabels(n, ['IgnoredByUserBody']) YIELD node \
+             RETURN labels(node) AS l",
+        )
+        .unwrap();
+    let labels = common::ontology::string_list(&result.rows[0][0]);
+    assert_eq!(labels, vec!["Base", "UserDefined"]);
+}
+
+/// Kind scoping, end to end behind the gate (ADR-0699 + ADR-0382): a user
+/// `DEFINE FUNCTION` carrying a compat procedure's name never suppresses
+/// the procedure's injection — the call answers the injected Cypher body,
+/// and the void shadow case the kind-agnostic mask once allowed (a bare
+/// CALL resolving as a silent no-op) cannot occur.
+#[test]
+fn a_user_function_of_a_compat_procedure_name_does_not_shadow_the_procedure() {
+    let mut c = gated_connection();
+    c.query("CREATE (n:Base)").unwrap();
+    let result = c
+        .query(
+            "DEFINE FUNCTION apoc.create.addLabels(nodes, labels) = labels \
+             MATCH (n:Base) WITH n, [\"UserFn\"] AS ls \
+             CALL apoc.create.addLabels(n, ls) YIELD node \
+             RETURN labels(node) AS l",
+        )
+        .unwrap();
+    let labels = common::ontology::string_list(&result.rows[0][0]);
+    assert_eq!(
+        labels.iter().map(String::as_str).collect::<Vec<_>>(),
+        vec!["Base", "UserFn"]
+    );
+}

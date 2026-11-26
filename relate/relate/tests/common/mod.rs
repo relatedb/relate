@@ -116,6 +116,15 @@ pub fn connection_with(options: relate::OpenOptions) -> relate::Connection {
     env_seam::open(":memory:", options).connect().unwrap()
 }
 
+/// A fresh `Database` handle on a fresh in-memory store, for the tests
+/// that need the handle itself (procedure registration, ADR-0116 §10) —
+/// opened through `env_seam::open` like every connection constructor
+/// here, so the one documented test-store open path stays the only one
+/// and no test bypasses the seam for want of a fixture.
+pub fn database() -> relate::Database {
+    env_seam::open(":memory:", relate::OpenOptions::default())
+}
+
 /// A fresh connection on a workspace-capped in-memory store — the one
 /// construction the pool-pin test files share, each filling only its own
 /// limit.
@@ -635,6 +644,18 @@ pub fn ints(values: &[i64]) -> relate::Value {
     )
 }
 
+/// A `Value::List` of `Value::Float` — the float twin of [`strings`] and
+/// [`ints`], the canonical spelling of an embedding-list expectation
+/// (the compat-callables suite's `db.create.set*VectorProperty` rows).
+pub fn floats(values: &[f64]) -> relate::Value {
+    list(
+        values
+            .iter()
+            .map(|value| relate::Value::Float(*value))
+            .collect(),
+    )
+}
+
 /// The A/B/C `p1`-valued store the comprehension pipe suites share —
 /// one node per label, so label filters and disjunctions have distinct
 /// rows to answer with.
@@ -658,6 +679,19 @@ pub fn text(conn: &mut relate::Connection, query: &str) -> String {
 pub fn run(connection: &mut relate::Connection, query: &str) -> relate::QueryResult {
     connection
         .query(query)
+        .unwrap_or_else(|e| panic!("query failed: {e}\n{query}"))
+}
+
+/// [`run`] with a parameter map — the `query_with_params` twin, so the
+/// parameterized suites share one runner instead of each carrying a
+/// bespoke unwrap closure.
+pub fn run_with_params(
+    connection: &mut relate::Connection,
+    query: &str,
+    params: BTreeMap<String, relate::Value>,
+) -> relate::QueryResult {
+    connection
+        .query_with_params(query, params)
         .unwrap_or_else(|e| panic!("query failed: {e}\n{query}"))
 }
 

@@ -3,6 +3,7 @@
 pub mod agg;
 pub(crate) mod ast;
 mod call_scope;
+pub mod compat_callables;
 mod ident_hash;
 pub(crate) mod local_callables;
 mod lower;
@@ -106,22 +107,26 @@ fn map_parse_error(e: relate_parser::ParseError) -> Error {
 
 /// Parse with `relate-parser`, resolve CIP-231 local callables away
 /// (the rewrite pass that eliminates `DEFINE` blocks and their call
-/// sites, ADR-0382), and lower into a planner-IR `Query`.
+/// sites, ADR-0382), and lower into a planner-IR `Query`. Rides the same
+/// resolve-and-lower tail as every statement entry, so compat-callables
+/// injection (ADR-0699) applies here too.
 pub fn parse_and_lower(src: &str) -> Result<Query> {
-    let mut stmt = relate_parser::parse(src).map_err(map_parse_error)?;
-    // The ADR-0257 depth guard runs before the CIP-231 resolver walks the
-    // tree: a too-deep body gets the typed depth error here, never a
-    // stack overflow inside the resolver's own recursion.
-    crate::validate::validate_nesting_depth(&stmt)
-        .map_err(|error| Error::syntax(error.to_string()))?;
-    local_callables::resolve(&mut stmt)?;
-    lower_statement(&stmt)
+    Ok(parse_and_lower_statement(src)?.query)
 }
 
-/// The resolve-then-lower tail every top-level entry shares: the CIP-231
-/// rewrite pass (ADR-0382) eliminates `DEFINE` blocks and their call
-/// sites, then lowering runs on the plain pre-existing Cypher that
-/// remains, keeping the statement's own `EXPLAIN`/`PROFILE` preamble
+/// The storeless entries' injection predicate (ADR-0699): no store, so
+/// no store-registered procedure can be shadowed and every compat table
+/// name stays injectable — one named fact for the storeless call sites,
+/// in place of the same closure literal re-spelled per entry.
+fn storeless_procedure(_: &str) -> bool {
+    false
+}
+
+/// The resolve-then-lower tail every top-level entry shares: the
+/// compat-callables injection (ADR-0699) and the CIP-231 rewrite pass
+/// (ADR-0382) eliminate foreign procedure calls and `DEFINE` blocks with
+/// their call sites, then lowering runs on the plain pre-existing Cypher
+/// that remains, keeping the statement's own `EXPLAIN`/`PROFILE` preamble
 /// mode. `params` are the statement's bound parameters, which the
 /// dynamic-operand admission rule treats as compile-time constants
 /// (LABS-709).
@@ -130,16 +135,26 @@ pub fn parse_and_lower(src: &str) -> Result<Query> {
 /// entry, never re-closed here), so the PARSE stage's fine sub-split
 /// (LABS-1120, [`ParseStages`]) is stamped at the boundaries this tail
 /// owns.
+/// `store_has_procedure` answers whether the store has registered the
+/// name — `true` declines the compat-callables table entry for it
+/// (ADR-0699 precedence); storeless entries pass
+/// [`storeless_procedure`].
 fn resolve_and_lower(
     mut stmt: relate_parser::Statement,
     lex_parse: Duration,
     options: validate::ValidateOptions,
     policy: StatementPolicy,
     params: &std::collections::BTreeMap<String, relate_core::Value>,
+    store_has_procedure: &dyn Fn(&str) -> bool,
 ) -> Result<LoweredStatement> {
     let rewrite_started = Instant::now();
-    crate::validate::validate_nesting_depth(&stmt)
-        .map_err(|error| Error::syntax(error.to_string()))?;
+    crate::validate::validate_nesting_depth(&stmt).map_err(ast::tree::walker_error)?;
+    // ADR-0699: the compat-callables injection runs in this shared tail,
+    // so no parse entry can omit it — an injected definition is
+    // engine-provided, not a user `DEFINE`, and in the gated entries the
+    // preview gate has already run on the user's AST before this tail, so
+    // an injected definition never trips the `local-callables` gate.
+    compat_callables::inject(&mut stmt, store_has_procedure)?;
     local_callables::resolve(&mut stmt)?;
     let rewrite = rewrite_started.elapsed();
     let lower_started = Instant::now();
@@ -159,20 +174,16 @@ fn resolve_and_lower(
 /// Parse and lower a top-level statement, keeping its `EXPLAIN`/`PROFILE`
 /// preamble mode alongside the lowered query.
 pub fn parse_and_lower_statement(src: &str) -> Result<LoweredStatement> {
-    // ADR-0257: enforce the query-size limit before parsing. The parser
-    // enforces the same cap; this check keeps the error on the front-end
-    // path even if a caller reaches lowering another way. LABS-1120: the
-    // lex_parse sub-window is the parse call's own window, closed at the
-    // call — the one meaning every entry stamps.
-    let parse_started = Instant::now();
-    let stmt = parse_sized(src)?;
-    let lex_parse = parse_started.elapsed();
+    // The size-capped, timed parse — [`parse_timed`] owns the window's
+    // definition and the cap's rationale.
+    let (stmt, lex_parse) = parse_timed(src, relate_parser::lexer::ParseOptions::default())?;
     resolve_and_lower(
         stmt,
         lex_parse,
         validate::ValidateOptions::default(),
         StatementPolicy::default(),
         &std::collections::BTreeMap::new(),
+        &storeless_procedure,
     )
 }
 
@@ -223,54 +234,73 @@ pub fn parse_and_lower_statement_with_policy(
         preview,
         policy,
         &std::collections::BTreeMap::new(),
+        &storeless_procedure,
     )
 }
 
 /// [`parse_and_lower_statement_with_policy`] with the statement's bound
-/// parameter values: the engine's admission path, which has them and must
-/// pass them so a parameter-typed dynamic operand of the wrong type fails
-/// before execution (LABS-709) instead of hiding behind a zero-row `MATCH`.
+/// parameter values and the store's procedure-registry predicate: the
+/// engine's admission path, which has them and must pass them so a
+/// parameter-typed dynamic operand of the wrong type fails before
+/// execution (LABS-709) instead of hiding behind a zero-row `MATCH`, and
+/// passes `store_has_procedure` so a compat-callables injection
+/// (ADR-0699, [`compat_callables`]) never shadows a procedure the store
+/// registered. The predicate answers whether the store HAS the name —
+/// `true` declines the table entry for it; `false` (also the storeless
+/// entries' constant answer) leaves it injectable.
 pub fn parse_and_lower_statement_with_policy_and_params(
     src: &str,
     preview: relate_core::PreviewFeatures,
     policy: StatementPolicy,
     params: &std::collections::BTreeMap<String, relate_core::Value>,
+    store_has_procedure: &dyn Fn(&str) -> bool,
 ) -> Result<LoweredStatement> {
     // Plan-cache placeholders are the literals they replaced. Compile-time
     // literal checks (boolean operands, SKIP/LIMIT, variable types) read
     // them for this parse only.
     let _auto = relate_core::AutoLiteralGuard::install(params);
-    // LABS-1120: the lex_parse sub-window is the parse call's own window,
-    // closed at the call — before the preview-gate walk below, which stays
-    // in the coarse PARSE window alone (an inter-stage gap, like the
-    // engine's post-EXPLAIN gates).
-    let parse_started = Instant::now();
+    // The preview-gate walk below stays in the coarse PARSE window alone
+    // (an inter-stage gap, like the engine's post-EXPLAIN gates), after
+    // [`parse_timed`]'s window has closed.
     // The `mixed-label-syntax` gate widens what the parser accepts (the
     // floor's CIP-40/CIP-14 mixing rejections lift), so it threads into
     // the parse itself as `ParseOptions` -- unlike the AST-detector gates
     // below, there is no floor AST to detect the construct in.
-    let stmt = parse_sized_with_options(src, parse_options(preview))?;
-    let lex_parse = parse_started.elapsed();
+    let (stmt, lex_parse) = parse_timed(src, parse_options(preview))?;
+    // The preview gate runs on the user's AST (ADR-0371): a gated preview
+    // construct fails closed with the authored disabled-feature error
+    // before anything of it lowers or plans.
     preview_gate::require_detected_gates(&stmt, preview)?;
-    // The constructs that only materialize against stored graph-type state
-    // fail closed in the executor's graph-type layer with the same authored
-    // error.
+    // The compat-callables injection then happens inside the shared
+    // resolve-and-lower tail below — an injected definition is
+    // engine-provided, not a user `DEFINE`, so it cannot trip the
+    // `local-callables` gate that already ran. The constructs that only
+    // materialize against stored graph-type state fail closed in the
+    // executor's graph-type layer with the same authored error.
     resolve_and_lower(
         stmt,
         lex_parse,
         validate::ValidateOptions { preview },
         policy,
         params,
+        store_has_procedure,
     )
 }
 
-/// The shared size-capped parse of [`parse_and_lower_statement`] and
-/// [`parse_and_lower_statement_with_preview`]: ADR-0079's query-size limit
-/// before parsing (the parser enforces the same cap; this check keeps the
-/// error on the front-end path even if a caller reaches lowering another
-/// way), then the parse itself. Every gate closed.
-fn parse_sized(src: &str) -> Result<relate_parser::Statement> {
-    parse_sized_with_options(src, relate_parser::lexer::ParseOptions::default())
+/// The shared size-capped, timed parse every statement entry stamps:
+/// ADR-0079's query-size limit before parsing (the parser enforces the
+/// same cap; this check keeps the error on the front-end path even if a
+/// caller reaches lowering another way), then the parse itself, closing
+/// the lex_parse window — the parse call's own window, the one meaning
+/// every entry stamps (LABS-1120) — so the window's definition has one
+/// home instead of a copy per entry. Every gate closed.
+fn parse_timed(
+    src: &str,
+    options: relate_parser::lexer::ParseOptions,
+) -> Result<(relate_parser::Statement, Duration)> {
+    let parse_started = Instant::now();
+    let stmt = parse_sized_with_options(src, options)?;
+    Ok((stmt, parse_started.elapsed()))
 }
 
 /// Normalize a statement for the plan cache (ADR-0503): the engine

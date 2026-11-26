@@ -13,7 +13,6 @@ use std::time::Duration;
 
 use web_time::Instant;
 
-use relate_front::parse_and_lower_statement_with_policy_and_params;
 use relate_front::validate::StatementPolicy;
 use relate_parser::PreambleMode;
 use relate_planner::LogicalPlan;
@@ -411,9 +410,14 @@ impl Connection {
             values,
         } = seed;
         let effective = effective_params(params, &values);
-        let Ok(parsed) = parse_and_lower_statement_with_policy_and_params(
-            &rewritten, preview, policy, &effective,
-        ) else {
+        // ADR-0699: the guarded front-end parse, the same helper the
+        // uncached admission tail uses — a store-registered procedure
+        // (ADR-0116 §10) is never shadowed by a compat-callables table
+        // entry in the cached compile either. A failed compile (including
+        // a guard health error) declines the cache: the uncached tail
+        // re-runs every stage and reports the error there.
+        let Ok(parsed) = self.parse_with_store_predicate(&rewritten, preview, policy, &effective)
+        else {
             return Ok(None);
         };
         let parse = parse_started.elapsed();

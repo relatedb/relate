@@ -35,6 +35,7 @@ mod clause_projection_streams;
 mod clone;
 mod collect_list_concat;
 mod comparison_semantics;
+mod compat_callables;
 mod compile_time_error_classes;
 mod comprehension_label_filter_map_expr;
 mod comprehension_pipe_preference;

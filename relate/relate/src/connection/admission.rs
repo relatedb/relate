@@ -404,8 +404,10 @@ impl Connection {
                 drop(admission);
             }
         }
-        let parsed =
-            parse_and_lower_statement_with_policy_and_params(cypher, preview, policy, params)?;
+        // ADR-0699: the guarded front-end parse — the store predicate is
+        // the helper's, so a store-registered procedure is never shadowed
+        // by a compat-callables table entry.
+        let parsed = self.parse_with_store_predicate(cypher, preview, policy, params)?;
         let parse = clocks.parse_started.elapsed();
         let mode = parsed.preamble;
         // LABS-832: the PLAN phase — binding, logical planning and the
@@ -433,6 +435,39 @@ impl Connection {
             PlanMemory::Statement(bytes),
             None,
         ))
+    }
+
+    /// ADR-0699: the one front-end parse with the store predicate, shared
+    /// by the uncached admission tail and the plan-cache compile, so a
+    /// procedure the store registered (ADR-0116 §10) is never shadowed by
+    /// a compat-callables table entry and neither site re-derives the
+    /// pairing by hand. The publication read guard covers the cheap
+    /// per-entry registry probe only — never the parse itself (the
+    /// tokenize/parse stage runs between lock sections), so commit
+    /// publication, follow reload and checkpoint writes are not blocked
+    /// by a statement's parse. A registration racing the snapshot takes
+    /// effect at the next statement's parse. Each caller keeps its own
+    /// error policy around the call (`?` in the admission tail, the
+    /// swallow-to-uncached `let … else` in the cache compile).
+    pub(super) fn parse_with_store_predicate(
+        &self,
+        cypher: &str,
+        preview: relate_core::PreviewFeatures,
+        policy: StatementPolicy,
+        params: &BTreeMap<String, Value>,
+    ) -> Result<relate_front::LoweredStatement> {
+        let snapshot = {
+            let _read = self.inner.read_guard()?;
+            // The guard-held facade exposes the registry probe directly
+            // (GraphCell -> LiveQuery -> the engine -> Graph), so the
+            // helper reads it without the explicit `graph()` accessor.
+            relate_front::compat_callables::registration_snapshot(&|name| {
+                self.inner.graph.has_procedure(name)
+            })
+        };
+        parse_and_lower_statement_with_policy_and_params(cypher, preview, policy, params, &|name| {
+            relate_front::compat_callables::registered_in(name, snapshot)
+        })
     }
 }
 
