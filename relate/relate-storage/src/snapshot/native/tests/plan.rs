@@ -25,13 +25,20 @@ enum Planned {
 }
 
 /// Plan `slots` over `all_ids` around `dirty` for `kind` at `target`
-/// bytes. The graph is empty, so no id costs decoded bytes: only the
-/// width, the manifest and the row cap decide.
-fn plan(kind: Kind, target: u64, slots: &[Slot], all_ids: &[i64], dirty: &[i64]) -> Vec<Planned> {
+/// bytes under `rewrite`. The graph is empty, so no id costs decoded
+/// bytes: only the width, the manifest and the row cap decide.
+fn plan(
+    rewrite: Rewrite,
+    kind: Kind,
+    target: u64,
+    slots: &[Slot],
+    all_ids: &[i64],
+    dirty: &[i64],
+) -> Vec<Planned> {
     let store = memory_store();
     let graph = Graph::default();
     let mut owned = Vec::new();
-    let ctx = ShardWrite::new(&store, &graph, 1, target, Rewrite::Coalesce, &mut owned);
+    let ctx = ShardWrite::new(&store, &graph, 1, target, rewrite, &mut owned);
     let steps = plan_units(&ctx, kind, slots, all_ids, dirty).unwrap();
     steps
         .into_iter()
@@ -74,7 +81,14 @@ fn kept_files_over_one_file_together_stay_apart() {
         let cap = kind.page_envelope_rows() as u64;
         for (rows, joins) in [(cap / 2, true), (cap / 2 + 1, false)] {
             for dirty in [0, mid] {
-                let planned = plan(kind, target, &pair(rows, 5_000), &[0, mid], &[dirty]);
+                let planned = plan(
+                    Rewrite::Coalesce,
+                    kind,
+                    target,
+                    &pair(rows, 5_000),
+                    &[0, mid],
+                    &[dirty],
+                );
                 let expected = if joins { merged() } else { apart(dirty) };
                 assert_eq!(planned, expected, "{kind:?} {rows} rows");
             }
@@ -83,11 +97,34 @@ fn kept_files_over_one_file_together_stay_apart() {
     for dirty in [0, mid] {
         // The files' bytes together fill the target, or pass it.
         for (bytes, joins) in [(target / 2, true), (target / 2 + 1, false)] {
-            let planned = plan(Kind::Node, target, &pair(1, bytes), &[0, mid], &[dirty]);
+            let planned = plan(
+                Rewrite::Coalesce,
+                Kind::Node,
+                target,
+                &pair(1, bytes),
+                &[0, mid],
+                &[dirty],
+            );
             let expected = if joins { merged() } else { apart(dirty) };
             assert_eq!(planned, expected, "{bytes} bytes");
         }
     }
+}
+
+#[test]
+fn an_incremental_rewrite_absorbs_no_neighbour() {
+    let mid = 500_000;
+    // Small files that a coalescing plan merges around a dirty id.
+    let slots = [(0, mid), (mid, 2 * mid)].map(|(lo, hi)| Slot::Kept(node_part(lo, hi, 1, 1)));
+    let ids = [0, mid];
+    let merged = plan(Rewrite::Coalesce, Kind::Node, 10_000, &slots, &ids, &[0]);
+    assert_eq!(merged, [Planned::Unit(0..2, vec![(0, 2 * mid)])]);
+    let alone = plan(Rewrite::Incremental, Kind::Node, 10_000, &slots, &ids, &[0]);
+    let expected = [
+        Planned::Unit(0..1, vec![(0, mid)]),
+        Planned::Keep(mid, 2 * mid),
+    ];
+    assert_eq!(alone, expected);
 }
 
 #[test]
@@ -97,10 +134,24 @@ fn invisible_ids_cost_nothing_and_width_alone_cuts_nothing() {
     // visible rows.
     let ids: Vec<i64> = (0..1_500_000).collect();
     let wide_slot = [Slot::Window(0..3_000_000)];
-    let planned = plan(Kind::Node, MAX_FILE, &wide_slot, &ids, &[]);
+    let planned = plan(
+        Rewrite::Coalesce,
+        Kind::Node,
+        MAX_FILE,
+        &wide_slot,
+        &ids,
+        &[],
+    );
     assert_eq!(planned, [Planned::Unit(0..1, vec![(0, 3_000_000)])]);
     let narrow = [Slot::Window(0..MAX_WINDOW)];
-    let planned = plan(Kind::Node, MAX_FILE, &narrow, &ids[..1_000], &[]);
+    let planned = plan(
+        Rewrite::Coalesce,
+        Kind::Node,
+        MAX_FILE,
+        &narrow,
+        &ids[..1_000],
+        &[],
+    );
     assert_eq!(planned, [Planned::Unit(0..1, vec![(0, MAX_WINDOW)])]);
 }
 
