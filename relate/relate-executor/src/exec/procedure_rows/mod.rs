@@ -246,8 +246,16 @@ fn fulltext_analyzer_rows() -> Vec<BTreeMap<String, Value>> {
         .collect()
 }
 
-/// Rows for `db.labels`: every distinct stored node label, sorted.
+/// Rows for `db.labels`: every distinct stored node label, sorted. Read
+/// from the maintained per-label counts when the view sees exactly the
+/// latest committed state; any other view walks the nodes.
 fn label_rows(graph: &ExecGraph<'_>) -> Vec<BTreeMap<String, Value>> {
+    if let Some(names) = graph
+        .base()
+        .windowed_label_names(|| graph.sees_exact_base_stats())
+    {
+        return distinct_string_rows(names, "label");
+    }
     let labels = graph
         .all_node_ids()
         .into_iter()
@@ -256,8 +264,16 @@ fn label_rows(graph: &ExecGraph<'_>) -> Vec<BTreeMap<String, Value>> {
 }
 
 /// Rows for `db.relationshipTypes`: every distinct stored relationship
-/// type, sorted.
+/// type, sorted. Read from the maintained per-type counts under the same
+/// exactness window as [`label_rows`]; any other view walks the
+/// relationships.
 fn relationship_type_rows(graph: &ExecGraph<'_>) -> Vec<BTreeMap<String, Value>> {
+    if let Some(names) = graph
+        .base()
+        .windowed_rel_type_names(|| graph.sees_exact_base_stats())
+    {
+        return distinct_string_rows(names, "relationshipType");
+    }
     let types = graph
         .all_rel_ids()
         .into_iter()
