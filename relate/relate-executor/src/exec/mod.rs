@@ -893,6 +893,8 @@ mod rel_list_binding_tests;
 mod rel_seek_tests;
 #[cfg(test)]
 mod seek_readiness_tests;
+#[cfg(test)]
+mod set_labels_function_tests;
 mod shortcut_common;
 #[cfg(test)]
 mod shortest_expression_tests;
