@@ -58,6 +58,7 @@ mod fulltext_folding;
 mod fulltext_query_strictness;
 mod fulltext_search_semantics;
 mod generator_batch_tail;
+mod having_filters_the_page;
 mod index_constraint_coexistence;
 mod inf_nan_keywords;
 mod integer_argument_error_classes;

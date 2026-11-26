@@ -105,6 +105,15 @@ through the aggregating WHERE).
 
 ## Later references
 
+- **PR #892 (the HAVING form's filter position).** §2's per-group
+  evaluation stands; the filter it feeds moved. The aggregating `WITH`'s
+  trailing `WHERE` follows the clause grammar's order — the page
+  (`ORDER BY` / `SKIP` / `LIMIT`) is taken from the grouped rows and the
+  predicate value, still answered once per group, filters the paged rows
+  in the projection's finish tail (the same position the plain trailing
+  `WHERE` takes). The closing note's "filters groups through the
+  aggregating WHERE" described the pre-#892 placement.
+
 - **[ADR-0472](./0472-repin-order-by-scenarios.md) (re-pin of the four ORDER BY scenarios).** The TCK consequence
   above is resolved: `WithOrderBy4 [13]`/`[14]` stay in the pinned corpus
   asserting this ADR's recomputation behaviour (and `ReturnOrderBy6 [5]`,

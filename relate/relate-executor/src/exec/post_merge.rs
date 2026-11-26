@@ -10,6 +10,7 @@ use std::collections::BTreeMap;
 use relate_core::{Result, Value};
 use relate_ir::Expr;
 
+use super::classification::WhereMode;
 use crate::distinct_set::DistinctSet;
 use crate::eval::eval;
 use crate::eval::{filter_rows_where_clause, plain_where_holds};
@@ -612,14 +613,50 @@ impl LandedTail {
         merged.remeasure()?;
         merged.rows = page(merged.rows, page_bounds);
         merged.remeasure()?;
-        // The trailing WHERE filters the page the projection body produced —
-        // `WITH projection [ORDER BY] [SKIP] [LIMIT] [WHERE]` — so it runs
-        // after the page, on every shape the tail owns: the window's
-        // selected rows and the collected shape's paged rows alike.
-        merged.rows = filter_rows_where_clause(graph, params, class.plain_where(), merged.rows)?;
+        // The grammar's one trailing WHERE, applied to the page the
+        // projection body produced — `WITH projection [ORDER BY] [SKIP]
+        // [LIMIT] [WHERE]` — on every shape the tail owns: the window's
+        // selected rows and the collected shape's paged rows alike. The
+        // mode is one fact, so the stage is one: the HAVING form reads
+        // the per-group value the aggregation parked under its hidden
+        // column (not-true drops, a non-boolean is the typed rejection
+        // 22N01 — the one predicate policy, ADR-0458 §7), the plain form
+        // evaluates on the row, and no WHERE at all passes the page
+        // through untouched.
+        merged.rows = match class.where_mode.as_ref() {
+            Some(WhereMode::Having(plan)) => filter_parked_having(plan.parked(), merged.rows)?,
+            // The plain predicate's one canonical home is the class's
+            // own `plain_where()` — this arm names which mode it serves,
+            // never a second derivation of the predicate.
+            Some(WhereMode::Plain(_)) => {
+                filter_rows_where_clause(graph, params, class.plain_where(), merged.rows)?
+            }
+            None => merged.rows,
+        };
         merged.remeasure()?;
         output_rows(class, merged.rows, merged.charge.as_mut())
     }
+}
+
+/// The HAVING page filter: keep the rows whose parked per-group value
+/// holds, dropping the hidden column from every row on the way out — the
+/// survivors stop carrying it, the dropped rows release with it. The one
+/// predicate policy (ADR-0458 §7) applies here: false and null drop, a
+/// non-boolean is the typed rejection live raises (22N01), a list/path
+/// converts.
+fn filter_parked_having(parked: &str, rows: Vec<Row>) -> Result<Vec<Row>> {
+    let mut out = Vec::with_capacity(rows.len());
+    for mut row in rows {
+        let keeps = row.shift_remove(parked).ok_or_else(|| {
+            relate_core::Error::internal(
+                "an aggregated row reached the tail without its parked HAVING value",
+            )
+        })?;
+        if crate::eval::predicate_value_holds(&keeps)? {
+            out.push(row);
+        }
+    }
+    Ok(out)
 }
 
 /// The finish tail's table beside the row-buffer reservation it holds: the

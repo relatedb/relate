@@ -14,9 +14,9 @@ use crate::overlay::ExecGraph;
 use crate::row::Row;
 use relate_ir::{Expr, Projection};
 
-use super::aggregate::{GroupSubclauses, WhereMode};
+use super::aggregate::GroupSubclauses;
 use super::order::{resolve_page_bounds, window_capacity, OrderKeys, PageBounds};
-use super::scope::{has_star_item, is_star_item, ProjectionFields};
+use super::scope::{has_star_item, is_star_item, projection_names, ProjectionFields};
 
 /// Which merge path owns a `RETURN`/`WITH` projection — the three
 /// exclusive shapes, decided once at classification so no consumer
@@ -141,6 +141,76 @@ struct ShapeFacts {
     star: bool,
 }
 
+/// The HAVING plan: the aggregating WHERE's predicate and the hidden
+/// column its per-group value parks under — one fact, one presence. The
+/// emission parks the value per group; the finish tail's page filter
+/// reads it back under the same column. The aggregating counterpart of
+/// [`OrderKeys`]: owned by the projection's classification, read
+/// through its accessors, never re-derived.
+#[derive(Clone)]
+pub(crate) struct HavingPlan<'a> {
+    predicate: &'a Expr,
+    parked: String,
+}
+
+impl<'a> HavingPlan<'a> {
+    /// Plan construction — the classification's one derivation site.
+    pub(crate) fn new(predicate: &'a Expr, parked: String) -> Self {
+        Self { predicate, parked }
+    }
+
+    /// The predicate, still evaluated once per group at emission
+    /// (ADR-0453 §2: aggregate calls fold the group, non-aggregate
+    /// leaves read the projected row).
+    pub(crate) fn predicate(&self) -> &'a Expr {
+        self.predicate
+    }
+
+    /// The hidden column the per-group value parks under — uncollided
+    /// against the projection's own names the way the sort keys' prefix
+    /// is, so the result extraction never shows it.
+    pub(crate) fn parked(&self) -> &str {
+        &self.parked
+    }
+}
+
+/// ADR-0453's one WHERE split, as one value with one presence: the
+/// aggregating arm carries its plan, the plain arm the predicate the
+/// tail evaluates on the paged row. `None` is no WHERE at all — three
+/// states, one field, no combination to keep in sync.
+#[derive(Clone)]
+pub(crate) enum WhereMode<'a> {
+    Having(HavingPlan<'a>),
+    Plain(&'a Expr),
+}
+
+impl<'a> WhereMode<'a> {
+    /// The predicate, whichever arm — the seed keeps what it reads in
+    /// both.
+    pub(crate) fn predicate(&self) -> &'a Expr {
+        match self {
+            Self::Having(plan) => plan.predicate(),
+            Self::Plain(predicate) => predicate,
+        }
+    }
+
+    /// The HAVING plan, `None` for the plain arm.
+    pub(crate) fn having(&self) -> Option<&HavingPlan<'a>> {
+        match self {
+            Self::Having(plan) => Some(plan),
+            Self::Plain(_) => None,
+        }
+    }
+
+    /// The plain predicate, `None` for the HAVING arm.
+    pub(crate) fn plain(&self) -> Option<&'a Expr> {
+        match self {
+            Self::Plain(predicate) => Some(predicate),
+            Self::Having(_) => None,
+        }
+    }
+}
+
 /// A `RETURN`/`WITH` projection's row-independent classification — the
 /// plan every projection path consults, decided once per clause: the
 /// decided [`ProjectionShape`], the clause's fields (the one field
@@ -158,11 +228,12 @@ pub(crate) struct ProjectionClass<'a> {
     pub(crate) fields: ProjectionFields<'a>,
     /// The decided shape: which merge path owns the clause.
     pub(crate) shape: ProjectionShape,
-    /// ADR-0453's one WHERE split, decided once in the mode the pipeline
-    /// reads: an aggregating path whose WHERE carries aggregate calls
-    /// takes it as HAVING (evaluated per group inside the aggregation);
-    /// every other WHERE form — any WHERE on a non-aggregating path
-    /// included — stays the plain post-merge filter.
+    /// ADR-0453's one WHERE split, as the one value it is: the HAVING
+    /// plan (the aggregating arm — the aggregation answers the
+    /// predicate per group, parks the value under the plan's hidden
+    /// column, and the finish tail filters the paged rows on it), the
+    /// plain predicate the tail evaluates on the paged row, or no WHERE
+    /// at all.
     pub(crate) where_mode: Option<WhereMode<'a>>,
     /// The eager pre-projection page ([`pages_eagerly`]) on a
     /// non-aggregating shape: `SKIP`/`LIMIT` with no `ORDER BY`,
@@ -226,8 +297,22 @@ impl<'a> ProjectionClass<'a> {
         shape: ProjectionShape,
     ) -> Self {
         let aggregating = shape.aggregating();
+        // ADR-0453's one WHERE split and the HAVING form's parked column
+        // are one decision, taken in one match: an aggregating path whose
+        // WHERE carries aggregate calls takes the HAVING plan (the
+        // predicate, and the hidden column — uncollided against the
+        // projection's own names the way the sort keys' prefix is, so the
+        // result extraction never shows it — its per-group value parks
+        // under); every other WHERE form stays the plain post-merge
+        // filter. At most one is present.
         let where_mode = match fields.where_clause {
-            Some(w) if aggregating && is_agg_expr(w) => Some(WhereMode::Having(w)),
+            Some(w) if aggregating && is_agg_expr(w) => Some(WhereMode::Having(HavingPlan::new(
+                w,
+                graph.uncolliding_prefix(
+                    "__having",
+                    projection_names(fields.items).iter().map(String::as_str),
+                ),
+            ))),
             Some(w) => Some(WhereMode::Plain(w)),
             None => None,
         };
@@ -262,7 +347,7 @@ impl<'a> ProjectionClass<'a> {
     pub(crate) fn group_subclauses<'b>(&'b self, scope: Option<&'b Row>) -> GroupSubclauses<'b> {
         GroupSubclauses {
             order: &self.order_keys,
-            where_mode: self.where_mode,
+            where_mode: self.where_mode.as_ref(),
             import_scope: scope,
         }
     }
@@ -344,7 +429,7 @@ impl<'a> ProjectionClass<'a> {
     /// consumer of the fact reads it here, never re-deriving it from
     /// `where_mode`.
     pub(crate) fn plain_where(&self) -> Option<&'a Expr> {
-        self.where_mode.and_then(WhereMode::plain)
+        self.where_mode.as_ref().and_then(WhereMode::plain)
     }
 
     /// The bounded window this clause folds its producer into — its sort

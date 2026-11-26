@@ -50,7 +50,7 @@ fn billed(groups: i64, extra: usize, make_key: impl Fn(i64) -> Value) -> u64 {
         &items,
         None,
         &params,
-        &GroupSubclauses {
+        GroupSubclauses {
             order: &order,
             where_mode: None,
             import_scope: None,
@@ -350,7 +350,7 @@ fn a_collect_reserves_its_operands_on_the_workspace_ledger() {
         &items,
         None,
         &params,
-        &GroupSubclauses {
+        GroupSubclauses {
             order: &order,
             where_mode: None,
             import_scope: None,

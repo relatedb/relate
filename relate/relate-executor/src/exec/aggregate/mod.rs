@@ -23,7 +23,7 @@ mod site;
 mod stream;
 mod table;
 
-pub(crate) use group::{aggregate_ex, Aggregation, GroupSubclauses, WhereMode};
+pub(crate) use group::{aggregate_ex, Aggregation, GroupSubclauses};
 // The evaluator's scope types and the `*`-key desugaring are reached from
 // the crate's own tests only; `super::eval`/`super::group` serve the
 // runtime paths directly.
