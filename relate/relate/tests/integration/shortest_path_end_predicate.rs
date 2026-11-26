@@ -23,7 +23,7 @@ const CHAIN: &[&str] = &[
 fn seeded() -> relate::Connection {
     let mut c = connection();
     for statement in CHAIN {
-        crate::common::run(&mut c, statement);
+        common::run(&mut c, statement);
     }
     c
 }
