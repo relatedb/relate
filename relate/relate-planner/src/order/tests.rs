@@ -3,14 +3,15 @@
 //! mean/tail policy, and the orientation and part-order decisions they
 //! drive.
 
-use relate_ir::Clause;
+use relate_ir::{BinaryOp, Clause};
 use relate_names::{NamedToken, SmallName};
 
 use super::*;
 use crate::plan_with_stats;
-use crate::stats::NoPatternStats;
+use crate::stats::{ContainsCount, NoPatternStats};
 
 mod seek;
+mod selectivity;
 
 /// One parse and leading-MATCH destructure — the front half every
 /// endpoint consumer rides (the closure keeps the query alive for the
@@ -26,6 +27,35 @@ fn with_leading_match<R>(cypher: &str, f: impl FnOnce(&PathPattern, Option<&Expr
         panic!("expected a leading MATCH");
     };
     f(&patterns[0], where_clause.as_ref())
+}
+
+/// The endpoint tests' one "nothing is bound" fact — the `Bound`
+/// every endpoint estimate is called with.
+fn unbound(_: &str) -> bool {
+    false
+}
+
+/// One endpoint estimate over the parsed pieces — the single
+/// `endpoint_estimate` spelling every consumer rides (with the
+/// `unbound` fact every endpoint test uses).
+fn endpoint_of(
+    pattern: &PathPattern,
+    where_clause: Option<&Expr>,
+    stats: &dyn PatternStats,
+) -> Estimate {
+    endpoint_estimate(
+        &pattern.nodes[0],
+        &unbound,
+        where_conjuncts_of(where_clause).iter().copied(),
+        stats,
+    )
+}
+
+/// One parse → leading MATCH → endpoint estimate.
+fn estimate_of(cypher: &str, stats: &dyn PatternStats) -> Estimate {
+    with_leading_match(cypher, |pattern, where_clause| {
+        endpoint_of(pattern, where_clause, stats)
+    })
 }
 
 fn label_stats(labels: &'static [(&'static str, u64)]) -> Stub {
