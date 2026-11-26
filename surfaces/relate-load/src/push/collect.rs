@@ -100,20 +100,18 @@ fn read_query_scope(conn: &mut Connection, arg: &str) -> Result<ScopeGraph, Load
     for statement in &statements {
         assert_graph_shape(statement)?;
     }
-    let mut nodes: HashMap<NodeId, LocalNode> = HashMap::new();
-    let mut rels: Vec<LocalRel> = Vec::new();
-    let mut seen_rels: HashSet<RelId> = HashSet::new();
+    let mut acc = ScopeAccumulator::default();
     for statement in &statements {
         let result = conn
             .query(statement)
             .map_err(|e| LoadError::Engine(e.to_string()))?;
         for row in &result.rows {
             for cell in row {
-                walk_value(cell, &mut nodes, &mut rels, &mut seen_rels);
+                acc.walk_value(cell);
             }
         }
     }
-    Ok(finish_graph(nodes, rels))
+    Ok(finish_graph(acc.nodes, acc.rels))
 }
 
 /// The `--labels` scope: one node read for the whole list (an OR'd label
@@ -178,19 +176,18 @@ fn read_types_scope(conn: &mut Connection, types: &[String]) -> Result<ScopeGrap
 
 /// Finish a graph from the deduped node map and the raw rel list: nodes
 /// sorted by id so the plan (and its report) are deterministic, and rels
-/// partitioned into the ones whose endpoints are both in the node set and
-/// the dangling rest (counted, never silently dropped).
-fn finish_graph(nodes: HashMap<NodeId, LocalNode>, rels: Vec<LocalRel>) -> ScopeGraph {
+/// filtered to the ones whose endpoints are both in the node set; the
+/// dangling rest is counted, never silently dropped.
+fn finish_graph(nodes: HashMap<NodeId, LocalNode>, mut rels: Vec<LocalRel>) -> ScopeGraph {
     let mut nodes: Vec<LocalNode> = nodes.into_values().collect();
     nodes.sort_by_key(|a| a.id);
     let present: HashSet<NodeId> = nodes.iter().map(|n| n.id).collect();
-    let (rels, dangling): (Vec<LocalRel>, Vec<LocalRel>) = rels
-        .into_iter()
-        .partition(|rel| present.contains(&rel.start) && present.contains(&rel.end));
+    let total = rels.len();
+    rels.retain(|rel| present.contains(&rel.start) && present.contains(&rel.end));
     ScopeGraph {
         nodes,
+        dangling_rels: total - rels.len(),
         rels,
-        dangling_rels: dangling.len(),
     }
 }
 
@@ -262,60 +259,66 @@ fn query_rels(
     Ok(out)
 }
 
-/// Walk one result cell collecting nodes and rels: elements directly,
-/// lists and maps element-wise, paths node-by-node. Other values are
-/// ignored — the shape check already guarantees graph returns.
-fn walk_value(
-    value: &Value,
-    nodes: &mut HashMap<NodeId, LocalNode>,
-    rels: &mut Vec<LocalRel>,
-    seen_rels: &mut HashSet<RelId>,
-) {
-    match value {
-        Value::Node(node) => {
-            nodes.entry(node.id).or_insert_with(|| LocalNode {
-                id: node.id,
-                labels: node.labels.to_vec(),
-                properties: props_of(&node.properties),
+/// The three accumulators one scope walk fills: the deduplicated nodes,
+/// the rels in first-seen order, and the ids that keep a rel from counting
+/// twice.
+#[derive(Default)]
+struct ScopeAccumulator {
+    nodes: HashMap<NodeId, LocalNode>,
+    rels: Vec<LocalRel>,
+    seen_rels: HashSet<RelId>,
+}
+
+impl ScopeAccumulator {
+    fn add_node(&mut self, node: &relate::Node) {
+        self.nodes.entry(node.id).or_insert_with(|| LocalNode {
+            id: node.id,
+            labels: node.labels.to_vec(),
+            properties: props_of(&node.properties),
+        });
+    }
+
+    fn add_rel(&mut self, rel: &relate::Relationship) {
+        // A statement list may return the same rel twice; the engine's
+        // own relationship id identifies it for free, so the row set
+        // never double-counts.
+        if self.seen_rels.insert(rel.id) {
+            self.rels.push(LocalRel {
+                rel_type: rel.rel_type.clone(),
+                start: rel.start,
+                end: rel.end,
+                properties: props_of(&rel.properties),
             });
         }
-        Value::Relationship(rel) => {
-            // A statement list may return the same rel twice; the engine's
-            // own relationship id identifies it for free, so the row set
-            // never double-counts.
-            if seen_rels.insert(rel.id) {
-                rels.push(LocalRel {
-                    rel_type: rel.rel_type.clone(),
-                    start: rel.start,
-                    end: rel.end,
-                    properties: props_of(&rel.properties),
-                });
+    }
+
+    /// Walk one result cell collecting nodes and rels: elements directly,
+    /// lists and maps element-wise, paths node-by-node. Other values are
+    /// ignored — the shape check already guarantees graph returns.
+    fn walk_value(&mut self, value: &Value) {
+        match value {
+            Value::Node(node) => self.add_node(node),
+            Value::Relationship(rel) => self.add_rel(rel),
+            Value::Path(path) => {
+                for node in &path.nodes {
+                    self.add_node(node);
+                }
+                for rel in &path.rels {
+                    self.add_rel(rel);
+                }
             }
+            Value::List(items) => {
+                for item in items.iter() {
+                    self.walk_value(item);
+                }
+            }
+            Value::Map(entries) => {
+                for entry in entries.values() {
+                    self.walk_value(entry);
+                }
+            }
+            _ => {}
         }
-        Value::Path(path) => {
-            for node in &path.nodes {
-                walk_value(&Value::Node(node.clone().into()), nodes, rels, seen_rels);
-            }
-            for rel in &path.rels {
-                walk_value(
-                    &Value::Relationship(rel.clone().into()),
-                    nodes,
-                    rels,
-                    seen_rels,
-                );
-            }
-        }
-        Value::List(items) => {
-            for item in items.iter() {
-                walk_value(item, nodes, rels, seen_rels);
-            }
-        }
-        Value::Map(entries) => {
-            for entry in entries.values() {
-                walk_value(entry, nodes, rels, seen_rels);
-            }
-        }
-        _ => {}
     }
 }
 
