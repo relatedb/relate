@@ -323,7 +323,7 @@ pub fn validate_count_subquery_union_shapes(body: &Statement) -> Result<(), Engi
 /// Validate a WITH/RETURN projection's names: no duplicate output columns
 /// in either clause, and WITH's alias rule (an item without an implicit
 /// name must carry `AS`) — [`check_projected_names`] is the one fold.
-pub fn validate_projection_names(clauses: &[Clause]) -> Result<(), EngineError> {
+pub(crate) fn validate_projection_names(clauses: &[Clause]) -> Result<(), EngineError> {
     for clause in clauses {
         match clause {
             // WITH's items must be aliased unless they carry an implicit
@@ -444,34 +444,27 @@ fn check_shortest_path_relationships(
 /// first repeated relationship variable shares the path with a repeated
 /// node variable (the TCK `Match3` #29 shape).
 fn check_cycle_reuses_relationship(path: &PatternPath) -> Result<(), EngineError> {
-    let mut seen_rels: IdentHashSet<SmallName> = IdentHashSet::default();
-    let mut seen_nodes: IdentHashSet<SmallName> = IdentHashSet::default();
-    let mut repeated_rel: Option<&SmallName> = None;
-    let mut repeated_node = false;
-    for elem in &path.elements {
-        match elem {
-            PatternElement::Relationship(rp) => {
-                if let Some(v) = &rp.variable {
-                    if !seen_rels.insert(v.clone()) && repeated_rel.is_none() {
-                        repeated_rel = Some(v);
-                    }
-                }
-            }
-            PatternElement::Node(np) => {
-                if let Some(v) = &np.variable {
-                    repeated_node |= !seen_nodes.insert(v.clone());
-                }
-            }
-            PatternElement::Quantified(_) => {}
-        }
-    }
-    match (repeated_node, repeated_rel) {
-        (true, Some(v)) => Err(EngineError::semantic(
+    let rel_names = path.elements.iter().filter_map(|elem| match elem {
+        PatternElement::Relationship(rp) => rp.variable.as_ref(),
+        PatternElement::Node(_) | PatternElement::Quantified(_) => None,
+    });
+    let node_names = path.elements.iter().filter_map(|elem| match elem {
+        PatternElement::Node(np) => np.variable.as_ref(),
+        PatternElement::Relationship(_) | PatternElement::Quantified(_) => None,
+    });
+    match (first_repeated(node_names), first_repeated(rel_names)) {
+        (Some(_), Some(v)) => Err(EngineError::semantic(
             ErrorKind::RelationshipUniquenessViolation,
             format!("relationship '{v}' used more than once in the same MATCH pattern"),
         )),
         _ => Ok(()),
     }
+}
+
+/// The first name that occurs a second time in `names`, in walk order.
+fn first_repeated<'a>(names: impl Iterator<Item = &'a SmallName>) -> Option<&'a SmallName> {
+    let mut seen: IdentHashSet<&SmallName> = IdentHashSet::default();
+    names.into_iter().find(|name| !seen.insert(*name))
 }
 
 /// CIP-40's mixing rule inside a SUBQUERY body (42I39): a

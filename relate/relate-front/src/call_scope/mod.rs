@@ -782,6 +782,8 @@ fn walk_top_level(
                         // (SyntaxError / VariableAlreadyBound). Only the output
                         // collision is rejected; whole-row visibility of the
                         // outer scope inside the body is unchanged.
+                        // Lenient by design: the strict walk above already
+                        // reported any scope error of this body.
                         let exports = call_subquery_exports(csq, &scope);
                         if let Some(name) = smallest_collision(&exports, &scope) {
                             return Err(name.with_str(duplicate_outer_variable));
@@ -829,7 +831,10 @@ fn walk_top_level(
 
 /// Lenient (never errors) computation of the variable names a `CALL
 /// (...) { ... }` clause exports into the outer row, given the outer scope
-/// at that point. Used by scope-accumulation passes elsewhere in
+/// at that point. The `unwrap_or_default` on the strict resolution's error is
+/// intentional, not a swallowed failure: every caller runs after
+/// [`validate_call_scope_clauses`]'s strict pass, which already reported that
+/// error, so an `Err` here can only mean "nothing to export". Used by scope-accumulation passes elsewhere in
 /// `validate.rs` that need to know what a CALL clause makes available
 /// afterward; any Rule violation is caught separately by
 /// `validate_call_scope_clauses`, which always runs first.
@@ -853,6 +858,8 @@ pub(crate) fn advance_scope(scope: &mut IdentHashSet<SmallName>, clause: &Clause
     match clause {
         Clause::With(wc) => *scope = projected_names(&wc.items, scope),
         Clause::CallSubquery(csq) => {
+            // Lenient by design (see `call_subquery_exports`): the strict
+            // scope pass runs first.
             let exports = call_subquery_exports(csq, scope);
             scope.extend(exports);
         }

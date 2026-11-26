@@ -91,10 +91,10 @@ impl SelfReferenceTier<'_> {
     /// The tier's declaration predicate: every element of a created pattern
     /// declares under the exact tier; only a labelled or property-carrying
     /// node does under the conservative one.
-    fn declares_node(self) -> fn(&NodePattern) -> bool {
+    fn declares_node(self, node: &NodePattern) -> bool {
         match self {
-            SelfReferenceTier::Exact { .. } => |_| true,
-            SelfReferenceTier::Conservative => declares_shape,
+            SelfReferenceTier::Exact { .. } => true,
+            SelfReferenceTier::Conservative => declares_shape(node),
         }
     }
 
@@ -150,19 +150,17 @@ pub(crate) fn validate_create_self_reference_conservative(
 ) -> Result<(), EngineError> {
     let mut introduced: IdentHashSet<SmallName> = IdentHashSet::default();
     for clause in clauses {
+        let Clause::Create(create) = clause else {
+            introduced.extend(clause_introduced_names(clause));
+            continue;
+        };
         let mut created: IdentHashSet<SmallName> = IdentHashSet::default();
-        match clause {
-            Clause::Create(create) => scan_patterns(
-                &create.pattern,
-                SelfReferenceTier::Conservative,
-                &introduced,
-                &mut created,
-            )?,
-            _ => {
-                introduced.extend(clause_introduced_names(clause));
-                continue;
-            }
-        }
+        scan_patterns(
+            &create.pattern,
+            SelfReferenceTier::Conservative,
+            &introduced,
+            &mut created,
+        )?;
         introduced.extend(created);
     }
     Ok(())
@@ -179,13 +177,12 @@ fn scan_patterns(
     introduced: &IdentHashSet<SmallName>,
     created: &mut IdentHashSet<SmallName>,
 ) -> Result<(), EngineError> {
-    let declares_node = tier.declares_node();
     let mut collector = ReadCollector::default();
     for path in patterns {
         // A CREATE/MERGE path name is always a fresh binding.
         created.extend(path.path_names().cloned());
         for element in &path.elements {
-            collect_new_element_vars(element, tier, introduced, declares_node, created);
+            collect_new_element_vars(element, tier, introduced, created);
             collector.element(element)?;
         }
     }
@@ -202,13 +199,15 @@ fn collect_new_element_vars(
     element: &PatternElement,
     tier: SelfReferenceTier<'_>,
     introduced: &IdentHashSet<SmallName>,
-    declares_node: fn(&NodePattern) -> bool,
     out: &mut IdentHashSet<SmallName>,
 ) {
     match element {
         PatternElement::Node(node) => {
             if let Some(name) = &node.variable {
-                if declares_node(node) && !tier.bound_before(name) && !introduced.contains(name) {
+                if tier.declares_node(node)
+                    && !tier.bound_before(name)
+                    && !introduced.contains(name)
+                {
                     out.insert(name.clone());
                 }
             }
@@ -224,7 +223,7 @@ fn collect_new_element_vars(
         }
         PatternElement::Quantified(quantified) => {
             for inner in &quantified.elements {
-                collect_new_element_vars(inner, tier, introduced, declares_node, out);
+                collect_new_element_vars(inner, tier, introduced, out);
             }
         }
     }
