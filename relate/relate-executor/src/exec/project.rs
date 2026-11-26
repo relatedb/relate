@@ -8,7 +8,7 @@ use relate_core::{Error, Result, Value};
 use relate_ir::{expr_row_vars, Clause, Projection};
 
 use crate::ctx::ExecCtx;
-use crate::eval::{eval, expr_vars, is_agg_expr};
+use crate::eval::{eval, expr_vars};
 use crate::overlay::{ExecGraph, MaterializeCache};
 use crate::row::Row;
 
@@ -155,7 +155,7 @@ pub(crate) fn maps_each_row(fields: &ProjectionFields<'_>) -> bool {
         && fields.skip.is_none()
         && fields.limit.is_none()
         && !fields.items_aggregate()
-        && !fields.where_clause.is_some_and(is_agg_expr)
+        && !fields.subclause_aggregates()
 }
 
 /// The next clause's projection fields and decided shape, when it is a
@@ -787,5 +787,39 @@ mod refresh_tests {
             "the sweep replaced a row's shared schema"
         );
         assert_eq!(rows, snapshot);
+    }
+}
+
+#[cfg(test)]
+mod maps_each_row_tests {
+    use super::*;
+    use crate::exec::test_support::clauses_of;
+
+    /// Whether the first projection (`WITH`/`RETURN`) of `cypher` only maps rows.
+    fn maps(cypher: &str) -> bool {
+        let clauses = clauses_of(cypher);
+        let fields = clauses
+            .iter()
+            .find_map(ProjectionFields::from_clause)
+            .expect("a projection");
+        maps_each_row(&fields)
+    }
+
+    /// The predicate pins each breaker: every one keeps the held path, and
+    /// the plain map (with a per-row `WHERE`) streams.
+    #[test]
+    fn only_a_pure_map_streams() {
+        assert!(maps("MATCH (n) WITH n.x AS x WHERE x > 1 RETURN x"));
+        assert!(maps("MATCH (n) RETURN n.x AS x"));
+        for breaker in [
+            "MATCH (n) RETURN DISTINCT n.x AS x",
+            "MATCH (n) RETURN count(n) AS c",
+            "MATCH (n) RETURN n.x AS x ORDER BY x",
+            "MATCH (n) RETURN n.x AS x SKIP 1",
+            "MATCH (n) RETURN n.x AS x LIMIT 1",
+            "MATCH (n) WITH n.x AS x WHERE count(x) > 1 RETURN x",
+        ] {
+            assert!(!maps(breaker), "{breaker}");
+        }
     }
 }
