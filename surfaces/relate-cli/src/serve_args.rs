@@ -107,6 +107,14 @@ pub(crate) struct ServeCmd {
     /// then the non-zero process-wide default (ADR-0451). `Some(0)` is the
     /// explicit unlimited spelling (ADR-0333).
     pub max_connections: Option<u64>,
+    /// `--query-timeout-secs N` (ADR-0692): the default statement budget of
+    /// every served surface. `None` reads `RELATE_QUERY_TIMEOUT_SECS`, then
+    /// the 30-second default; `Some(0)` disables the default.
+    pub query_timeout_secs: Option<u64>,
+    /// `--query-timeout-max-secs N` (ADR-0692): the ceiling over every
+    /// statement budget, a request's included. `None` reads
+    /// `RELATE_QUERY_TIMEOUT_MAX_SECS`, then no ceiling.
+    pub query_timeout_max_secs: Option<u64>,
     /// `--ws-max-connections N` (ADR-0459): the opt-in WebSocket session
     /// cap. `None` reads `RELATE_WS_MAX_CONNECTIONS`, then unlimited
     /// (`0`) — the default, so bulk data-transfer deployments are not
@@ -321,6 +329,8 @@ pub(crate) fn parse_serve_args(rest: &[String]) -> Result<ServeCmd, ParseError> 
     let mut bolt_identity = None;
     let mut auth = None;
     let mut max_connections = None;
+    let mut query_timeout_secs = None;
+    let mut query_timeout_max_secs = None;
     #[cfg(feature = "bolt")]
     let mut ws_max_connections = None;
     #[cfg(feature = "bolt")]
@@ -407,6 +417,24 @@ pub(crate) fn parse_serve_args(rest: &[String]) -> Result<ServeCmd, ParseError> 
                     "--max-connections",
                     &mut args,
                     "a count",
+                    parse_count,
+                )?;
+            }
+            "--query-timeout-secs" => {
+                value_flag(
+                    &mut query_timeout_secs,
+                    "--query-timeout-secs",
+                    &mut args,
+                    "a count of seconds",
+                    parse_count,
+                )?;
+            }
+            "--query-timeout-max-secs" => {
+                value_flag(
+                    &mut query_timeout_max_secs,
+                    "--query-timeout-max-secs",
+                    &mut args,
+                    "a count of seconds",
                     parse_count,
                 )?;
             }
@@ -571,6 +599,8 @@ pub(crate) fn parse_serve_args(rest: &[String]) -> Result<ServeCmd, ParseError> 
         #[cfg(feature = "bolt")]
         bolt_identity,
         max_connections,
+        query_timeout_secs,
+        query_timeout_max_secs,
         #[cfg(feature = "bolt")]
         ws_max_connections,
         #[cfg(feature = "bolt")]

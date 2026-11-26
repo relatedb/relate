@@ -77,6 +77,7 @@ fn a_burst_of_admitted_begins_cannot_overshoot_the_cap() {
                         &txs,
                         None,
                         RequestDialect::Plain,
+                        relate::TimeoutPolicy::default(),
                     )
                 })
             })

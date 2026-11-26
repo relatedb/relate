@@ -31,6 +31,7 @@
 //! map** (see [`crate::schema`]).
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::time::Duration;
 
 use relate::{Connection, Database, QueryResult, QueryType, Value};
 use serde_json::{Map, Value as Json};
@@ -259,12 +260,45 @@ impl Gate {
 pub struct Tools<'a> {
     conn: &'a mut Connection,
     limits: Limits,
+    /// The statement deadline policy (ADR-0692): no bound unless the host
+    /// sets one through [`Self::with_timeout`].
+    timeout: relate::TimeoutPolicy,
 }
 
 impl<'a> Tools<'a> {
     /// The tool bodies over `conn`, under `limits`.
     pub fn new(conn: &'a mut Connection, limits: Limits) -> Self {
-        Self { conn, limits }
+        Self {
+            conn,
+            limits,
+            timeout: relate::TimeoutPolicy::default(),
+        }
+    }
+
+    /// The same tool bodies under the statement deadline `timeout`
+    /// (ADR-0692): each call's budget is its `timeout_seconds` argument,
+    /// else the policy default, under the policy ceiling.
+    pub fn with_timeout(mut self, timeout: relate::TimeoutPolicy) -> Self {
+        self.timeout = timeout;
+        self
+    }
+
+    /// Hand the engine this call's budget (ADR-0692): the optional
+    /// `timeout_seconds` argument resolved against the policy.
+    fn apply_timeout(&mut self, arguments: &Map<String, Json>) -> Result<(), ToolError> {
+        let request = match arguments.get("timeout_seconds").filter(|v| !v.is_null()) {
+            None => None,
+            Some(value) => {
+                let invalid = || ToolError::InvalidParams {
+                    detail: "\"timeout_seconds\" must be a non-negative number".to_string(),
+                };
+                let seconds = value.as_f64().ok_or_else(invalid)?;
+                Some(Duration::try_from_secs_f64(seconds).map_err(|_| invalid())?)
+            }
+        };
+        let limit = self.timeout.resolve(request);
+        self.conn.set_statement_limit(limit);
+        Ok(())
     }
 
     /// Dispatch one call by name — the extension mount's entry point, whose
@@ -277,6 +311,7 @@ impl<'a> Tools<'a> {
         name: &str,
         arguments: &Map<String, Json>,
     ) -> Result<ToolOutcome, ToolError> {
+        self.apply_timeout(arguments)?;
         match name {
             mcp::WRITE_CYPHER => self
                 .write_cypher(arguments)
@@ -670,7 +705,8 @@ fn call_cypher(
         // bare client-safe message and this route owns the `Error: `
         // convention its other failure paths already spell.
         .map_err(|err| format!("Error: {}", crate::errors::engine_error_text(&err)))?;
-    let mut tools = Tools::new(&mut conn, Limits::shipped());
+    let mut tools =
+        Tools::new(&mut conn, Limits::shipped()).with_timeout(server.statement_timeout());
     let outcome = tools
         .call(access.tool(), arguments)
         .map_err(tool_error_text)?;

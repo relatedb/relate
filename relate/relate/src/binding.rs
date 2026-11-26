@@ -417,6 +417,10 @@ pub fn binding_error_metadata(error: &Error) -> (&'static str, &'static str) {
         Error::Arithmetic(ArithmeticFailure::RoundingNecessary) | Error::Cancelled => {
             ("SemanticError", "SemanticError")
         }
+        // The statement deadline (ADR-0692) keeps the cancellation's TCK
+        // class but names its own kind, so the DB-API surfaces can raise
+        // their operational error for it.
+        Error::TimedOut { .. } => ("StatementTimeout", "SemanticError"),
         Error::DatabaseNotFound { .. } => ("DatabaseNotFound", "DatabaseNotFound"),
         Error::Conflict => ("WriteConflict", "SemanticError"),
         // The capacity family — the graph cap, the expression cap and the

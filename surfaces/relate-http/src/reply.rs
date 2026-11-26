@@ -133,6 +133,8 @@ pub(crate) struct PendingStatement {
     pub(crate) params: std::collections::BTreeMap<String, relate::Value>,
     pub(crate) include_counters: bool,
     pub(crate) media_type: ResponseMediaType,
+    /// The statement's resolved budget (ADR-0692).
+    pub(crate) limit: Option<relate::StatementLimit>,
 }
 
 impl PendingStatement {
@@ -145,7 +147,9 @@ impl PendingStatement {
             params,
             include_counters,
             media_type,
+            limit,
         } = self;
+        conn.set_statement_limit(limit);
         match conn.query_with_params(&statement, params) {
             Ok(result) => collected(result, include_counters, media_type),
             Err(e) => run_error(&e),
@@ -331,6 +335,8 @@ pub(crate) fn engine_error(e: &Error) -> (u16, Json) {
     let info = error_info(e);
     let status = match e {
         Error::Capacity { .. } => 507,
+        // The statement deadline (ADR-0692): the request timed out.
+        Error::TimedOut { .. } => 408,
         Error::ResourceLimit {
             name: Error::CONCURRENT_LOGICAL_WORKSPACE_LIMIT,
             ..

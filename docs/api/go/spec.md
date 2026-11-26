@@ -8,6 +8,7 @@ reader, err := relate.OpenReadOnly(":memory:")
 conn, err := db.Connect()
 conn, err := db.ConnectNamespace("system") // ADR-0117; Connect is ConnectNamespace("neo4j")
 err = conn.SetNamespace("neo4j")           // case-insensitive; only between transactions
+err = conn.SetStatementTimeout(5 * time.Second) // ADR-0692; 0 clears; a statement past it returns an *Error (TransactionTimedOutClientConfiguration)
 err = db.Checkpoint()
 err = conn.Begin()
 bookmark, err := conn.Commit()  // "relate:<n>", or "" when nothing committed (ADR-0502 §7)

@@ -12,6 +12,7 @@ mod cancel;
 pub mod ce_messages;
 mod convert;
 mod convert_walk;
+pub mod deadline;
 mod dynamic;
 mod error;
 /// The shared error-kind vocabulary (ADR-0502 §2 moved it here from

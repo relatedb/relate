@@ -37,6 +37,7 @@ Console.WriteLine(answer.Scalar<long>()); // 42
   years 1–9999; durations retain their original components.
 - Inspect `RelateException.Code`, `GqlStatus`, `Stage`, `IsRetryable`.
   Commit can fail and must be included in retry handling.
+- **Statement timeout (ADR-0692):** `connection.SetStatementTimeout(TimeSpan)` bounds each statement on the connection (`TimeSpan.Zero` clears; the default is none). A statement past it throws `RelateException` with code `…TransactionTimedOutClientConfiguration`; the connection stays usable.
 
 ## Spec
 

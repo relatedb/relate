@@ -79,6 +79,7 @@ bookmark, _ := conn.Commit()                    // "" when nothing committed
   unlimited; `:memory:` vanishes on close. `Close` is idempotent and any
   method after it returns `ErrClosed` (`errors.Is`); a dropped handle is
   closed by its finalizer, but do not rely on it.
+- **Statement timeout (ADR-0692):** `conn.SetStatementTimeout(d)` bounds each statement on the connection (`0` clears; the default is none). A statement past it returns an `*Error` with code `…TransactionTimedOutClientConfiguration`; the connection stays usable.
 
 ## Spec
 

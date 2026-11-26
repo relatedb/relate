@@ -54,6 +54,7 @@ public final class Connection {                  // NOT Sendable
     public let database: Database
     public func query(_ cypher: String, _ parameters: [String: CypherValue] = [:]) throws(RelateError) -> QueryResult
     public func setNamespace(_ namespace: DatabaseNamespace) throws(RelateError)  // only between transactions
+    public func setStatementTimeout(_ timeout: Duration?) throws(RelateError)  // ADR-0692; nil clears; a statement past it throws .engine with TransactionTimedOutClientConfiguration
     @available(*, deprecated) public func setNamespace(_ name: String) throws(RelateError)  // by name; use the typed form
     public func begin() throws(RelateError)
     @discardableResult public func commit() throws(RelateError) -> String?  // the transaction's bookmark; nil when it committed nothing

@@ -118,6 +118,7 @@ pub(super) fn spawn_http(
         header_deadline: admission.header_deadline,
         body_deadline: admission.body_deadline,
         transactions: relate_http::TxRegistry::with_limits(tx_limits),
+        statement_timeout: admission.statement_timeout,
         ..relate_http::HttpConfig::new(auth.clone())
     };
     let db = Arc::clone(db);
@@ -144,6 +145,7 @@ pub(super) fn mcp_config(
         connection_cap: Some(Arc::clone(&admission.connection_cap)),
         header_deadline: admission.header_deadline,
         body_deadline: admission.body_deadline,
+        statement_timeout: admission.statement_timeout,
         ..Default::default()
     }
 }
@@ -216,6 +218,10 @@ pub(super) fn spawn_bolt(
     let bolt_config = relate_bolt::protocol::ConnConfig {
         auth: std::sync::Arc::new(auth.clone()),
         server_identity: identity,
+        limits: relate_bolt::protocol::ConnLimits {
+            timeout: admission.statement_timeout,
+            ..Default::default()
+        },
         ..Default::default()
     };
     let db = Arc::clone(db);

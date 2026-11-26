@@ -235,6 +235,7 @@ fn expiry_never_discloses_another_callers_transaction() {
             &txs,
             Some(owner),
             RequestDialect::Plain,
+            relate::TimeoutPolicy::default(),
         ));
         tx_id(&reply)
     };
@@ -247,6 +248,7 @@ fn expiry_never_discloses_another_callers_transaction() {
         &txs,
         Some("mallory"),
         RequestDialect::Plain,
+        relate::TimeoutPolicy::default(),
     ));
     assert_eq!(stranger.status, 404);
     assert_eq!(body_json(&stranger)["errors"][0]["code"], json!("42000"));
@@ -261,6 +263,7 @@ fn expiry_never_discloses_another_callers_transaction() {
         &txs,
         Some("alice"),
         RequestDialect::Plain,
+        relate::TimeoutPolicy::default(),
     ));
     assert_eq!(owner.status, 404);
     assert_eq!(body_json(&owner)["errors"][0]["code"], json!("42N90"));

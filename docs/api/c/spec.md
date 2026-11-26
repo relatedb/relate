@@ -82,7 +82,7 @@ Where a failure comes back:
 | --- | --- | --- |
 | a statement fails (syntax, type, arithmetic, constraint, conflict, missing parameter, …) | `relate_query_params` returns **`RELATE_OK`**, `*out` is an **error result** | `relate_result_is_error(r) == 1` and `relate_result_error_json(r)` — result-owned, **do not free**; destroy the result as usual |
 | `relate_query_params` itself fails (NULL/poisoned connection, caught panic, an argument that failed to decode such as invalid UTF-8, a list builder passed as params) | `RELATE_ERROR`, `*out` is NULL | the trailing `char **error_json` out-param — caller-owned, free with `relate_free_string` |
-| any other fallible status call: `database_open`, `database_open_read_only`, `connect_namespace`, `conn_set_namespace`, `conn_begin`, `conn_commit`, `conn_rollback`, `checkpoint`, every params putter | `RELATE_ERROR` | the trailing `error_json` out-param — caller-owned |
+| any other fallible status call: `database_open`, `database_open_read_only`, `connect_namespace`, `conn_set_namespace`, `conn_set_statement_timeout`, `conn_begin`, `conn_commit`, `conn_rollback`, `checkpoint`, every params putter | `RELATE_ERROR` | the trailing `error_json` out-param — caller-owned |
 | a walker accessor refuses | NULL / -1 / `RELATE_ERROR` | none — the return value is the whole report (see the walker) |
 | `relate_database_close(NULL)` / `relate_disconnect(NULL)` | `RELATE_ERROR` | none — these two calls have no `error_json` out-param |
 
@@ -146,6 +146,7 @@ Every function the header declares. `relate_status` is
 | `relate_database_close(relate_database db)` | status | frees the handle (also when poisoned); `RELATE_ERROR` on NULL |
 | `relate_connect_namespace(relate_database db, const char *name, relate_connection *out, char **error_json)` | status | the one connect entry point, with a session namespace (ADR-0117, ADR-0220); NULL name selects `neo4j` |
 | `relate_conn_set_namespace(relate_connection conn, const char *name, char **error_json)` | status | changes the session namespace between transactions; a NULL name is a refused argument, never dereferenced |
+| `relate_conn_set_statement_timeout(relate_connection conn, uint64_t timeout_ms, char **error_json)` | status | bounds each following statement on the connection to `timeout_ms` milliseconds (ADR-0692); `0` clears the bound (the default — the embedded library applies no default timeout). A statement past its budget is cancelled and answers an **error result** (a statement failure, not a failed call) with the code `Neo.ClientError.Transaction.TransactionTimedOutClientConfiguration` and the message `query timed out after <N>s\|<N>ms`; the connection stays usable |
 | `relate_disconnect(relate_connection conn)` | status | frees the connection (also when poisoned); `RELATE_ERROR` on NULL |
 | `relate_checkpoint(relate_database db, char **error_json)` | status | Parquet snapshot + WAL recycle; not the commit durability boundary (autocommit fsyncs its WAL record before the call returns) |
 
@@ -401,6 +402,23 @@ An unknown name on either call fails with a message ending
 
 See [`examples/namespace.c`](examples/namespace.c) and
 [`examples/result_metadata.c`](examples/result_metadata.c).
+
+### Statement timeout (ADR-0692)
+
+`relate_conn_set_statement_timeout(conn, timeout_ms, &err)` bounds each
+following statement on one connection. A statement still running past its
+budget is cancelled through the engine's cancellation flag (ADR-0111); the
+call that ran it returns `RELATE_OK` with an error result whose
+`relate_result_error_json` carries the code
+`Neo.ClientError.Transaction.TransactionTimedOutClientConfiguration` and the
+message `query timed out after <N>s` (`<N>ms` when not a whole second), and
+the connection stays usable. `0` clears the bound. The clock covers the whole
+statement; inside an explicit transaction each statement has its own, and
+inside `CALL { … } IN TRANSACTIONS` the budget covers all batches (the
+in-flight batch is rolled back, committed batches stay). The embedded
+library applies no default; the network surfaces default to 30 s.
+
+See [`examples/statement_timeout.c`](examples/statement_timeout.c).
 
 ## Threading
 

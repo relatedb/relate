@@ -264,6 +264,7 @@ fn mcp_config_advertises_the_opened_handles_mode() {
         ws_max_connections: 0,
         header_deadline: relate_serve::DEFAULT_HEADER_DEADLINE,
         body_deadline: relate_serve::DEFAULT_BODY_DEADLINE,
+        statement_timeout: relate::TimeoutPolicy::SERVED,
     };
     let writable = Arc::new(relate::Database::open(":memory:").expect("memory open"));
     assert!(!mcp_config(&writable, &auth, &admission).read_only);

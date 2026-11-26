@@ -47,72 +47,24 @@ pub(crate) fn with_keep_alive<W: Write, T>(
     }
 }
 
-/// The per-query timeout watchdog (ADR-0110, ADR-0111) as a guard: dropping
-/// the sender disarms it (its `recv_timeout` then errs `Disconnected` and
-/// no cancel may fire) and `Drop` joins the thread in that order, so every
-/// exit path from [`run_statement`] tears it down — no early return can
-/// skip the join.
-struct Watchdog {
-    done: Option<std::sync::mpsc::Sender<()>>,
-    handle: Option<std::thread::JoinHandle<()>>,
-}
-
-impl Watchdog {
-    fn spawn(token: CancelToken, timeout: Duration) -> Self {
-        let (done, done_rx) = std::sync::mpsc::channel::<()>();
-        let handle = std::thread::spawn(move || {
-            // Disarmed by `done_rx`'s sender dropping when the statement
-            // returns first (recv_timeout then errs Disconnected, and no
-            // cancel may fire); only a genuine timeout cancels.
-            if matches!(
-                done_rx.recv_timeout(timeout),
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout)
-            ) {
-                token.cancel();
-            }
-        });
-        Self {
-            done: Some(done),
-            handle: Some(handle),
-        }
-    }
-}
-
-impl Drop for Watchdog {
-    fn drop(&mut self) {
-        // Disarm first, then join: the watchdog must observe the disconnect
-        // before it is reaped, and the connection thread never outlives a
-        // watchdog that could still cancel its statement.
-        drop(self.done.take());
-        self.handle
-            .take()
-            .expect("the watchdog handle is taken once, here")
-            .join()
-            .expect("query timeout watchdog cannot panic");
-    }
-}
-
 /// Run one RUN statement through the engine's staged entry point (ADR-0319)
-/// with the keep-alive heartbeat, under the optional per-query timeout.
+/// with the keep-alive heartbeat.
 ///
 /// The statement runs on the engine connection's 64 MiB query worker
-/// (ADR-0259) while this thread waits (ADR-0233). With a timeout the
-/// [`Watchdog`] sleeps the budget and then calls [`CancelToken::cancel`];
-/// a statement that finishes first disarms it by dropping the guard's
-/// sender. The engine observes cancellation cooperatively and returns its
-/// typed error promptly, so the call below is the ADR-0111
-/// cancel-then-await: the `Connection` stays owned by this thread either
-/// way, and the session stays usable for the next RUN.
+/// (ADR-0259) while this thread waits (ADR-0233). Its deadline is the
+/// connection's statement timeout (ADR-0692), which the engine enforces:
+/// it cancels cooperatively and returns its typed error promptly, so the
+/// call below is the ADR-0111 cancel-then-await — the `Connection` stays
+/// owned by this thread either way, and the session stays usable for the
+/// next RUN.
 pub(crate) fn run_statement<W: Write>(
     conn: &mut Connection,
     stream: &mut W,
     cypher: &str,
     params: BTreeMap<String, Value>,
-    query_timeout: Option<Duration>,
     keep_alive_interval: Duration,
 ) -> std::io::Result<relate::Result<Executed>> {
     let token = CancelToken::new();
-    let _watchdog = query_timeout.map(|timeout| Watchdog::spawn(token.clone(), timeout));
     with_keep_alive(stream, keep_alive_interval, |heartbeat| {
         conn.query_staged(cypher, params, token, Some(heartbeat))
     })

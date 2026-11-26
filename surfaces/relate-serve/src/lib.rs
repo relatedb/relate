@@ -217,6 +217,21 @@ pub fn resolve_ws_connection_cap(flag: Option<u64>) -> Result<usize, String> {
     )
 }
 
+/// `--query-timeout-secs`, else `RELATE_QUERY_TIMEOUT_SECS`, else
+/// `default_secs` (the statement deadline's default budget, ADR-0692; the
+/// caller owns the default, as this crate does not link the engine). A
+/// blank environment value is omitted. `0` disables the default.
+pub fn resolve_query_timeout_secs(flag: Option<u64>, default_secs: u64) -> Result<u64, String> {
+    resolve_flag_or_env(flag, "RELATE_QUERY_TIMEOUT_SECS", default_secs)
+}
+
+/// `--query-timeout-max-secs`, else `RELATE_QUERY_TIMEOUT_MAX_SECS`, else
+/// `0` (no ceiling; ADR-0692): the operator's bound over every statement
+/// budget, a request's included.
+pub fn resolve_query_timeout_max_secs(flag: Option<u64>) -> Result<u64, String> {
+    resolve_flag_or_env(flag, "RELATE_QUERY_TIMEOUT_MAX_SECS", 0)
+}
+
 /// `--header-deadline-secs`, else `RELATE_HEADER_DEADLINE_SECS`, else
 /// [`DEFAULT_HEADER_DEADLINE`] (10 s; ADR-0451). A blank environment value
 /// is omitted. `0` disables the absolute header deadline.

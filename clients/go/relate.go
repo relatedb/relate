@@ -15,6 +15,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"time"
 	"unsafe"
 )
 
@@ -339,6 +340,24 @@ func (c *Connection) SetNamespace(name string) error {
 		defer C.free(unsafe.Pointer(cName))
 		var errJSON *C.char
 		st := C.relate_conn_set_namespace(c.ptr, cName, &errJSON)
+		return statusErr(st, errJSON)
+	})
+}
+
+// SetStatementTimeout bounds each following statement on the connection to
+// d (ADR-0692). A statement still running past it is cancelled: Query
+// returns an error whose code is
+// Neo.ClientError.Transaction.TransactionTimedOutClientConfiguration and the
+// connection stays usable. A zero d clears the bound (the default: none);
+// a negative d is an error. The embedded library applies no default; the
+// network surfaces default to 30 s.
+func (c *Connection) SetStatementTimeout(d time.Duration) error {
+	if d < 0 {
+		return errors.New("relate: statement timeout must not be negative")
+	}
+	return guardedErr(&c.lifecycle, func() error {
+		var errJSON *C.char
+		st := C.relate_conn_set_statement_timeout(c.ptr, C.uint64_t((d+time.Millisecond-1)/time.Millisecond), &errJSON)
 		return statusErr(st, errJSON)
 	})
 }

@@ -203,6 +203,26 @@ private enum HostileDecodable: String, Decodable {
         #expect(try typed.query("RETURN 1").namespace == .neo4j)
     }
 
+    /// ADR-0692: a statement past the connection's budget throws the
+    /// client-configuration timeout, the connection stays usable, and `nil`
+    /// clears the bound.
+    @Test func statementTimeoutCancelsAndClears() throws {
+        let timed = try conn.database.connect()
+        try timed.setStatementTimeout(.milliseconds(200))
+        let error = try #require(throws: RelateError.self) {
+            try timed.query("UNWIND range(1, 2000000000) AS x RETURN count(x) AS n")
+        }
+        #expect(
+            error.engineError?.code
+                == "Neo.ClientError.Transaction.TransactionTimedOutClientConfiguration")
+        #expect(error.engineError?.message.contains("query timed out after 200ms") == true)
+        try timed.setStatementTimeout(nil)
+        #expect(try timed.query("RETURN 1 AS n").scalar() == 1)
+        #expect(throws: RelateError.self) { try timed.setStatementTimeout(.seconds(-1)) }
+        #expect(throws: RelateError.self) { try timed.setStatementTimeout(.milliseconds(-100)) }
+        #expect(throws: RelateError.self) { try timed.setStatementTimeout(.seconds(Int64.max)) }
+    }
+
     @Test func explainAndProfileCarryAPlan() throws {
         let e = try conn.query("EXPLAIN CREATE (n)")
         #expect(e.queryType == .write)

@@ -298,6 +298,38 @@ transaction stays open for the client to close; it is still ignored on
 the auto-commit route (a documented charter exclusion). A failing begin
 statement rolls the fresh transaction back instead of leaking it.
 
+### Statement timeout (ADR-0692)
+
+Every statement runs under a wall-clock budget, enforced through the
+engine's `CancelToken` (ADR-0111): the request's `maxExecutionTime`
+(seconds), else the server default `--query-timeout-secs N`
+(`RELATE_QUERY_TIMEOUT_SECS`, default `30`, `0` disables the default),
+under the optional ceiling `--query-timeout-max-secs N`
+(`RELATE_QUERY_TIMEOUT_MAX_SECS`, default none). The clock covers the whole
+statement, up to the last row handed to the socket, so a client that reads a
+streamed answer too slowly loses the statement at its budget — the socket
+write timeout bounds each stalled write, the statement budget bounds the
+transfer. A statement past its budget is cancelled and its snapshot pin is
+released.
+
+- Before the first row the reply is the error envelope with status **408**
+  and the message `query timed out after <N>s` (`<N>ms` when not a whole
+  second).
+- After the chunked head has gone out the `200` stands; the timeout is the
+  in-band `errors` member of the body ([Response framing](#response-framing-adr-0386)),
+  and the body then ends.
+- In an explicit transaction each statement has its own clock; the
+  transaction stays open for the client to roll back.
+- Inside `CALL { … } IN TRANSACTIONS` the budget covers all batches: the
+  in-flight batch is rolled back, batches that already committed stay
+  committed, and `ON ERROR CONTINUE` does not absorb the timeout.
+
+```sh
+curl -s -u neo4j:pw -H 'Content-Type: application/json' \
+  -d '{"statement":"UNWIND range(1,2000000000) AS x RETURN count(x)","maxExecutionTime":0.5}' \
+  http://127.0.0.1:7474/db/neo4j/query/v2    # 408, query timed out after 500ms
+```
+
 ### Idle expiry and the registry cap (ADR-0435)
 
 Two enforced limits bound an open transaction: an idle timeout and a cap
@@ -391,7 +423,8 @@ a server error. No server-side flag silences it.
 {
   "statement": "MATCH (c:City {name: $name}) RETURN c",
   "parameters": {"name": "Oslo"},
-  "includeCounters": false
+  "includeCounters": false,
+  "maxExecutionTime": 10
 }
 ```
 
@@ -400,6 +433,7 @@ a server error. No server-side flag silences it.
 | `statement` | string | required | One Cypher statement |
 | `parameters` | object | none | `$name` bindings. The request's **Content-Type selects the parameter dialect** (ADR-0425): under `application/vnd.neo4j.query` (the legacy v1.0 alias) or its versioned family, including `.v1.0` and `.v1.2`, values may be plain JSON **or** the typed form `{"$type": …, "_value": …}` the official clients send (decoded per ADR-0236's encoding, recursively; an object is typed only when its keys are exactly `$type` and `_value` — a user map with a `$type` key among others stays a map); under plain `application/json` values are plain JSON — an envelope-shaped object stays a user **map**, byte-for-byte what a real server delivers. Temporal payloads decode to their ISO strings (build typed values in Cypher, e.g. `date($p)`), a Point's EWKT string to an engine point (the legacy `{coordinates, crs}` object still decodes to a user map), a Vector to its number list, a non-finite Float (`Infinity`/`-Infinity`/`NaN`) to that float value; graph entities, `Base64`, `Unsupported` and unknown `$type`s are a 400. Other non-simple request Content-Types receive a **400** naming the accepted spellings; browser-simple or missing types are rejected by the guard described above |
 | `includeCounters` | boolean | `false` | Force the `counters` object onto the response |
+| `maxExecutionTime` | number (seconds) | server default (30 s) | The statement's time budget (ADR-0692; the Query API v2 field of the same name). It replaces the server default — shorter or longer — and `0` asks for no bound; the operator's `--query-timeout-max-secs` ceiling, when set, bounds every value. A negative, non-finite or non-numeric value is a **400**. A statement past its budget is cancelled and answers **408** (see [Statement timeout](#statement-timeout-adr-0692)). Also accepted on the transaction routes: on a begin it is the budget of each statement of the transaction (each with its own clock), on a later statement that statement's own |
 
 A malformed body (not JSON, or missing `statement`) is **400** with code
 `42N06`; parameters that do not decode — an unknown `$type` under the
@@ -775,6 +809,7 @@ HTTP status and `code` by failure:
 | 401 | `42NFF` | missing or wrong credential |
 | 404 | `42N00` | unknown `{databaseName}`, or any unknown route |
 | 404 | `42N90` | managed transaction the operation's lease found idle past the deadline (ADR-0435) |
+| 408 | `42000` | the statement ran past its time budget (`maxExecutionTime` or `--query-timeout-secs`, ADR-0692) |
 | 429 | `42N91` | begin refused: the open-transaction cap (`--max-open-transactions`) is reached (ADR-0435) |
 | 405 | `42000` | wrong method on the route |
 | 400 | `42N06` | malformed request body / Cypher syntax error |

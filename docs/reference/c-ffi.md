@@ -94,6 +94,7 @@ refusal conventions is
 - **Database / connection** — `relate_database_open`,
   `relate_database_open_read_only`, `relate_database_close`,
   `relate_connect_namespace`, `relate_conn_set_namespace`,
+  `relate_conn_set_statement_timeout`,
   `relate_disconnect`, `relate_checkpoint`
 - **Statement / transaction** — `relate_query_params`,
   `relate_conn_begin`, `relate_conn_commit` (the bookmark rides its

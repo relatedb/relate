@@ -155,6 +155,8 @@ _KIND_TO_EXCEPTION = {
     # programming error.
     "ProcedureError": ProgrammingError,
     "ProcedureNotFound": ProgrammingError,
+    # The statement deadline (ADR-0692): the query ran past its budget.
+    "StatementTimeout": OperationalError,
     # EntityNotFound class -> a runtime/operational condition.
     "EntityNotFound": OperationalError,
     "DeletedEntityAccess": OperationalError,

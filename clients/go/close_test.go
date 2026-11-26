@@ -4,6 +4,7 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/relatedb/relate/clients/go"
 )
@@ -34,6 +35,7 @@ func TestConnectionMethodsAfterCloseReturnErrClosed(t *testing.T) {
 	requireErrClosed(t, "Query", errOf(conn.Query("RETURN 1")))
 	requireErrClosed(t, "QueryParams", errOf(conn.QueryParams("RETURN $n", map[string]any{"n": 1})))
 	requireErrClosed(t, "SetNamespace", conn.SetNamespace("system"))
+	requireErrClosed(t, "SetStatementTimeout", conn.SetStatementTimeout(time.Second))
 	requireErrClosed(t, "Begin", conn.Begin())
 	requireErrClosed(t, "Commit", errOf(conn.Commit()))
 	requireErrClosed(t, "Rollback", conn.Rollback())

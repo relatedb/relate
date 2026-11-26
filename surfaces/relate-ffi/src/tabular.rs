@@ -332,6 +332,31 @@ pub unsafe extern "C" fn relate_conn_set_namespace(
     unsafe { report(result, error_json) }
 }
 
+/// Bound each following statement on the connection to `timeout_ms`
+/// (ADR-0692); `0` clears the bound. The connection's budget is the
+/// caller's own choice, so a failure past it reports the
+/// client-configuration timeout code.
+///
+/// # Safety
+/// Pointer arguments must be null or valid for this call, matching the C header.
+#[no_mangle]
+pub unsafe extern "C" fn relate_conn_set_statement_timeout(
+    conn: *mut relate_connection,
+    timeout_ms: u64,
+    error_json: *mut *mut c_char,
+) -> relate_status {
+    let result = unsafe {
+        guard_conn(conn, |c| {
+            c.set_statement_timeout(
+                (timeout_ms != 0).then(|| std::time::Duration::from_millis(timeout_ms)),
+            );
+            Ok(())
+        })
+    };
+    // SAFETY: `error_json` is null or a writable out-param per the caller contract.
+    unsafe { report(result, error_json) }
+}
+
 /// # Safety
 /// Pointer arguments must be null or valid for this call, matching the C header.
 #[no_mangle]

@@ -14,7 +14,7 @@ fn limits(handshake: Duration, idle: Duration, max_result_bytes: u64) -> ConnLim
     ConnLimits {
         handshake_timeout: Some(handshake),
         idle_timeout: Some(idle),
-        query_timeout: None,
+        timeout: relate_core::deadline::TimeoutPolicy::default(),
         max_result_bytes,
         max_connections: DEFAULT_MAX_CONNECTIONS,
         ..ConnLimits::default()
@@ -185,17 +185,20 @@ fn result_over_cap_fails_naming_the_limit() {
 /// in logical bytes. The cap check stops once the total passes the limit, so
 /// 20,000 rows × a 100,000-element list (~16 GB logical) fail fast instead
 /// of being summed in full, with and without a query timeout (the
-/// watchdog in `keepalive::run_statement`). A full sum takes ~20 s per RUN
+/// engine's statement deadline). A full sum takes ~20 s per RUN
 /// in a debug build; the bound is wall-clock.
 #[test]
 fn shared_payload_over_cap_fails_fast() {
-    for query_timeout in [None, Some(Duration::from_secs(60))] {
+    for default in [None, Some(Duration::from_secs(60))] {
         let db = Arc::new(Database::open(":memory:").unwrap());
         let mut client = connected_client_with(
             db,
             ConnConfig {
                 limits: ConnLimits {
-                    query_timeout,
+                    timeout: relate_core::deadline::TimeoutPolicy {
+                        default,
+                        ceiling: None,
+                    },
                     ..limits(Duration::from_secs(5), Duration::from_secs(60), 1 << 20)
                 },
                 ..Default::default()
@@ -213,12 +216,12 @@ fn shared_payload_over_cap_fails_fast() {
         let message = field(&metadata, "message");
         assert!(
             message.contains("exceeds max-result-bytes limit of 1048576 bytes"),
-            "FAILURE must name the byte limit ({query_timeout:?}): {message}"
+            "FAILURE must name the byte limit ({default:?}): {message}"
         );
         assert!(
             elapsed < Duration::from_secs(5),
             "the cap check must stop once the total exceeds the limit \
-             ({query_timeout:?}): took {elapsed:?}"
+             ({default:?}): took {elapsed:?}"
         );
     }
 }
@@ -234,7 +237,10 @@ fn query_timeout_cancels_the_run_and_the_session_stays_usable() {
         db,
         ConnConfig {
             limits: ConnLimits {
-                query_timeout: Some(Duration::from_secs(1)),
+                timeout: relate_core::deadline::TimeoutPolicy {
+                    default: Some(Duration::from_secs(1)),
+                    ceiling: None,
+                },
                 ..limits(
                     Duration::from_secs(5),
                     Duration::from_secs(5),
@@ -258,10 +264,11 @@ fn query_timeout_cancels_the_run_and_the_session_stays_usable() {
     let metadata = failure_map(read_msg(&mut client));
     let message = field(&metadata, "message");
     assert!(
-        message.contains("query cancelled"),
-        "FAILURE must report cancellation: {message}"
+        message.contains("query timed out after 1s"),
+        "FAILURE must report the timeout: {message}"
     );
-    // ADR-0307: the engine's typed `Cancelled` maps to Neo4j's timeout code.
+    // ADR-0692: the server default's typed `TimedOut` maps to Neo4j's
+    // timeout code.
     assert_eq!(
         metadata.get("code").and_then(Pack::as_str),
         Some("Neo.ClientError.Transaction.TransactionTimedOut")
@@ -283,6 +290,114 @@ fn query_timeout_cancels_the_run_and_the_session_stays_usable() {
         }
     );
     success_map(read_msg(&mut client));
+}
+
+/// A connection under `policy`, for the statement-deadline tests below.
+fn client_under(policy: relate_core::deadline::TimeoutPolicy) -> TcpStream {
+    let db = Arc::new(Database::open(":memory:").unwrap());
+    connected_client_with(
+        db,
+        ConnConfig {
+            limits: ConnLimits {
+                timeout: policy,
+                ..limits(
+                    Duration::from_secs(5),
+                    Duration::from_secs(5),
+                    DEFAULT_MAX_RESULT_BYTES,
+                )
+            },
+            ..Default::default()
+        },
+    )
+}
+
+/// A statement that outlasts every budget below.
+fn long_statement() -> String {
+    let stage = "UNWIND range(1, 100000) AS x WITH count(x) AS c ";
+    format!("{}RETURN c", stage.repeat(400))
+}
+
+/// The PULL's FAILURE after a RUN that was accepted (ADR-0319), as
+/// `(code, message)`.
+fn timed_out_failure(client: &mut TcpStream) -> (String, String) {
+    success_map(read_msg(client));
+    send_pull(client, Message::Pull, vec![("n", Pack::Int(-1))]);
+    let metadata = failure_map(read_msg(client));
+    (
+        field(&metadata, "code").to_string(),
+        field(&metadata, "message").to_string(),
+    )
+}
+
+/// ADR-0692 §3: a request's `tx_timeout` (ms) replaces the server default,
+/// here shortening it, and the failure carries the client-configuration
+/// code because the request chose the value.
+#[test]
+fn a_run_tx_timeout_shortens_the_server_default() {
+    use crate::testutil::send_run_with;
+    let mut client = client_under(relate_core::deadline::TimeoutPolicy::SERVED);
+    send_run_with(
+        &mut client,
+        &long_statement(),
+        vec![("tx_timeout", Pack::Int(300))],
+    );
+    let (code, message) = timed_out_failure(&mut client);
+    assert!(message.contains("query timed out after 300ms"), "{message}");
+    assert_eq!(
+        code,
+        "Neo.ClientError.Transaction.TransactionTimedOutClientConfiguration"
+    );
+}
+
+/// The operator's ceiling bounds a request that asks for no bound (`0`),
+/// and the failure is the server's own (`TransactionTimedOut`).
+#[test]
+fn the_ceiling_bounds_a_request_for_no_timeout() {
+    use crate::testutil::send_run_with;
+    let mut client = client_under(relate_core::deadline::TimeoutPolicy {
+        default: Some(Duration::from_secs(30)),
+        ceiling: Some(Duration::from_secs(1)),
+    });
+    send_run_with(
+        &mut client,
+        &long_statement(),
+        vec![("tx_timeout", Pack::Int(0))],
+    );
+    let (code, message) = timed_out_failure(&mut client);
+    assert!(message.contains("query timed out after 1s"), "{message}");
+    assert_eq!(code, "Neo.ClientError.Transaction.TransactionTimedOut");
+}
+
+/// An explicit transaction's BEGIN carries the budget its statements
+/// resolve from, each with its own clock.
+#[test]
+fn a_begin_tx_timeout_bounds_the_statements_of_the_transaction() {
+    use crate::testutil::send_begin;
+    let mut client = client_under(relate_core::deadline::TimeoutPolicy::SERVED);
+    send_begin(&mut client, vec![("tx_timeout", Pack::Int(300))]);
+    success_map(read_msg(&mut client));
+    send_run_legacy(&mut client, &long_statement());
+    let (code, message) = timed_out_failure(&mut client);
+    assert!(message.contains("query timed out after 300ms"), "{message}");
+    assert_eq!(
+        code,
+        "Neo.ClientError.Transaction.TransactionTimedOutClientConfiguration"
+    );
+}
+
+/// A negative `tx_timeout` is a malformed request: nothing executes.
+#[test]
+fn a_negative_tx_timeout_fails_the_request() {
+    use crate::testutil::send_run_with;
+    let mut client = client_under(relate_core::deadline::TimeoutPolicy::SERVED);
+    send_run_with(
+        &mut client,
+        "RETURN 1 AS n",
+        vec![("tx_timeout", Pack::Int(-5))],
+    );
+    let metadata = failure_map(read_msg(&mut client));
+    assert_eq!(field(&metadata, "code"), "Neo.ClientError.Request.Invalid");
+    assert!(field(&metadata, "message").contains("tx_timeout"));
 }
 
 #[test]

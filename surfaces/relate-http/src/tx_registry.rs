@@ -57,6 +57,10 @@ pub(crate) struct TxEntry {
     /// Caller that opened the transaction. `None` means the transaction
     /// is not scoped to a caller (ADR-0428).
     pub(crate) owner: Option<String>,
+    /// The `maxExecutionTime` the opening request carried (ADR-0692): the
+    /// request value each statement of the transaction resolves its
+    /// budget from, each with its own clock. `None` is the server default.
+    pub(crate) max_execution: Option<std::time::Duration>,
     /// The monotonic instant this transaction last did something
     /// (ADR-0435 §1). Private: only the registry family's [`TxEntry::new`]
     /// and [`TxEntry::touch`] write it, so no route can re-derive the
@@ -72,11 +76,17 @@ impl TxEntry {
     /// A freshly opened entry: the activity stamp starts at the open, so a
     /// begin that runs no statement is already on the deadline. The begin
     /// route touches it again after its body's statement (ADR-0435 §1).
-    pub(crate) fn new(conn: Connection, mode: AccessMode, owner: Option<String>) -> Self {
+    pub(crate) fn new(
+        conn: Connection,
+        mode: AccessMode,
+        owner: Option<String>,
+        max_execution: Option<std::time::Duration>,
+    ) -> Self {
         Self {
             conn,
             mode,
             owner,
+            max_execution,
             last_activity: Instant::now(),
         }
     }

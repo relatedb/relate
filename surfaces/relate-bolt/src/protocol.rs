@@ -23,7 +23,7 @@ pub use crate::summary::routing_table;
 // cli_args (single source — no re-export shim).
 use crate::cli_args::{
     DEFAULT_HANDSHAKE_TIMEOUT_SECS, DEFAULT_IDLE_TIMEOUT_SECS, DEFAULT_MAX_CONNECTIONS,
-    DEFAULT_MAX_RESULT_BYTES, DEFAULT_QUERY_TIMEOUT_SECS,
+    DEFAULT_MAX_RESULT_BYTES,
 };
 
 /// Convert a seconds value into an optional duration: `0` disables the
@@ -41,9 +41,11 @@ pub struct ConnLimits {
     pub handshake_timeout: Option<Duration>,
     /// Bound on each blocking read. `None` disables it.
     pub idle_timeout: Option<Duration>,
-    /// Bound on one `RUN` query, cancelled through the engine's `CancelToken`
-    /// (ADR-0111). `None` leaves queries unbounded (the default).
-    pub query_timeout: Option<Duration>,
+    /// The statement deadline policy (ADR-0692): the default budget of a
+    /// `RUN`, and the optional ceiling over it and over a request's
+    /// `tx_timeout`. The engine enforces it through the `CancelToken`
+    /// (ADR-0111).
+    pub timeout: relate_core::deadline::TimeoutPolicy,
     /// Maximum logical bytes in one result. `0` disables the cap.
     pub max_result_bytes: u64,
     /// Maximum concurrent Bolt connections. `0` is unlimited (ADR-0333).
@@ -75,7 +77,7 @@ impl Default for ConnLimits {
         Self {
             handshake_timeout: secs_to_opt(DEFAULT_HANDSHAKE_TIMEOUT_SECS),
             idle_timeout: secs_to_opt(DEFAULT_IDLE_TIMEOUT_SECS),
-            query_timeout: secs_to_opt(DEFAULT_QUERY_TIMEOUT_SECS),
+            timeout: relate_core::deadline::TimeoutPolicy::SERVED,
             max_result_bytes: DEFAULT_MAX_RESULT_BYTES,
             max_connections: DEFAULT_MAX_CONNECTIONS,
             keep_alive_interval: crate::keepalive::DEFAULT_KEEP_ALIVE_INTERVAL,

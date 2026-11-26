@@ -49,6 +49,7 @@ pub(crate) fn handle(
         txs,
         CredentialGate::Accepted,
         extension,
+        relate::TimeoutPolicy::default(),
     )
     .materialize()
 }

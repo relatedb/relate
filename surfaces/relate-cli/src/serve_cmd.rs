@@ -324,6 +324,9 @@ struct Admission {
     header_deadline: std::time::Duration,
     #[cfg(any(feature = "http", feature = "mcp"))]
     body_deadline: std::time::Duration,
+    /// The statement deadline policy every surface enforces (ADR-0692).
+    #[cfg_attr(not(feature = "surface"), allow(dead_code))]
+    statement_timeout: relate::TimeoutPolicy,
 }
 
 impl Admission {
@@ -352,6 +355,17 @@ impl Admission {
             ))?,
             #[cfg(any(feature = "http", feature = "mcp"))]
             body_deadline: or_report(relate_serve::resolve_body_deadline(cmd.body_deadline_secs))?,
+            // `--query-timeout-secs` / `--query-timeout-max-secs`, else the
+            // environment, else 30 s with no ceiling (ADR-0692).
+            statement_timeout: relate::TimeoutPolicy::from_secs(
+                or_report(relate_serve::resolve_query_timeout_secs(
+                    cmd.query_timeout_secs,
+                    relate::DEFAULT_STATEMENT_TIMEOUT_SECS,
+                ))?,
+                or_report(relate_serve::resolve_query_timeout_max_secs(
+                    cmd.query_timeout_max_secs,
+                ))?,
+            ),
         })
     }
 }

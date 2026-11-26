@@ -322,8 +322,8 @@ fn query_timeout_interrupts_and_the_session_stays_usable() {
         .and_then(Pack::as_str)
         .unwrap_or_default();
     assert!(
-        message.contains("query cancelled"),
-        "the FAILURE must report cancellation: {message}"
+        message.contains("query timed out after 1s"),
+        "the FAILURE must report the timeout: {message}"
     );
 
     // RESET clears the failed state; the same session answers a follow-up.

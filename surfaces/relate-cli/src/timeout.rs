@@ -1,9 +1,7 @@
 //! `--timeout DURATION` (ADR-0241, LABS-234): a per-statement wall-clock
-//! bound enforced through the engine's cooperative cancellation flag
-//! (ADR-0111, `relate::CancelToken`). The CLI owns the watch; the engine
-//! owns the cancel points.
+//! bound. The CLI parses the value; the engine owns the deadline and the
+//! cancel points (ADR-0692, `Connection::set_statement_timeout`).
 
-use std::sync::mpsc;
 use std::time::Duration;
 
 /// The one invalid-value message, shared by both rejection paths so the
@@ -78,54 +76,6 @@ pub(crate) fn parse_timeout(value: &str) -> Result<Duration, String> {
     ))
 }
 
-/// The outcome of a [`run_bounded`] call: the run finished (cancellation did
-/// not fire, or fired after completion), or the watchdog fired and the run
-/// returned the cancellation error. The classification is structural — the
-/// caller never inspects token state.
-pub(crate) enum Bounded<T> {
-    /// `f` completed normally; carries its result.
-    Completed(T),
-    /// The watchdog fired and `f` returned an error (the cancellation).
-    TimedOut,
-}
-
-/// Run `f` with a watchdog thread that cancels `token` after `limit` unless
-/// `f` finishes first. The watchdog blocks on a channel with
-/// `recv_timeout`, so a finished `f` retires it immediately — the watchdog
-/// never outlives the statement it watches. A run whose result is an error
-/// after the watchdog fired is [`Bounded::TimedOut`]; a completed run is
-/// [`Bounded::Completed`] even if the token fired on the finish line (a
-/// finished query is a success).
-pub(crate) fn run_bounded<T, E>(
-    limit: Duration,
-    token: &relate::CancelToken,
-    f: impl FnOnce() -> Result<T, E>,
-) -> Bounded<Result<T, E>> {
-    let (done_tx, done_rx) = mpsc::channel::<()>();
-    let watchdog = token.clone();
-    // The watchdog's "did it fire" answer is its return value; the `join`
-    // below is the synchronization point, so no shared atomic is needed.
-    let guard = std::thread::spawn(move || {
-        // A dropped sender (f finished) reports Disconnected and ends the
-        // watch without cancelling; only a genuine timeout cancels.
-        if let Err(mpsc::RecvTimeoutError::Timeout) = done_rx.recv_timeout(limit) {
-            watchdog.cancel();
-            return true;
-        }
-        false
-    });
-    let result = f();
-    drop(done_tx);
-    // `unwrap_or(false)` keeps the historical behavior of ignoring a
-    // panicked watchdog (the run's own result decides the outcome).
-    let fired = guard.join().unwrap_or(false);
-    if fired && result.is_err() {
-        Bounded::TimedOut
-    } else {
-        Bounded::Completed(result)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -185,40 +135,5 @@ mod tests {
         // One millisecond past the boundary is a usage error, not a wrap.
         assert!(parse_timeout("18446744073709551616ms").is_err());
         assert!(parse_timeout("18446744073709552").is_err());
-    }
-
-    #[test]
-    fn a_fast_run_completes() {
-        let token = relate::CancelToken::new();
-        let ran: Bounded<Result<i32, String>> =
-            run_bounded(Duration::from_secs(60), &token, || Ok(41 + 1));
-        match ran {
-            Bounded::Completed(Ok(42)) => {}
-            _ => panic!("expected Completed(Ok(42))"),
-        }
-        assert!(!token.is_cancelled());
-    }
-
-    #[test]
-    fn a_slow_run_is_timed_out() {
-        let token = relate::CancelToken::new();
-        let ran: Bounded<Result<(), String>> =
-            run_bounded(Duration::from_millis(10), &token, || {
-                std::thread::sleep(Duration::from_millis(500));
-                Err("query cancelled".to_string())
-            });
-        assert!(matches!(ran, Bounded::TimedOut));
-        assert!(token.is_cancelled());
-    }
-
-    #[test]
-    fn a_success_that_crosses_the_line_still_completes() {
-        let token = relate::CancelToken::new();
-        let ran: Bounded<Result<(), String>> =
-            run_bounded(Duration::from_millis(10), &token, || {
-                std::thread::sleep(Duration::from_millis(50));
-                Ok(())
-            });
-        assert!(matches!(ran, Bounded::Completed(Ok(()))));
     }
 }

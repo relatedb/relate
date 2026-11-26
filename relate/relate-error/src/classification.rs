@@ -90,6 +90,10 @@ pub const CONSTRAINT_VALIDATION_FAILED_CODE: &str =
 /// The `code` of a query stopped by `--query-timeout-secs` (the engine's
 /// `Cancelled`).
 pub const TRANSACTION_TIMED_OUT_CODE: &str = "Neo.ClientError.Transaction.TransactionTimedOut";
+/// A statement stopped by a deadline the request itself set (a driver's
+/// `tx_timeout`, an HTTP `maxExecutionTime`), ADR-0692.
+pub const TRANSACTION_TIMED_OUT_CLIENT_CONFIGURATION_CODE: &str =
+    "Neo.ClientError.Transaction.TransactionTimedOutClientConfiguration";
 
 /// The `code` of a write-write conflict: a `TransientError`, so drivers'
 /// managed transactions retry it (the engine never does, ADR-0017).
@@ -345,6 +349,16 @@ pub fn error_info(e: &Error) -> ErrorInfo {
         },
         Error::Cancelled => ErrorInfo {
             neo4j_code: TRANSACTION_TIMED_OUT_CODE,
+            gql_status: GQLSTATUS_GENERAL,
+            stage: Runtime,
+            retryable: false,
+        },
+        Error::TimedOut { requested, .. } => ErrorInfo {
+            neo4j_code: if *requested {
+                TRANSACTION_TIMED_OUT_CLIENT_CONFIGURATION_CODE
+            } else {
+                TRANSACTION_TIMED_OUT_CODE
+            },
             gql_status: GQLSTATUS_GENERAL,
             stage: Runtime,
             retryable: false,

@@ -47,6 +47,21 @@ public class DatabaseTest {
     }
 
     @Test
+    void statementTimeoutCancelsAndClears() {
+        Database db = Database.open(":memory:");
+        Database.Connection conn = db.connect();
+        conn.setStatementTimeout(java.time.Duration.ofMillis(200));
+        RelateException e = assertThrows(RelateException.class,
+                () -> conn.query("UNWIND range(1, 2000000000) AS x RETURN count(x) AS n"));
+        assertTrue(e.getMessage().contains("query timed out after 200ms"),
+                "unexpected message: " + e.getMessage());
+        conn.setStatementTimeout(java.time.Duration.ZERO);
+        assertEquals(1, ((Number) conn.query("RETURN 1 AS n").rows().get(0).get(0)).intValue());
+        assertThrows(IllegalArgumentException.class,
+                () -> conn.setStatementTimeout(java.time.Duration.ofSeconds(-1)));
+    }
+
+    @Test
     void setNamespaceCaseInsensitive() {
         Database db = Database.open(":memory:");
         Database.Connection conn = db.connect();

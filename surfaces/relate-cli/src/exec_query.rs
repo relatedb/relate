@@ -20,7 +20,7 @@ use relate::StatementEffect;
 use relate_formatter::{Formatter, PlanPresentation, StatementMeta};
 use relate_model::CypherValue;
 
-use crate::{errors, row_cap, timeout, write_error, write_report};
+use crate::{errors, row_cap, write_error, write_report};
 
 /// The per-statement render/execution controls of [`exec_relate_query`]
 /// (keeps it under the clippy argument limit). Every field defaults to the
@@ -130,30 +130,20 @@ fn exec_relate_query_to(
         progress,
         timer,
     } = opts;
-    // ADR-0241: a timeout runs the cancellable entry point under a watchdog
-    // (ADR-0111); the engine checks the token at row-production points and
-    // in its long loops. `Bounded::TimedOut` is the structural
-    // classification — no token-state guessing here.
-    let result = match timeout {
-        None => conn.query_with_params(query, params.clone()),
-        Some(limit) => {
-            let token = relate::CancelToken::new();
-            match timeout::run_bounded(limit, &token, || {
-                conn.query_with_params_cancellable(query, params.clone(), token.clone())
-            }) {
-                timeout::Bounded::Completed(result) => result,
-                timeout::Bounded::TimedOut => {
-                    return StatementRun::failed(errors::report_timeout_to(
-                        &formatter.mode,
-                        limit,
-                        progress,
-                        out,
-                        diagnostics,
-                    ));
-                }
-            }
-        }
-    };
+    // ADR-0241, ADR-0692: the statement deadline is the engine's — the
+    // connection carries the budget and answers `Error::TimedOut`, the
+    // structural classification (no token-state guessing here).
+    conn.set_statement_timeout(timeout.filter(|limit| !limit.is_zero()));
+    let result = conn.query_with_params(query, params.clone());
+    if let (Err(relate::Error::TimedOut { .. }), Some(limit)) = (&result, timeout) {
+        return StatementRun::failed(errors::report_timeout_to(
+            &formatter.mode,
+            limit,
+            progress,
+            out,
+            diagnostics,
+        ));
+    }
     match result {
         Ok(r) => {
             // The cap is decided from the row count, before any row is

@@ -76,3 +76,4 @@ memo tables' allocation, never part of `memory_bytes`.
 
 Full contract: `docs/api/python/spec.md` (parameters, returned values,
 error classification, bookmarks, threading).
+- **Statement timeout (ADR-0692):** `conn.statement_timeout = seconds` bounds each statement on the connection (`None`/`0` clears; the default is none). A statement past it raises `OperationalError` (`query timed out after …`); the connection stays usable.

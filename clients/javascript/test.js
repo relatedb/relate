@@ -80,6 +80,25 @@ assertRejectsSuffix(
 sysConn.rollback();
 sysConn.setNamespace("neo4j");
 
+// Statement timeout (ADR-0692): a statement past its budget throws the
+// client-configuration timeout; the connection stays usable; 0 clears.
+{
+  const tdb = Database.open(":memory:");
+  const tconn = tdb.connect();
+  tconn.setStatementTimeout(200);
+  let timeout = null;
+  try {
+    tconn.query("UNWIND range(1, 2000000000) AS x RETURN count(x) AS n");
+  } catch (e) {
+    timeout = e;
+  }
+  assert.ok(timeout, "the long statement must time out");
+  assert.match(timeout.message, /query timed out after 200ms/);
+  tconn.setStatementTimeout(0);
+  assert.strictEqual(tconn.query("RETURN 1 AS n").rows[0].n, 1);
+  assert.throws(() => tconn.setStatementTimeout(-1));
+}
+
 // Result metadata (ADR-0285): queryType and namespace on the query result.
 // Fresh db so MATCH (n) really pins "EXPLAIN never executed the CREATE".
 const metaDb = Database.open(":memory:");

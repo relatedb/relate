@@ -82,6 +82,11 @@ pub struct HttpConfig {
     /// Paths that are not Query API routes (ADR-0428). `None` is the
     /// product server: unknown paths are 404.
     pub extension: Option<Arc<dyn HttpExtension>>,
+    /// The statement deadline policy (ADR-0692): the default budget of a
+    /// statement, and the optional ceiling over it and over a request's
+    /// `maxExecutionTime`. Default [`relate::TimeoutPolicy::SERVED`]
+    /// (30 s, no ceiling).
+    pub statement_timeout: relate::TimeoutPolicy,
 }
 
 /// A host route served on the same connection as the Query API (ADR-0428).
@@ -126,6 +131,7 @@ impl HttpConfig {
             allowed_origins: OriginAllowlist::Default,
             transactions: crate::tx_registry::TxRegistry::new(),
             extension: None,
+            statement_timeout: relate::TimeoutPolicy::SERVED,
         }
     }
 }
@@ -492,6 +498,7 @@ fn dispatch<S: Read>(
                         query_api::CredentialGate::Accepted
                     },
                     config.extension.as_deref(),
+                    config.statement_timeout,
                 ),
                 DrainPlan::None,
                 encoding,

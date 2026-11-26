@@ -112,6 +112,9 @@ const connect_namespace = lib.func(
 const conn_set_namespace = lib.func(
   "int relate_conn_set_namespace(void *conn, str name, _Out_ void **err)"
 );
+const conn_set_statement_timeout = lib.func(
+  "int relate_conn_set_statement_timeout(void *conn, uint64 timeout_ms, _Out_ void **err)"
+);
 const disconnect = lib.func("int relate_disconnect(void *conn)");
 const query_params = lib.func(
   "int relate_query_params(void *conn, str cypher, void *params, _Out_ void **out, _Out_ void **err)"
@@ -663,6 +666,24 @@ class Connection {
     const err = [null];
     if (conn_set_namespace(this.handle, String(name), err) !== 0) {
       throw takeError("conn_set_namespace", err);
+    }
+  }
+
+  // setStatementTimeout(milliseconds) — bound each following statement on
+  // this connection (ADR-0692). A statement still running past it is
+  // cancelled and its query() throws a RelateError whose code is
+  // Neo.ClientError.Transaction.TransactionTimedOutClientConfiguration; the
+  // connection stays usable. 0 clears the bound (the default: none).
+  setStatementTimeout(milliseconds) {
+    this._refuseWhileAsyncInFlight("setStatementTimeout");
+    if (!Number.isSafeInteger(milliseconds) || milliseconds < 0) {
+      throw clientRefusalError(
+        "setStatementTimeout takes a non-negative integer number of milliseconds"
+      );
+    }
+    const err = [null];
+    if (conn_set_statement_timeout(this.handle, milliseconds, err) !== 0) {
+      throw takeError("conn_set_statement_timeout", err);
     }
   }
 }

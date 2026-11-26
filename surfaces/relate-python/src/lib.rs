@@ -459,6 +459,39 @@ impl Database {
         Ok(())
     }
 
+    /// The statement budget in seconds (ADR-0692), or `None` when each
+    /// statement runs unbounded (the default).
+    fn statement_timeout(&self, py: Python<'_>) -> PyResult<Option<f64>> {
+        Ok(self
+            .lock_conn(py)?
+            .statement_timeout()
+            .map(|budget| budget.as_secs_f64()))
+    }
+
+    /// Bound each following statement to `seconds` (ADR-0692); `None` or `0`
+    /// clears the bound. A statement past its budget is cancelled and
+    /// raises with the timeout message; the connection stays usable. A
+    /// negative, NaN or infinite value is a `ValueError`.
+    #[pyo3(signature = (seconds=None))]
+    fn set_statement_timeout(&self, py: Python<'_>, seconds: Option<f64>) -> PyResult<()> {
+        let limit = match seconds {
+            None => None,
+            Some(s) if s.is_finite() && s >= 0.0 => {
+                let budget = std::time::Duration::try_from_secs_f64(s).map_err(|_| {
+                    pyo3::exceptions::PyValueError::new_err("statement timeout is out of range")
+                })?;
+                (!budget.is_zero()).then_some(budget)
+            }
+            Some(_) => {
+                return Err(pyo3::exceptions::PyValueError::new_err(
+                    "statement timeout must be a non-negative number of seconds",
+                ))
+            }
+        };
+        self.lock_conn(py)?.set_statement_timeout(limit);
+        Ok(())
+    }
+
     /// Execute a Cypher query and return the result.
     #[pyo3(signature = (query, params=None))]
     fn execute(

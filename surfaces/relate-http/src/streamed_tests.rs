@@ -103,6 +103,35 @@ fn an_error_after_the_head_is_the_in_band_errors_member() {
     assert_eq!(parsed["errors"].as_array().unwrap().len(), 1);
 }
 
+/// ADR-0692: a statement that outlasts its budget after the head went out
+/// ends with the timeout as the in-band `errors` member, then closes — the
+/// socket write timeout is not what stops it.
+#[test]
+fn a_spent_budget_after_the_head_is_the_in_band_errors_member() {
+    let mut config = HttpConfig::new(AuthConfig::None);
+    config.statement_timeout = relate::TimeoutPolicy {
+        default: Some(std::time::Duration::from_millis(300)),
+        ceiling: None,
+    };
+    let port = start(Database::open(":memory:").unwrap(), config);
+    let request = post_db(
+        "neo4j",
+        r#"{"statement": "UNWIND range(1, 2000000000) AS n RETURN n"}"#,
+        None,
+    );
+    let (status, raw) = exchange_bytes(port, request.as_bytes());
+    assert_eq!(status, 200, "the head went out before the deadline");
+    let (_, body) = chunked_body(&raw);
+    let parsed: serde_json::Value = serde_json::from_str(&body).expect("the body is JSON");
+    assert!(parsed["data"]["values"].as_array().unwrap().len() > 1000);
+    let message = parsed["errors"][0]["message"].as_str().unwrap();
+    assert!(message.contains("query timed out after 300ms"), "{message}");
+    assert!(
+        parsed.get("bookmarks").is_none(),
+        "a failed statement has no success tail"
+    );
+}
+
 #[test]
 fn an_error_before_any_row_keeps_its_status() {
     let port = start(
@@ -142,6 +171,7 @@ fn a_failed_write_cancels_the_statement() {
         params: Default::default(),
         include_counters: false,
         media_type: ResponseMediaType::Json,
+        limit: None,
     };
     let mut sink = StalledSink { writes: 0 };
     let started = Instant::now();

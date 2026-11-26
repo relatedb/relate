@@ -166,6 +166,25 @@ class Connection:
         self._check_closed()
         _native(lambda: self._db.set_namespace(name))
 
+    # --- Statement timeout (ADR-0692) ------------------------------------
+
+    @property
+    def statement_timeout(self) -> Optional[float]:
+        """The per-statement budget in seconds, or ``None`` (the default:
+        no bound). A statement still running past it is cancelled and
+        raises ``OperationalError``; the connection stays usable. Set
+        ``None`` or ``0`` to clear. The embedded library applies no default;
+        the network surfaces default to 30 s."""
+        self._check_closed()
+        return self._db.statement_timeout()
+
+    @statement_timeout.setter
+    def statement_timeout(self, seconds: Optional[float]) -> None:
+        self._check_closed()
+        if seconds is not None and (isinstance(seconds, bool) or not isinstance(seconds, (int, float))):
+            raise TypeError("statement_timeout must be a number of seconds or None")
+        _native(lambda: self._db.set_statement_timeout(seconds))
+
     def commit(self) -> Optional[str]:
         """Commit the open transaction (a no-op in autocommit mode).
 

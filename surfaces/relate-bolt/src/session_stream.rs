@@ -96,7 +96,6 @@ impl Session {
             stream,
             cypher,
             params,
-            config.limits.query_timeout,
             config.limits.keep_alive_interval,
         )? {
             Ok(staged) => staged,
@@ -151,11 +150,7 @@ impl Session {
         )?;
         let mut columns = Vec::new();
         loop {
-            let event = handle.wait(
-                stream,
-                config.limits.keep_alive_interval,
-                config.limits.query_timeout,
-            )?;
+            let event = handle.wait(stream, config.limits.keep_alive_interval)?;
             match event {
                 Event::Columns(announced) => columns = announced,
                 Event::Batch(rows) => {
@@ -286,11 +281,7 @@ impl Session {
                 handle.resume();
             }
             let next = loop {
-                match handle.wait(
-                    stream,
-                    config.limits.keep_alive_interval,
-                    config.limits.query_timeout,
-                )? {
+                match handle.wait(stream, config.limits.keep_alive_interval)? {
                     Event::Columns(_) => {}
                     event => break event,
                 }

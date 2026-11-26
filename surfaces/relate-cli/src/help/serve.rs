@@ -163,6 +163,23 @@ fn common_segments() -> Vec<CommonSegment> {
             relate_serve::DEFAULT_MAX_CONNECTIONS
         ),
     });
+    segments.push(CommonSegment {
+        usage: "",
+        flags: &["--query-timeout-secs", "--query-timeout-max-secs"],
+        rows: format!(
+            "  --query-timeout-secs N
+                   Default statement budget on every surface (Bolt, HTTP,
+                   MCP): a statement running longer is cancelled and fails
+                   with a timeout. A request's own value (Bolt tx_timeout,
+                   HTTP maxExecutionTime) replaces it. Default:
+                   RELATE_QUERY_TIMEOUT_SECS, else {}. 0 disables the default
+  --query-timeout-max-secs N
+                   Ceiling over every statement budget, a request's
+                   included. Default: RELATE_QUERY_TIMEOUT_MAX_SECS, else
+                   0 (no ceiling)",
+            relate::DEFAULT_STATEMENT_TIMEOUT_SECS
+        ),
+    });
     // The HTTP/MCP-only admission deadlines: neither has a meaning for
     // Bolt's handshake (ADR-0141 owns that bar), so the rows compile with
     // the surfaces that read them.

@@ -45,6 +45,14 @@ Constraints (ADR-0085, ADR-0145):
 - **Single-threaded.** No background checkpoint timer. `:memory:` calls
   may run on the page thread. OPFS calls run in a dedicated worker.
 
+## No statement timeout (ADR-0692)
+
+The browser build has no timer thread, so the engine's statement deadline
+(`Connection::set_statement_timeout`, the `--timeout` / `tx_timeout` /
+`maxExecutionTime` family on the other surfaces) never fires there and the
+package exposes no timeout option. A host that must bound a statement runs
+the engine in a Web Worker and terminates the worker.
+
 ## Build
 
 ```sh

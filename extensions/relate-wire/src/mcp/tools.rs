@@ -233,6 +233,12 @@ fn cypher_input_schema() -> Value {
                 "description": "The statement's parameters; a `rows` array feeds `$rows`.",
                 "default": {},
             },
+            "timeout_seconds": {
+                "type": "number",
+                "description": "The statement's time budget in seconds; it replaces the \
+                                server default. 0 asks for no bound (a server ceiling \
+                                may still apply). A statement over its budget is cancelled.",
+            },
         },
         "required": ["statement"],
     })

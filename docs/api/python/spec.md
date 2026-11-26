@@ -159,6 +159,29 @@ opt-in, connecting to it or switching to it fails with the same
   `Cannot change the namespace while a transaction is open.`
   (`OperationalError`).
 
+## Statement timeout (ADR-0692)
+
+- `Connection.statement_timeout` — the per-statement budget in seconds
+  (`float`, or `None`, the default: no bound — the embedded library applies
+  no default). Assigning `None` or `0` clears it; a negative or non-finite
+  value raises `ValueError`, a non-number `TypeError`.
+- A statement still running past its budget is cancelled and raises
+  `OperationalError` with the message `query timed out after <N>s`
+  (`<N>ms` when not a whole second); the exception's `kind` is
+  `StatementTimeout`. The connection stays usable. Inside
+  `CALL { … } IN TRANSACTIONS` the budget covers all batches: the in-flight
+  batch is rolled back, committed batches stay.
+
+```python
+conn = relate.connect(":memory:")
+conn.statement_timeout = 0.2
+try:
+    conn.cursor().execute("UNWIND range(1, 2000000000) AS x RETURN count(x)")
+except relate.OperationalError as e:
+    print(e)                       # query timed out after 200ms
+conn.statement_timeout = None      # clear; the connection is still usable
+```
+
 The parameter is named `namespace`, not `database`, because `database` already
 names the store path.
 

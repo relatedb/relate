@@ -73,6 +73,11 @@ pub struct McpServerConfig {
     /// declared body cannot hold a worker. `Duration::ZERO` disables it.
     /// The stdio transport has no sockets and ignores it.
     pub body_deadline: std::time::Duration,
+    /// The statement deadline policy (ADR-0692): the default budget of a
+    /// tool call's statement, and the optional ceiling over it and over
+    /// the call's `timeout_seconds`. Default
+    /// [`relate::TimeoutPolicy::SERVED`] (30 s, no ceiling).
+    pub statement_timeout: relate::TimeoutPolicy,
 }
 
 impl McpServerConfig {
@@ -97,6 +102,7 @@ impl Default for McpServerConfig {
             header_deadline: relate_serve::DEFAULT_HEADER_DEADLINE,
             connection_cap: None,
             body_deadline: relate_serve::DEFAULT_BODY_DEADLINE,
+            statement_timeout: relate::TimeoutPolicy::SERVED,
         }
     }
 }
@@ -236,6 +242,12 @@ impl McpServer {
     /// The absolute header deadline on HTTP connections (zero = disabled).
     pub(crate) fn header_deadline(&self) -> std::time::Duration {
         self.config.header_deadline
+    }
+
+    /// The statement deadline policy tool calls resolve their budget
+    /// against (ADR-0692): default budget and optional ceiling.
+    pub(crate) fn statement_timeout(&self) -> relate::TimeoutPolicy {
+        self.config.statement_timeout
     }
 
     /// The absolute body deadline on HTTP connections (zero = disabled).

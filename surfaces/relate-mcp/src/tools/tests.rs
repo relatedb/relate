@@ -556,3 +556,45 @@ fn null_rows_is_absent_like_every_optional_member() {
     .unwrap();
     assert!(matches!(outcome, ToolOutcome::Query(_)));
 }
+
+/// ADR-0692: a call's `timeout_seconds` is its statement budget, resolved
+/// against the host's policy; a statement past it fails with the typed
+/// timeout and the connection stays usable.
+#[test]
+fn a_call_timeout_seconds_bounds_its_statement() {
+    let (_db, mut conn) = store();
+    let mut tools =
+        Tools::new(&mut conn, Limits::shipped()).with_timeout(relate::TimeoutPolicy::SERVED);
+    let error = tools
+        .call(
+            READ_CYPHER,
+            args!({
+                "statement": "UNWIND range(1, 2000000000) AS x RETURN count(x) AS n",
+                "timeout_seconds": 0.2,
+            }),
+        )
+        .map(|_| ())
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("query timed out after 200ms"),
+        "{error}"
+    );
+    let ok = tools.call(READ_CYPHER, args!({"statement": "RETURN 1 AS one"}));
+    assert!(ok.is_ok(), "the connection stays usable");
+}
+
+#[test]
+fn a_bad_timeout_seconds_is_invalid_params() {
+    for bad in [serde_json::json!(-1), serde_json::json!("soon")] {
+        let error = run(
+            READ_CYPHER,
+            serde_json::json!({"statement": "RETURN 1", "timeout_seconds": bad}),
+        )
+        .map(|_| ())
+        .unwrap_err();
+        assert!(
+            matches!(error, ToolError::InvalidParams { .. }),
+            "{error:?}"
+        );
+    }
+}

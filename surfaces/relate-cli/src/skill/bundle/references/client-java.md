@@ -114,3 +114,4 @@ exceptions — see gotchas.
 
 Full contract: `docs/api/java/spec.md` (packaging, load order, error text,
 types, namespaces).
+- **Statement timeout (ADR-0692):** `conn.setStatementTimeout(Duration)` bounds each statement on the connection (`Duration.ZERO` clears; the default is none). A statement past it throws `RelateException` (`query timed out after …`); the connection stays usable.

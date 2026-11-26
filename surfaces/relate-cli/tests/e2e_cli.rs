@@ -332,6 +332,56 @@ fn test_timer_bad_argument_prints_usage() {
     );
 }
 
+// --- `.timeout` dot-command (ADR-0692) ---
+
+#[test]
+fn test_timeout_dot_command_shows_sets_and_clears_the_budget() {
+    let script = ".timeout\n.timeout 30s\n.timeout\n.timeout 1.5s\n.timeout off\n.timeout 0\n";
+    let (status, stdout, stderr) = run_cli(Opts::new(&["query"]).with_stdin(script.as_bytes()));
+    assert!(status.success(), ".timeout failed: {stderr}");
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(
+        lines,
+        [
+            "Timeout: off",
+            "Timeout: 30s",
+            "Timeout: 30s",
+            "Timeout: 1.5s",
+            "Timeout: off",
+            "Timeout: off",
+        ],
+        "{stdout}"
+    );
+}
+
+#[test]
+fn test_timeout_dot_command_bounds_the_following_statements() {
+    let script = ".timeout 200ms\n\
+                  UNWIND range(1, 2000000000) AS x RETURN count(x) AS n;\n\
+                  .timeout off\n\
+                  RETURN 7 AS ok;\n";
+    let (_status, stdout, stderr) = run_cli(Opts::new(&["query"]).with_stdin(script.as_bytes()));
+    assert!(
+        stderr.contains("query timed out after"),
+        "the long statement must time out, got stderr: {stderr}"
+    );
+    assert!(
+        stdout.contains('7'),
+        "the session continues after the timeout, got: {stdout}"
+    );
+}
+
+#[test]
+fn test_timeout_dot_command_rejects_a_bad_value() {
+    let script = ".timeout soon\n";
+    let (status, stdout, stderr) = run_cli(Opts::new(&["query"]).with_stdin(script.as_bytes()));
+    assert!(status.success(), ".timeout usage failed: {stderr}");
+    assert!(
+        stdout.contains("Usage: .timeout [DURATION|off]"),
+        "expected usage line, got: {stdout}"
+    );
+}
+
 // --- Persistent database ---
 
 #[test]

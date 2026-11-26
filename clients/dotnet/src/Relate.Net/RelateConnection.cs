@@ -86,6 +86,24 @@ public sealed class RelateConnection : IDisposable, IAsyncDisposable
         });
     }
 
+    /// <summary>
+    /// Bounds each following statement on this connection to <paramref name="timeout"/> (ADR-0692).
+    /// A statement still running past it is cancelled and the call throws a <see cref="RelateException"/>
+    /// whose code is <c>Neo.ClientError.Transaction.TransactionTimedOutClientConfiguration</c>; the
+    /// connection stays usable. <see cref="TimeSpan.Zero"/> clears the bound (the default: none).
+    /// </summary>
+    /// <exception cref="ArgumentOutOfRangeException">The timeout is negative.</exception>
+    public unsafe void SetStatementTimeout(TimeSpan timeout)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(timeout, TimeSpan.Zero);
+        var milliseconds = checked((ulong)Math.Ceiling(timeout.TotalMilliseconds));
+        Exclusive(() =>
+        {
+            nint err = 0;
+            Native.Check(relate_conn_set_statement_timeout(_handle, milliseconds, &err), err, "set statement timeout");
+        });
+    }
+
     /// <summary>The session namespace in its stored form (lowercase); the one normalization home.</summary>
     internal static string NormalizeNamespace(string @namespace) => @namespace.ToLowerInvariant();
 

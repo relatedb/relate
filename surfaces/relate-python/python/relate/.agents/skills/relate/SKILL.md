@@ -139,3 +139,4 @@ Everything ergonomic lives on the DB-API side; see
   is Bolt-only and cannot be stored as a property.
 
 Full spec: https://github.com/relatedb/relate — `docs/api/python/`.
+- **Statement timeout (ADR-0692):** `conn.statement_timeout = seconds` bounds each statement on the connection (`None`/`0` clears; the default is none). A statement past it raises `OperationalError` (`query timed out after …`); the connection stays usable.

@@ -69,6 +69,13 @@ transaction. `--read-only` is the fence for that.
   `RELATE_MAX_ROWS`. The cap follows agent mode (ADR-0407's ladder):
   force it on with `--agent-mode`, off with `--no-agent-mode` or
   `RELATE_AGENT_MODE=0`. The cap bounds what is printed, not the engine's work.
+- Statement time: bound a statement with `--timeout DURATION` (exit 7,
+  `code: "timeout"`) or, in the shell, `.timeout 30s` (ADR-0692). The
+  served surfaces apply a 30 s default per statement (`relate serve
+  --query-timeout-secs N`, ceiling `--query-timeout-max-secs`); a request
+  overrides it (Bolt `tx_timeout`, HTTP `maxExecutionTime`, MCP
+  `timeout_seconds`), and a timed-out statement is cancelled with its
+  snapshot released.
 - Statement scope: prefer several small queries over one giant `UNWIND`
   batch when a task is exploratory.
 
