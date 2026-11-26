@@ -3,7 +3,8 @@
 //! and the frontier vocabulary. Each module keeps its helpers' one canonical
 //! definition; this root re-exports them so call sites keep one path.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
+use std::thread::LocalKey;
 
 use crate::metrics::ClauseMetricsRecord;
 
@@ -36,3 +37,22 @@ pub(crate) use graphs::*;
 pub(crate) use readers::*;
 pub(crate) use run::*;
 pub(crate) use write::*;
+
+/// Run `f` with the thread-local test override `slot` set to `value`,
+/// restoring the previous setting afterwards (also on unwind, and nesting
+/// composes: an inner scope restores the outer scope's value) — the one
+/// scoped-override helper the exec seams share.
+pub(crate) fn with_override<V: Copy + 'static, T>(
+    slot: &'static LocalKey<Cell<Option<V>>>,
+    value: V,
+    f: impl FnOnce() -> T,
+) -> T {
+    struct Restore<V: Copy + 'static>(&'static LocalKey<Cell<Option<V>>>, Option<V>);
+    impl<V: Copy + 'static> Drop for Restore<V> {
+        fn drop(&mut self) {
+            self.0.with(|c| c.set(self.1));
+        }
+    }
+    let _restore = Restore(slot, slot.with(|c| c.replace(Some(value))));
+    f()
+}

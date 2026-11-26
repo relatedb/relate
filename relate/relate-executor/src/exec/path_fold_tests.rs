@@ -1,4 +1,5 @@
 use super::agg_fold::take_path_fold_bindings;
+use super::kernels::with_kernels_disabled;
 use super::test_support::{
     build, error_of, exec_autocommit, exec_cypher, exec_cypher_resolved, try_exec_cypher,
 };
@@ -578,7 +579,11 @@ fn two_hop_score_graph() -> Graph {
 fn path_fold_streams_count_over_a_bare_two_hop_endpoint() {
     let g = two_hop_score_graph();
     let _ = take_path_fold_bindings();
-    let result = exec_cypher(&g, "MATCH (n)-[:R]->()-[:R]->(m) RETURN count(m)");
+    // The two-hop tally fold takes this shape first (ADR-0693); stand the
+    // kernels down so the path fold's whole-node slot source is the one
+    // under test.
+    let result =
+        with_kernels_disabled(|| exec_cypher(&g, "MATCH (n)-[:R]->()-[:R]->(m) RETURN count(m)"));
     assert_eq!(result.rows, vec![vec![Value::Int(5)]]);
     assert_eq!(take_path_fold_bindings(), 5);
 }

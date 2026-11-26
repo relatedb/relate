@@ -93,3 +93,14 @@ pub(crate) fn path_value(value: &Value) -> Option<Arc<relate_core::Path>> {
     };
     Some(Arc::clone(p))
 }
+
+/// The one count cell of a one-row, one-column result.
+pub(crate) fn count_of(result: &QueryResult) -> i64 {
+    let [row] = result.rows.as_slice() else {
+        panic!("one row, got {:?}", result.rows);
+    };
+    let [cell] = row.as_slice() else {
+        panic!("one cell, got {row:?}");
+    };
+    int_cell(cell).unwrap_or_else(|| panic!("an integer cell, got {cell:?}"))
+}

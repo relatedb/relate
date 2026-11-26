@@ -12,17 +12,8 @@
 
 use relate_core::Value;
 
-use crate::graph::Graph;
-
 use super::super::kernels::matcher::MAX_CHAIN_HOPS;
-use super::{differential, ExpectedEngagement};
-
-/// The hand-built adversarial multigraph — the shared differential corpus
-/// ([`crate::graph::test_support::adversarial_multigraph`]) at its native
-/// one-rel-per-edge scale.
-fn adversarial_graph() -> Graph {
-    crate::graph::test_support::adversarial_multigraph(1).0
-}
+use super::{adversarial_graph, differential, ExpectedEngagement};
 
 /// One step spelling as the sweep states it, with the engagement its
 /// queries assert: the single-hop form (repeated `k` times) and the
@@ -30,43 +21,53 @@ fn adversarial_graph() -> Graph {
 /// never derived from one another — plus whether the count fold unrolls
 /// the starred form, and the first `k` at which the spelled form engages
 /// a kernel (`None` when no `k` does; a two-hop count rides the path
-/// aggregate fold, which is no kernel).
+/// aggregate fold, which is no kernel — except a directed same-way
+/// two-hop count, which the two-hop tally fold (REL8-2214) takes).
 struct Step {
     hop: &'static str,
     star: &'static str,
     star_engages: ExpectedEngagement,
     spelled_engages_from: Option<usize>,
+    /// Whether a two-hop chain of this step is the two-hop tally fold's
+    /// shape (directed, same-way, a static type list): the one fold with
+    /// no cost gate, so it engages from a bare head to a bare tail too.
+    tally_shape: bool,
 }
 
 /// The directed single-hop steps — the family the count fold's own gates
 /// accept (a static type list or none, and a directed hop whose trail
 /// corrections the tally does not need). Spelled out, they engage from
-/// three hops: at two the path aggregate fold answers the count without a
-/// kernel.
+/// two hops, where the two-hop tally fold (REL8-2214) takes the directed
+/// same-way count before the path aggregate fold sees it, and spelled
+/// longer chains by the chain count.
 const DIRECTED: [Step; 4] = [
     Step {
         hop: "-[:F]->",
         star: "-[:F*{k}]->",
         star_engages: ExpectedEngagement::Engaged,
-        spelled_engages_from: Some(3),
+        spelled_engages_from: Some(2),
+        tally_shape: true,
     },
     Step {
         hop: "<-[:F]-",
         star: "<-[:F*{k}]-",
         star_engages: ExpectedEngagement::Engaged,
-        spelled_engages_from: Some(3),
+        spelled_engages_from: Some(2),
+        tally_shape: true,
     },
     Step {
         hop: "-[:G]->",
         star: "-[:G*{k}]->",
         star_engages: ExpectedEngagement::Engaged,
-        spelled_engages_from: Some(3),
+        spelled_engages_from: Some(2),
+        tally_shape: true,
     },
     Step {
         hop: "-->",
         star: "-[*{k}]->",
         star_engages: ExpectedEngagement::Engaged,
-        spelled_engages_from: Some(3),
+        spelled_engages_from: Some(2),
+        tally_shape: true,
     },
 ];
 
@@ -79,6 +80,7 @@ const UNDIRECTED: Step = Step {
     star: "-[:F*{k}]-",
     star_engages: ExpectedEngagement::Engaged,
     spelled_engages_from: Some(3),
+    tally_shape: false,
 };
 
 /// A disjunctive type list: not the static conjunction the compile's type
@@ -88,6 +90,7 @@ const DISJUNCTIVE: Step = Step {
     star: "-[:F|G*{k}]->",
     star_engages: ExpectedEngagement::Declined,
     spelled_engages_from: None,
+    tally_shape: false,
 };
 
 /// Every step class the sweep spells, one population.
@@ -115,6 +118,17 @@ fn starred(head: &str, tail: &str, step: &Step, k: usize) -> String {
 }
 
 impl Step {
+    /// Whether a chain of `k` hops between a bare head and a bare tail
+    /// engages a kernel: the cost gate declines every unlabelled chain,
+    /// except the two-hop tally fold, which carries no cost gate.
+    fn bare_scan_engages(&self, k: usize) -> ExpectedEngagement {
+        if k == 2 && self.tally_shape {
+            ExpectedEngagement::Engaged
+        } else {
+            ExpectedEngagement::Declined
+        }
+    }
+
     /// Whether the spelled-out form at `k` hops engages a kernel — the
     /// one spelling of the step's policy, consulted by every sweep.
     fn spelled_engages(&self, k: usize) -> ExpectedEngagement {
@@ -168,18 +182,13 @@ fn chain_count_matches_the_walker_on_adversarial_shapes() {
     // A bare scan head with a bare tail: the cost gate's estimate from an
     // unlabelled start declines every chain outright — the block's one
     // fact, stated once here, overriding the step policies above.
+    // The one exception is the two-hop tally fold, which carries no cost
+    // gate (its memory is the distinct middle nodes, not the stages).
     for step in all_steps() {
         for k in 2..=MAX_CHAIN_HOPS {
-            differential(
-                &g,
-                &starred(BARE_HEAD, BARE_TAIL, step, k),
-                ExpectedEngagement::Declined,
-            );
-            differential(
-                &g,
-                &spelled(BARE_HEAD, BARE_TAIL, step, k),
-                ExpectedEngagement::Declined,
-            );
+            let engages = step.bare_scan_engages(k);
+            differential(&g, &starred(BARE_HEAD, BARE_TAIL, step, k), engages);
+            differential(&g, &spelled(BARE_HEAD, BARE_TAIL, step, k), engages);
         }
     }
     // The sweep is not vacuous: the engaging shapes answer over real paths.

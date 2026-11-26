@@ -51,7 +51,7 @@ fn list_limit() -> usize {
 /// Run `f` with the listing limit lowered to `limit` on this thread.
 #[cfg(test)]
 pub(super) fn with_list_limit<T>(limit: usize, f: impl FnOnce() -> T) -> T {
-    super::with_override(&LIST_LIMIT, limit, f)
+    crate::exec::test_support::with_override(&LIST_LIMIT, limit, f)
 }
 
 #[cfg(test)]

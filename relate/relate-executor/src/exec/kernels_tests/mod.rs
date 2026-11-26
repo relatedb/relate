@@ -24,6 +24,7 @@
 mod chain;
 mod chain_count;
 mod chain_gate;
+mod chain_tally;
 mod gate;
 mod halt;
 mod hub_star;
@@ -65,6 +66,15 @@ pub(super) fn families() -> Graph {
     )
     .unwrap();
     g
+}
+
+/// The hand-built adversarial multigraph — the shared differential corpus
+/// ([`crate::graph::test_support::adversarial_multigraph`]) at its native
+/// one-rel-per-edge scale: self-loops at the start, middle and end,
+/// parallel same-type and cross-type edges, reciprocal pairs, a hub,
+/// unlabelled nodes.
+pub(super) fn adversarial_graph() -> Graph {
+    crate::graph::test_support::adversarial_multigraph(1).0
 }
 
 /// Whether a differential expects a kernel to take the statement.
