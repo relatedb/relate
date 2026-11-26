@@ -1,0 +1,90 @@
+# CodeQL code scanning, advanced setup (REL8-2246).
+#
+# Replaces the repository's default setup. Default setup builds Swift with a
+# plain `swift build` at the root, where Package.swift links the *released*
+# RelateFFI XCFramework: any Swift API that wraps a C ABI symbol added since
+# the last release fails to compile ("cannot find 'relate_…' in scope") and
+# main goes red until the next release stamps a new binary. The swift job
+# below builds the XCFramework from this checkout and sets
+# RELATE_LOCAL_XCFRAMEWORK=1, so the package links the engine it was built
+# from (Package.swift, ADR-0433).
+#
+# Every other language keeps the build mode default setup used for it.
+name: CodeQL
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "23 4 * * 1"
+
+concurrency:
+  group: codeql-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions: {}
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { language: actions, build-mode: none }
+          - { language: c-cpp, build-mode: none }
+          - { language: csharp, build-mode: none }
+          - { language: go, build-mode: autobuild }
+          - { language: java-kotlin, build-mode: none }
+          - { language: javascript-typescript, build-mode: none }
+          - { language: python, build-mode: none }
+          - { language: rust, build-mode: none }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: github/codeql-action/init@e274593ecfcbcdc39c8f034978d84614cebcb71d # v4.39.5
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+      - uses: github/codeql-action/analyze@e274593ecfcbcdc39c8f034978d84614cebcb71d # v4.39.5
+        with:
+          category: "/language:${{ matrix.language }}"
+
+  analyze-swift:
+    name: Analyze (swift)
+    runs-on: macos-5-core-arm64
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: ./.github/actions/setup-rust-ci
+        with:
+          sccache: "false"
+          free-disk: "false"
+          mold: "false"
+          toolchain-targets: "aarch64-apple-darwin,x86_64-apple-darwin"
+      # The XCFramework is Rust, not Swift: build it before CodeQL starts
+      # tracing so the database holds only the Swift compile.
+      - name: Build the macOS XCFramework slice
+        run: bash scripts/build-xcframework.sh --slices macos
+      - uses: github/codeql-action/init@e274593ecfcbcdc39c8f034978d84614cebcb71d # v4.39.5
+        with:
+          languages: swift
+          build-mode: manual
+      - name: Build the Swift package
+        env:
+          RELATE_LOCAL_XCFRAMEWORK: "1"
+        run: swift build --package-path "$GITHUB_WORKSPACE"
+      - uses: github/codeql-action/analyze@e274593ecfcbcdc39c8f034978d84614cebcb71d # v4.39.5
+        with:
+          category: "/language:swift"
