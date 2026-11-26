@@ -51,6 +51,7 @@ mod plan;
 mod query_type;
 mod resolve;
 mod rewrite;
+mod scan_order;
 mod stats;
 mod use_target;
 mod validate;

@@ -396,6 +396,13 @@ pub(crate) fn plan_checked(
     stats: &dyn PatternStats,
 ) -> Result<LogicalPlan> {
     validate_query_with_env(&query, StageSeed::statement(), is_write_procedure)?;
+    // The scan-order rewrite reads no scope, so it runs on the statement's
+    // first stage only: a `NEXT` stage can import a bound variable, which
+    // turns its `MATCH (n)` from a scan into a lookup.
+    let mut query = query;
+    for part in &mut query.parts {
+        crate::scan_order::drop_id_order_over_node_scan(&mut part.clauses);
+    }
     Ok(plan_stages(query, stats))
 }
 
