@@ -64,6 +64,9 @@ pub(crate) mod gpm;
 pub(crate) mod graph_type_schema;
 mod load_csv;
 mod match_arm;
+// The plan-grade probe (ADR-0687 decision 6): private module, its two
+// public types re-exported below (one public path).
+mod plan_grade;
 mod profile_chain;
 mod profile_tick;
 mod read;
@@ -115,6 +118,7 @@ pub(crate) mod vector;
 pub(crate) mod write;
 
 pub use catalog_show::catalog_create_statements;
+pub use plan_grade::GradeProbe;
 pub use read::{execute_read_at, execute_read_streaming_at};
 
 /// The read path's one rejection policy: the message a `ClauseMode::Read`
@@ -204,7 +208,7 @@ pub(crate) fn declare_plan_names(graph: &ExecGraph<'_>, plan: &LogicalPlan) {
 }
 
 use constraint_validation::validate_constraints;
-use dispatch::{execute_part_read_seeded, run_clauses};
+use dispatch::run_clauses;
 use scope::visible_keys;
 pub(crate) use shortest_eval::{eval_shortest, ShortestWant};
 pub(crate) use subquery_eval::{eval_collect_query, eval_count_query, eval_exists_query};
@@ -426,25 +430,73 @@ pub(crate) fn execute_unvalidated(
 /// ([`plan_mutates_store`]), recorded here before any rows flow and handed to
 /// [`finish_statement`] unchanged.
 fn run_statement(graph: &ExecGraph<'_>, request: &ExecRequest<'_>) -> Result<(QueryResult, bool)> {
-    let attempted = plan_mutates_store(request.plan);
-    // One statement entry: the per-statement resets and the declared-name
-    // seeding restart together (ADR-0309 stats + the ADR-0402 applied count,
-    // the ADR-0395 nested-evaluation budget, the spelled-name set).
-    graph.begin_statement(request.plan);
-    graph.check_cancelled()?;
-    let _clock = QueryClockGuard::within(graph.transaction_clock());
-    let qctx = QueryCtx::new(request.query_text)
-        .with_principal(request.principal)
-        .with_batch_commit(request.batch_commit);
-    let result = execute_plan_stage_seeded(
+    let entry = begin_statement_entry(graph, request)?;
+    let result = walk_statement(
         graph,
         request.plan,
-        request.params,
-        vec![Row::new()],
-        qctx,
+        vec![entry.root],
         request.plan_metrics,
+        |part_clauses, part_seeds, site| {
+            let (mut rows, last) = run_clauses(
+                graph,
+                part_clauses,
+                request.params,
+                part_seeds,
+                entry.ctx,
+                site,
+            )?;
+            Ok(call::concluding_part_result(
+                graph,
+                part_clauses,
+                &mut rows,
+                last,
+                graph.stats(),
+            ))
+        },
     )?;
-    Ok((result, attempted))
+    Ok((result, entry.attempted))
+}
+
+/// The statement-entry prelude's one product: the statement's single root
+/// seed row, its write-attempt fact ([`plan_mutates_store`], walked before
+/// any rows flow), the [`QueryCtx`] its clauses run under, and the clock
+/// guard that pins the statement's clock. The guard's contract — it must
+/// outlive the run — is a field of this value, so an entry that keeps the
+/// entry alive for the run keeps the clock pinned; no caller has to remember
+/// a tuple slot.
+struct StatementEntry<'q> {
+    root: Row,
+    attempted: bool,
+    ctx: QueryCtx<'q>,
+    /// Pins the statement's clock; never read, dropped with the entry.
+    _clock: QueryClockGuard,
+}
+
+/// The prelude every statement entry runs, in one place: the one
+/// statement-entry operation ([`ExecGraph::begin_statement`]) with the single
+/// root row it mints, the cancellation check, the statement clock, and the
+/// entry facts. Both entries pass the same [`ExecRequest`] bundle, so the
+/// request's own fields are the one source of the plan, the query text, the
+/// principal and the batch-commit sink — and the clock is the graph's own
+/// ([`ExecGraph::transaction_clock`], `None` on a read view, its transaction
+/// clock on a write view), never a parameter beside the same fact.
+fn begin_statement_entry<'q>(
+    graph: &ExecGraph<'_>,
+    request: &'q ExecRequest<'q>,
+) -> Result<StatementEntry<'q>> {
+    let root = graph.begin_statement(request.plan);
+    graph.check_cancelled()?;
+    let clock = QueryClockGuard::within(graph.transaction_clock());
+    let attempted = plan_mutates_store(request.plan);
+    let ctx = QueryCtx::new(request.query_text)
+        .with_principal(request.principal)
+        .with_batch_commit(request.batch_commit);
+    Ok(StatementEntry {
+        root,
+        attempted,
+        ctx,
+        _clock: clock,
+    })
 }
 
 /// Name the statement's effect and finish the result — the one assignment to
@@ -633,73 +685,53 @@ impl<'a> RowFeed<'a> {
     }
 }
 
-/// One stage-walk driver for both dispatch modes (ADR-0344 phase 2
-/// review): fold the stage's parts through the runner, then recurse into
-/// the NEXT stage with the shared seeding policy (ADR-0287) and the
-/// stage count — the scaffolding exists once; the write and read
-/// entries supply only their per-part runner. The stage travels with the
-/// walk (the tree's stage numbering: the root is stage 1, every NEXT
-/// link one later), so the PROFILE metrics key's stage fact stays the
-/// tree's own.
-/// A stage's per-part runner: the stage's number, the part's index, its
-/// clauses, and its seed rows into that part's result — the write and
-/// read walkers supply their own mode.
-type PartRunner<'a> = dyn Fn(usize, usize, &[Clause], Vec<Row>) -> Result<QueryResult> + 'a;
-
-fn walk_plan_stages(
-    plan: &LogicalPlan,
-    stage: usize,
-    seeds: Vec<Row>,
-    run_part: &PartRunner,
-) -> Result<QueryResult> {
-    // A stage with one part consumes the seeds. Later parts of a UNION
-    // each need the same bag, so those plans still clone it.
-    let result = if plan.parts.len() == 1 {
-        run_part(stage, 0, plan.parts[0].as_slice(), seeds)?
-    } else {
-        union::fold_parts(plan, |part, part_clauses| {
-            run_part(stage, part, part_clauses, seeds.clone())
-        })?
-    };
-    match &plan.next {
-        Some(next) => walk_plan_stages(
-            next,
-            stage + 1,
-            next_seeds(&result, plan.parts.iter().map(|p| p.as_slice())),
-            run_part,
-        ),
-        None => Ok(result),
-    }
-}
-
-fn execute_plan_stage_seeded(
+/// One statement's stage walk — the one spelling both statement entries run
+/// after their prelude (ADR-0344 phase 2 review): the walk starts at the
+/// plan's root stage over the entry's seeds, folds each stage's parts
+/// through the entry's per-part runner, and recurses into the NEXT stage with
+/// the shared seeding policy (ADR-0287) and the stage count (the tree's stage
+/// numbering: the root is stage 1, every NEXT link one later). Each part's
+/// PROFILE site is derived here, where the `(stage, part)` key is known — the
+/// sink the admission attached and the part's own numbers, one fact — and
+/// the statement's constructor-memo facts are reported once the walk
+/// finished. The entries supply only the per-part runner: the write path's
+/// clause loop with its concluding result, the read path's read part.
+fn walk_statement(
     graph: &ExecGraph<'_>,
     plan: &LogicalPlan,
-    params: &BTreeMap<String, Value>,
     seeds: Vec<Row>,
-    qctx: QueryCtx<'_>,
     sink: Option<&dyn PlanMetricsSink>,
+    run_part: impl Fn(&[Clause], Vec<Row>, Option<PlanMetricsSite<'_>>) -> Result<QueryResult>,
 ) -> Result<QueryResult> {
-    let result = walk_plan_stages(plan, 1, seeds, &|stage, part, part_clauses, part_seeds| {
-        let (mut rows, last) = run_clauses(
-            graph,
-            part_clauses,
-            params,
-            part_seeds,
-            qctx,
-            // The statement-level walker: the PROFILE site — the sink the
-            // admission attached and this part's (stage, part) key, one
-            // fact — rides to the clause loop.
-            sink.map(|sink| PlanMetricsSite::at(sink, stage, part)),
-        )?;
-        Ok(call::concluding_part_result(
-            graph,
-            part_clauses,
-            &mut rows,
-            last,
-            graph.stats(),
-        ))
-    })?;
+    fn walk_stages(
+        plan: &LogicalPlan,
+        stage: usize,
+        seeds: Vec<Row>,
+        sink: Option<&dyn PlanMetricsSink>,
+        run_part: &impl Fn(&[Clause], Vec<Row>, Option<PlanMetricsSite<'_>>) -> Result<QueryResult>,
+    ) -> Result<QueryResult> {
+        let site = |part: usize| sink.map(|sink| PlanMetricsSite::at(sink, stage, part));
+        // A stage with one part consumes the seeds. Later parts of a UNION
+        // each need the same bag, so those plans still clone it.
+        let result = if plan.parts.len() == 1 {
+            run_part(plan.parts[0].as_slice(), seeds, site(0))?
+        } else {
+            union::fold_parts(plan, |part, part_clauses| {
+                run_part(part_clauses, seeds.clone(), site(part))
+            })?
+        };
+        match &plan.next {
+            Some(next) => walk_stages(
+                next,
+                stage + 1,
+                next_seeds(&result, plan.parts.iter().map(|p| p.as_slice())),
+                sink,
+                run_part,
+            ),
+            None => Ok(result),
+        }
+    }
+    let result = walk_stages(plan, 1, seeds, sink, &run_part)?;
     report_statement_memos(graph, sink);
     Ok(result)
 }
@@ -727,31 +759,6 @@ pub(crate) fn next_seeds<'p>(
         seeds.push(Row::new());
     }
     seeds
-}
-
-pub(crate) fn execute_plan_read_seeded(
-    graph: &ExecGraph<'_>,
-    plan: &LogicalPlan,
-    params: &BTreeMap<String, Value>,
-    seeds: Vec<Row>,
-    qctx: QueryCtx<'_>,
-    sink: Option<&dyn PlanMetricsSink>,
-) -> Result<QueryResult> {
-    let result = walk_plan_stages(plan, 1, seeds, &|stage, part, part_clauses, part_seeds| {
-        execute_part_read_seeded(
-            graph,
-            part_clauses,
-            params,
-            part_seeds,
-            qctx,
-            // The statement-level walker, read mode: the PROFILE site —
-            // sink and this part's (stage, part) key, one fact — rides to
-            // the clause loop here too.
-            sink.map(|sink| PlanMetricsSite::at(sink, stage, part)),
-        )
-    })?;
-    report_statement_memos(graph, sink);
-    Ok(result)
 }
 
 /// Whether a finished stage seeds the next `NEXT` stage with one unit row
@@ -882,6 +889,8 @@ mod path_fold_lookup_tests;
 mod path_fold_tests;
 #[cfg(test)]
 mod pivot_tests;
+#[cfg(test)]
+mod plan_grade_tests;
 #[cfg(test)]
 mod predicate_spec_tests;
 #[cfg(test)]

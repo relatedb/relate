@@ -26,7 +26,26 @@ mod resize;
 mod shortest_path;
 mod stack;
 mod support;
+mod token_changes;
 mod txn;
+
+/// The store's id for an interned name — the one spelling the test suites
+/// share. Callers resolve a name only after the statement that interns it has
+/// committed, so a miss is a fixture bug, never a real absence. The resolve
+/// runs under the publication read guard (`GraphCell`'s contract, ADR-0137 —
+/// a `--follow` reload may replace the engine mid-read), the same guarded
+/// reach [`crate::Shared::commit_ts`] takes.
+pub(crate) fn token_id(shared: &crate::Shared, name: &str) -> u32 {
+    use relate_names::TokenResolver;
+
+    let _read = shared
+        .read_guard()
+        .expect("a fixture's store is healthy and its publication unlocked");
+    match shared.graph.resolve(name) {
+        relate_names::Token::Id(id) => id.0,
+        other => panic!("`{name}` must be interned by now, resolved as {other:?}"),
+    }
+}
 
 /// Codec expectations in these suites are keyed on this crate's own
 /// `parquet` feature, so a codec leaking into a lean build fails here.

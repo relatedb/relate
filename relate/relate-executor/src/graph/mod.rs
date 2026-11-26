@@ -96,6 +96,8 @@ mod research;
 #[cfg(test)]
 pub(crate) mod test_support;
 mod theater;
+mod token_changes;
+pub use token_changes::AppliedTokenChanges;
 mod unposted;
 
 pub(crate) use declared::{spatial_holds, trigram_count, Extremum, RangeSeek, SpatialSeek};
@@ -390,6 +392,12 @@ pub struct Graph {
     pending_redo: Mutex<Vec<RedoOp>>,
     /// Source-scoped pull identity (ADR-0080).
     pull_identity: PullIdentityIndex,
+    /// ADR-0687: the interned tokens the applied writes changed since the
+    /// last publication drained the set, plus whether a schema op landed.
+    /// The mutation seams report here while they hold the entity's version;
+    /// `Shared`'s commit tail folds the drained set into the per-token
+    /// last-changed table.
+    changed_tokens: Mutex<AppliedTokenChanges>,
     /// Ids mutated since the last successful checkpoint (ADR-0022).
     dirty_nodes: Mutex<HashSet<NodeId>>,
     dirty_rels: Mutex<HashSet<RelId>>,
@@ -432,6 +440,7 @@ impl Default for Graph {
             stats: Mutex::new(QueryStats::default()),
             pending_redo: Mutex::new(Vec::new()),
             pull_identity: PullIdentityIndex::default(),
+            changed_tokens: Mutex::new(AppliedTokenChanges::default()),
             dirty_nodes: Mutex::new(HashSet::new()),
             dirty_rels: Mutex::new(HashSet::new()),
             pins: (0..PIN_SLOTS).map(|_| AtomicU64::new(PIN_FREE)).collect(),

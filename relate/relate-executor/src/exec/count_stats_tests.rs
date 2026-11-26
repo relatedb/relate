@@ -269,7 +269,7 @@ fn count_only_stats_follow_deletes_and_label_mutations() {
 /// LABS-370 round 3 (F-1-3): the short-circuit answers a
 /// whole-population count — one unbound seed row, the statement's
 /// opening stage. `run_clauses_mode` runs per part with the previous
-/// stage's rows (walk_plan_stages → next_seeds → result_seed_rows), so a
+/// stage's rows (walk_statement → next_seeds → result_seed_rows), so a
 /// NEXT/WHEN/ELSE body seeded with N rows must answer N × population
 /// (0 when N = 0) — the recognizer declines on anything but the one
 /// unbound row, and the normal pipeline answers through the scan.

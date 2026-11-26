@@ -4,11 +4,25 @@
 //!
 //! Each entry is one auto-parameterized template: the lowered AST of the
 //! rewritten statement (literals as `$__AUTO_*__` parameters), the plan
-//! compiled from it, and the **stats generation** it was planned at. The
-//! entry is reused only while no commit has landed since (the generation
-//! check runs under the publication read guard, the same guard that
-//! stamped it); on mismatch the admission path re-plans from the cached
-//! AST with fresh stats and updates the entry.
+//! compiled from it, the plan's **token footprint** — the store tokens it
+//! reads and the counts it was priced at (ADR-0687) — the **stats
+//! generation** and **full-invalidation epoch** it was planned at, the
+//! **per-key statistics epoch** whose statistics its planning read
+//! (ADR-0700, `None` when it read none), and its **plan grade**, the
+//! measured store reads per execution ([`crate::plan_grade`]).
+//! The entry is reused while no commit touched a footprint token, the
+//! epoch stands, and the statistics it read stand (ADR-0687, ADR-0700;
+//! the check runs under the publication read guard, the same guard that
+//! stamped it): a token changed with cardinality drift inside
+//! `DRIFT_FACTOR` re-stamps the entry at the current generation and serves
+//! clean, drift at or past the factor marks it dirty and it keeps serving
+//! until its grade says the plan degraded — a dirty entry whose average
+//! reaches `GRADE_FACTOR` times its baseline re-plans on that hit — while
+//! an epoch mismatch, a statistics publication past the entry's
+//! statistics stamp, or an absent-name resolution re-plans from the cached
+//! AST with fresh stats. A re-plan refreshes the entry's plan, footprint,
+//! generation, epoch and statistics stamp together and starts its grade
+//! over.
 //!
 //! The cache keys the plan, never the metadata: namespace, query type,
 //! write route, notifications and the compile-time gates all still derive
@@ -26,21 +40,23 @@ use relate_parser::NormalizedValue;
 use relate_planner::LogicalPlan;
 
 use crate::plan_bytes::entry_bytes;
+use crate::plan_footprint::PlanFootprint;
+use crate::plan_grade::PlanGrade;
 use crate::shared::Shared;
 use crate::token_budget::PlanHold;
 use crate::Value;
 
-/// The store's stats generation (ADR-0503): the monotonic counter this
-/// cache checks its entries against.
+/// The store's stats generation (ADR-0503): the monotonic counter the
+/// per-token change table stamps and the cache records a plan at.
 ///
 /// Every applied commit — data or schema, the follower's batch apply, and
 /// a graph replacement (a follow reload installs a different data state)
 /// — advances the generation under the publication write boundary. An
 /// entry carries the generation its plan was compiled at, and admission
 /// reads the current one under the publication read guard (the same guard
-/// that reads the planner's live cardinalities), so an entry is reused
-/// only while nothing has committed since it was planned; on mismatch the
-/// entry re-plans from its cached AST.
+/// that reads the planner's live cardinalities and the change table).
+/// ADR-0687 replaced the any-commit check with the footprint check: the
+/// generation itself only orders a token's last change against a plan.
 ///
 /// `commit_ts` is deliberately NOT this counter: a follower's
 /// checkpoint+reload replays fewer records than the prior graph instance
@@ -61,8 +77,8 @@ impl StatsGeneration {
         self.current.load(Ordering::Acquire)
     }
 
-    /// Advance past every cached plan: called at each applied commit and
-    /// at graph replacement, under the publication write boundary, and at
+    /// Open the next generation: called at each applied commit and at
+    /// graph replacement, under the publication write boundary, and at
     /// the follower's batch apply, under its *read* apply guard (an
     /// applying follower shares that guard with readers — the advance
     /// lands after the batch, before the next poll, the same mid-batch
@@ -72,6 +88,19 @@ impl StatsGeneration {
     pub(crate) fn advance(&self) {
         self.current.fetch_add(1, Ordering::Release);
     }
+}
+
+/// A plan's two freshness stamps, read and carried as one value (ADR-0687):
+/// the stats generation it was compiled at and the full-invalidation epoch.
+/// One value so no call site can pair a generation with another read's
+/// epoch — the module's convention for same-typed facts whose swap would
+/// compile (`AdmitClocks`, `StagedPlan`, `DispatchCtx`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct PlanStamps {
+    /// The stats generation the plan was compiled at.
+    pub(crate) generation: u64,
+    /// The full-invalidation epoch it was compiled at (ADR-0687 decision 4).
+    pub(crate) epoch: u64,
 }
 
 /// How many templates a store keeps — "last-N ≤ 16, not single-element":
@@ -94,12 +123,12 @@ pub(crate) const MAX_CACHED_STATEMENT_BYTES: usize = 64 * 1024;
 /// One cached template.
 pub(crate) struct PlanCacheEntry {
     /// The entry's shared handles (ADR-0503) — its template (the real
-    /// key; the raw string is only the fast path), the lowered AST a
-    /// stats-generation mismatch re-plans from (the replan clones the
-    /// AST itself, once, on the mismatch path only), the plan compiled
-    /// from that AST, and the stats generation it was compiled at —
-    /// stored as one bundle so a lookup hit hands all four out as
-    /// pointer clones, never copies.
+    /// key; the raw string is only the fast path), the lowered AST the
+    /// re-plan rebuilds from (the replan clones the AST itself, once, on
+    /// the re-plan path only), the plan compiled from that AST, the
+    /// plan's token footprint, the stamps it was compiled at and its plan
+    /// grade (ADR-0687) — stored as one bundle so a lookup hit hands them
+    /// out as one clone, the `Arc`s pointer clones, never per-field copies.
     pub(crate) handles: EntryHandles,
     /// The last raw statement text within the 64 KiB insert bound that
     /// resolved to this entry, with that text's extracted values — the
@@ -128,33 +157,59 @@ pub(crate) struct RawStatement {
 }
 
 /// The entry's shared handles a lookup hit carries (ADR-0503): its
-/// template, lowered AST, compiled plan, and the stats generation that
-/// plan was compiled at — all pointer clones of the entry's own storage.
-/// Stage 3 never re-finds the entry: an eviction after the lookup cannot
-/// invalidate the plan (the `Arc`s keep it alive, and freshness is
-/// decided by the generation check under the publication guard, not by
+/// template, lowered AST, compiled plan, the plan's token footprint, and
+/// the per-plan state that plan was left in — the stamps it was compiled
+/// at, the per-key statistics epoch it was priced at (ADR-0700), its
+/// dirty mark and its plan grade (ADR-0687). The `Arc`s are
+/// pointer clones of the entry's own storage; the numbers are its current
+/// snapshot, which is what the admission check decides on. Stage 3 never
+/// re-finds the entry: an eviction after the lookup cannot invalidate the
+/// plan (the `Arc`s keep it alive, and freshness is decided by the
+/// footprint, epoch and grade checks under the publication guard, not by
 /// the entry's presence).
 #[derive(Clone, Debug)]
 pub(crate) struct EntryHandles {
     pub(crate) template: Arc<str>,
     pub(crate) query: Arc<Query>,
     pub(crate) plan: Arc<LogicalPlan>,
-    pub(crate) generation: u64,
-    /// The per-key statistics epoch the plan was priced at, `None` when
-    /// planning never consulted the statistics (such an entry is never
-    /// compared: another label's statistics publishing is no reason to
-    /// replan it).
+    /// The tokens the plan reads and the counts it was planned against
+    /// (ADR-0687) — the fact a later commit is checked against.
+    pub(crate) footprint: Arc<PlanFootprint>,
+    /// The generation and epoch this plan was compiled at (ADR-0687), read
+    /// under one guard and carried as one value: a footprint token stamped
+    /// after the generation makes the entry re-check drift, and an epoch
+    /// mismatch re-plans whatever the footprint says.
+    pub(crate) stamps: PlanStamps,
+    /// The per-key statistics epoch the plan was priced at (ADR-0700
+    /// decision 2), `None` when planning never consulted the statistics —
+    /// such an entry is never compared, so another label's statistics
+    /// publishing is no reason to replan it. A separate fact from
+    /// [`PlanStamps`]: the statistics move without a commit.
     pub(crate) key_stats_epoch: Option<u64>,
+    /// Whether a footprint number changed with drift at or past
+    /// [`crate::plan_footprint::DRIFT_FACTOR`] since this plan was
+    /// compiled (ADR-0687 decisions 5-6): the entry still serves, and its
+    /// plan grade decides a later re-plan. A re-plan or an insert clears
+    /// it; a within-threshold re-stamp leaves it as it stands.
+    pub(crate) dirty: bool,
+    /// The measured store reads over this plan's graded executions
+    /// (ADR-0687 decision 6), against the baseline its first one recorded:
+    /// the gate a dirty entry re-plans on. A re-plan clears it — the new
+    /// plan starts over — while a re-stamp or a dirty mark leaves it.
+    pub(crate) grade: PlanGrade,
 }
 
 impl EntryHandles {
-    /// Whether the plan is still the one planning would produce now: no
-    /// commit since it was compiled (the stats generation), and, when it
-    /// read the per-key statistics, none of them published, aged out or
-    /// cleared since (the statistics epoch). The one freshness rule; both
-    /// current values are read under the publication read guard.
-    pub(crate) fn is_fresh(&self, generation: u64, key_stats_epoch: u64) -> bool {
-        self.generation == generation && self.key_stats_epoch.is_none_or(|e| e == key_stats_epoch)
+    /// Whether the per-key statistics this plan was priced from still
+    /// stand (ADR-0700 decision 3): none published, aged out or cleared
+    /// since the stamp. A plan that never consulted them carries `None`
+    /// and is never compared, so another label's statistics changing never
+    /// re-plans it. The current epoch is read under the publication read
+    /// guard, the same guard the stamp was taken under. ADR-0687's
+    /// footprint check owns the commit half of freshness; this is the one
+    /// statistics half.
+    pub(crate) fn key_stats_fresh(&self, key_stats_epoch: u64) -> bool {
+        self.key_stats_epoch.is_none_or(|e| e == key_stats_epoch)
     }
 }
 
@@ -178,7 +233,7 @@ pub(crate) struct HitPayload {
     pub(crate) handles: EntryHandles,
     pub(crate) values: Arc<Vec<(String, Value)>>,
     /// Which lookup stage produced the hit (LABS-1120), typed as the
-    /// outcome it becomes when the generation check agrees — the hit
+    /// outcome it becomes when admission serves it as carried — the hit
     /// flavor itself, never a second vocabulary it converts into.
     pub(crate) stage: PlanCacheOutcome,
 }
@@ -188,21 +243,26 @@ pub(crate) struct HitPayload {
 /// beside the phase timings so "is the plan cache active for this
 /// workload?" is answered from the result, never from the source. The
 /// wire spelling ([`Self::as_str`], kebab-case) is the one every surface
-/// renders; the enum is the engine's single vocabulary.
+/// renders; the enum is the engine's single vocabulary. ADR-0687 renamed
+/// the re-plan variant: it owns the timing story (no parse, a fresh
+/// plan), not the cause.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PlanCacheOutcome {
     /// Stage 2 served the cached plan: the auto-parameterized template
-    /// matched, the stats generation agreed.
+    /// matched and no footprint token changed since the plan.
     HitTemplate,
     /// Stage 1 served the cached plan: the raw statement text matched an
     /// entry's last raw hit, no normalizer pass.
     HitRawFastPath,
-    /// A hit whose entry's stats no longer matched — the store committed
-    /// since the plan was compiled (the stats generation), or the per-key
-    /// value statistics the plan read changed (the statistics epoch, only
-    /// compared for a plan that read them) — so the carried AST re-planned
-    /// under the fresh stats.
-    ReplanGenerationMismatch,
+    /// A hit whose entry re-planned before serving (ADR-0687, ADR-0700):
+    /// the full-invalidation epoch moved (schema DDL or graph
+    /// replacement), the per-key value statistics the plan read changed
+    /// (ADR-0700 — only a plan that consulted them is compared), an
+    /// absent-name resolution saw a commit, or a dirty entry's plan grade
+    /// degraded. The carried AST rebuilt the plan under fresh stats — no
+    /// parse, a fresh plan. Drift alone never re-plans here: it re-stamps
+    /// the entry or marks it dirty and serves.
+    Replan,
     /// No entry matched — or a hit whose cached plan was rejected for
     /// literal-shape safety, so the statement ran an original compile:
     /// either way, no cached plan served the statement (a cacheable miss
@@ -214,29 +274,50 @@ pub enum PlanCacheOutcome {
     Bypassed,
 }
 
-impl PlanCacheOutcome {
-    /// The outcome's wire spelling (LABS-1120), rendered by every surface
-    /// that carries the signal — the one table, never re-spelled per
-    /// surface.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::HitTemplate => "hit-template",
-            Self::HitRawFastPath => "hit-raw-fastpath",
-            Self::ReplanGenerationMismatch => "replan-generation-mismatch",
-            Self::Miss => "miss",
-            Self::Bypassed => "bypassed",
-        }
-    }
+/// The one variant→wire-spelling declaration (LABS-1120): the macro expands
+/// both [`PlanCacheOutcome::as_str`]'s exhaustive match and the test's
+/// iteration from one list, so a new variant must be spelled here to compile
+/// and cannot be spelled for the match while the test's list forgets it.
+macro_rules! plan_cache_outcomes {
+    ($($variant:ident => $spelling:literal),+ $(,)?) => {
+        impl PlanCacheOutcome {
+            /// The outcome's wire spelling (LABS-1120), rendered by every
+            /// surface that carries the signal — the one table, never
+            /// re-spelled per surface.
+            pub fn as_str(self) -> &'static str {
+                match self {
+                    $(Self::$variant => $spelling),+
+                }
+            }
 
+            /// Every variant beside its wire spelling — the one list the
+            /// vocabulary test iterates, produced by the same declaration as
+            /// [`Self::as_str`], so the two cannot diverge.
+            #[cfg(test)]
+            pub(crate) const SPELLINGS: &'static [(PlanCacheOutcome, &'static str)] =
+                &[$( (PlanCacheOutcome::$variant, $spelling) ),+];
+        }
+    };
+}
+
+plan_cache_outcomes! {
+    HitTemplate => "hit-template",
+    HitRawFastPath => "hit-raw-fastpath",
+    Replan => "replan",
+    Miss => "miss",
+    Bypassed => "bypassed",
+}
+
+impl PlanCacheOutcome {
     /// Whether this outcome served a cached artifact (REL8-1120): the
-    /// template hit, the raw-string fast path, and the
-    /// generation-mismatch replan alike — the three flavors that skipped
-    /// the front's value-dependent validation, and so the retry
-    /// eligibility of the statement that reported it. Exhaustive by
-    /// construction: a future variant must classify here to compile.
+    /// template hit, the raw-string fast path, and the re-plan alike —
+    /// the three flavors that skipped the front's value-dependent
+    /// validation, and so the retry eligibility of the statement that
+    /// reported it. Exhaustive by construction: a future variant must
+    /// classify here to compile.
     pub(crate) fn served_from_cache(self) -> bool {
         match self {
-            Self::HitTemplate | Self::HitRawFastPath | Self::ReplanGenerationMismatch => true,
+            Self::HitTemplate | Self::HitRawFastPath | Self::Replan => true,
             Self::Miss | Self::Bypassed => false,
         }
     }
@@ -283,9 +364,9 @@ impl PlanCache {
     }
 
     /// The template's entry handles, moved to the front: a stage-2 hit
-    /// hands the entry's own shared template (with its plan, AST and
-    /// generation) out as pointer clones — the freshly normalized
-    /// template string is dropped, never copied into the hit.
+    /// hands the entry's own shared template (with its plan, AST,
+    /// footprint and stamps) out as pointer clones — the freshly
+    /// normalized template string is dropped, never copied into the hit.
     pub(crate) fn find_template(&mut self, template: &str) -> Option<EntryHandles> {
         let index = self.position_of(template)?;
         let handles = self.entries[index].handles();
@@ -293,15 +374,21 @@ impl PlanCache {
         Some(handles)
     }
 
-    /// Record the replan a freshness mismatch produced: the fresh plan, the
-    /// generation it was planned at and its statistics epoch stamp. A
-    /// no-op when the template was evicted in between (the next miss
-    /// re-inserts it).
+    /// Record the re-plan admission produced (ADR-0687, ADR-0700): the
+    /// fresh plan, the token footprint and counts it was planned against,
+    /// the generation and epoch it was planned at — one [`PlanStamps`]
+    /// value, so a re-plan cannot land a plan with mismatched stamps — and
+    /// the per-key statistics epoch it read (`None` when the re-plan
+    /// consulted no statistics — ADR-0700 decision 2). The entry is clean
+    /// again and its grade starts over — a re-plan is a fresh plan, graded
+    /// from its own first execution. A no-op when the template was evicted
+    /// in between (the next miss re-inserts it).
     pub(crate) fn update_plan(
         &mut self,
         template: &str,
         plan: Arc<LogicalPlan>,
-        generation: u64,
+        footprint: Arc<PlanFootprint>,
+        stamps: PlanStamps,
         key_stats_epoch: Option<u64>,
     ) {
         if let Some(index) = self.position_of(template) {
@@ -312,16 +399,60 @@ impl PlanCache {
                 &plan,
                 &entry.raw.text,
                 &entry.raw.values,
+                &footprint,
             );
-            // A replan must land even when the pool cannot grow the hold:
+            // A re-plan must land even when the pool cannot grow the hold:
             // the entry would otherwise keep serving a plan for the
-            // previous generation. The previous reservation stays.
+            // previous stamps. The previous reservation stays.
             if let Some(hold) = entry.hold.as_mut() {
-                let _ = hold.try_raise(logical);
+                hold.grow_best_effort(logical);
             }
             entry.handles.plan = plan;
-            entry.handles.generation = generation;
+            entry.handles.footprint = footprint;
+            entry.handles.stamps = stamps;
             entry.handles.key_stats_epoch = key_stats_epoch;
+            entry.handles.dirty = false;
+            entry.handles.grade = PlanGrade::default();
+        }
+    }
+
+    /// Re-stamp a footprint-touched entry whose drift stayed inside the
+    /// threshold (ADR-0687 decision 5): it serves at the current
+    /// generation, and its dirty mark stands as it was. A no-op when the
+    /// template was evicted in between.
+    pub(crate) fn restamp(&mut self, template: &str, generation: u64) {
+        if let Some(index) = self.position_of(template) {
+            self.entries[index].handles.stamps.generation = generation;
+        }
+    }
+
+    /// Mark a footprint-touched entry whose drift reached the threshold
+    /// (ADR-0687 decisions 5-6), re-stamping it at the current generation:
+    /// the plan keeps serving, and the plan grade decides the later
+    /// re-plan. A no-op when the template was evicted in between.
+    pub(crate) fn mark_dirty(&mut self, template: &str, generation: u64) {
+        if let Some(index) = self.position_of(template) {
+            let entry = &mut self.entries[index];
+            entry.handles.stamps.generation = generation;
+            entry.handles.dirty = true;
+        }
+    }
+
+    /// Fold one graded execution's reading — the store reads it performed —
+    /// into the plan's entry (ADR-0687 decision 6): the hit path's one cache
+    /// write after the driver returned, so no cache lock is held across an
+    /// execution. The write is keyed on the plan the run served (`plan`, the
+    /// entry's own `Arc` identity), never the template alone: a no-op when
+    /// the template was evicted in between, and a *dropped* reading when a
+    /// re-plan landed — the fresh entry starts over, and the superseded
+    /// plan's measurement is not its work.
+    pub(crate) fn record_grade(&mut self, template: &str, plan: &Arc<LogicalPlan>, reads: f64) {
+        let Some(index) = self.position_of(template) else {
+            return;
+        };
+        let entry = &mut self.entries[index];
+        if Arc::ptr_eq(&entry.handles.plan, plan) {
+            entry.handles.grade.record(reads);
         }
     }
 
@@ -353,11 +484,12 @@ impl PlanCache {
                 &entry.handles.plan,
                 text,
                 values,
+                &entry.handles.footprint,
             );
             // A larger raw text is remembered only when the cache hold can
             // grow to it. The template still serves the statement.
             if let Some(hold) = entry.hold.as_mut() {
-                if !hold.try_raise(logical) {
+                if !hold.grow_or_skip(logical) {
                     return;
                 }
             }
@@ -384,6 +516,65 @@ impl PlanCache {
     #[cfg(test)]
     pub(crate) fn len(&self) -> usize {
         self.entries.len()
+    }
+
+    /// The most recently used entry's token footprint (tests): the plan's
+    /// resolved tokens and the counts it was planned against.
+    #[cfg(test)]
+    pub(crate) fn front_footprint(&self) -> Option<Arc<PlanFootprint>> {
+        self.entries
+            .first()
+            .map(|entry| Arc::clone(&entry.handles.footprint))
+    }
+
+    /// The most recently used entry's dirty mark (tests): whether a
+    /// footprint commit at or past the drift threshold marked the plan
+    /// (ADR-0687).
+    #[cfg(test)]
+    pub(crate) fn front_dirty(&self) -> Option<bool> {
+        self.entries.first().map(|entry| entry.handles.dirty)
+    }
+
+    /// The most recently used entry's plan epoch (tests): the
+    /// full-invalidation epoch its plan was compiled at (ADR-0687).
+    #[cfg(test)]
+    pub(crate) fn front_epoch(&self) -> Option<u64> {
+        self.entries.first().map(|entry| entry.handles.stamps.epoch)
+    }
+
+    /// The most recently used entry's generation stamp (tests): the plan
+    /// generation, moved by a within-threshold re-stamp (ADR-0687).
+    #[cfg(test)]
+    pub(crate) fn front_generation(&self) -> Option<u64> {
+        self.entries
+            .first()
+            .map(|entry| entry.handles.stamps.generation)
+    }
+
+    /// The most recently used entry's template (tests): one half of the
+    /// grade seam's (`record_grade`) address.
+    #[cfg(test)]
+    pub(crate) fn front_template(&self) -> Option<Arc<str>> {
+        self.entries
+            .first()
+            .map(|entry| Arc::clone(&entry.handles.template))
+    }
+
+    /// The most recently used entry's plan, as the `Arc` identity the grade
+    /// seam checks (tests): the other half of `record_grade`'s address.
+    #[cfg(test)]
+    pub(crate) fn front_plan(&self) -> Option<Arc<LogicalPlan>> {
+        self.entries
+            .first()
+            .map(|entry| Arc::clone(&entry.handles.plan))
+    }
+
+    /// The most recently used entry's plan grade (tests): the baseline its
+    /// first graded execution recorded and the EWMA over the rest
+    /// (ADR-0687 decision 6).
+    #[cfg(test)]
+    pub(crate) fn front_grade(&self) -> Option<PlanGrade> {
+        self.entries.first().map(|entry| entry.handles.grade)
     }
 
     /// Drop everything (the poison recovery path — a panic mid-critical-
@@ -448,279 +639,5 @@ fn engine_value(value: NormalizedValue) -> Option<Value> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// LABS-1120: the outcome vocabulary pinned against the enum's own
-    /// spelling — the wire table `as_str` owns, in full and exactly once
-    /// per variant, kebab-case throughout. The wire envelope carries this
-    /// spelling as a bare string across the crate boundary, so this pin
-    /// (not a hand-maintained list in a doc comment) is what a rename or
-    /// an added variant must pass through.
-    #[test]
-    fn outcome_spellings_are_the_complete_kebab_vocabulary() {
-        // One wildcard-free match: a new variant fails to compile here until
-        // its spelling is pinned.
-        let pinned = |outcome: PlanCacheOutcome| match outcome {
-            PlanCacheOutcome::HitTemplate => "hit-template",
-            PlanCacheOutcome::HitRawFastPath => "hit-raw-fastpath",
-            PlanCacheOutcome::ReplanGenerationMismatch => "replan-generation-mismatch",
-            PlanCacheOutcome::Miss => "miss",
-            PlanCacheOutcome::Bypassed => "bypassed",
-        };
-        let all = [
-            PlanCacheOutcome::HitTemplate,
-            PlanCacheOutcome::HitRawFastPath,
-            PlanCacheOutcome::ReplanGenerationMismatch,
-            PlanCacheOutcome::Miss,
-            PlanCacheOutcome::Bypassed,
-        ];
-        let spellings: Vec<&str> = all.iter().map(|o| o.as_str()).collect();
-        for outcome in all {
-            assert_eq!(outcome.as_str(), pinned(outcome));
-        }
-        for spelling in &spellings {
-            assert!(
-                !spelling.contains(|c: char| c.is_uppercase() || c == '_'),
-                "the wire spelling is kebab-case: {spelling}"
-            );
-        }
-    }
-
-    /// One entry for the cache-shape tests: a stand-in lowered AST and
-    /// plan (a fixed `RETURN 1 AS one` — the tests exercise keying, LRU
-    /// and generation, never the plan's content) and a stand-in raw
-    /// memory (the given text, no extracted values). The stand-ins are
-    /// the fixture's contract, not a real admission's output.
-    fn entry(template: &str, generation: u64, raw: &str) -> PlanCacheEntry {
-        let query = relate_front::parse_and_lower("RETURN 1 AS one").unwrap();
-        let plan = relate_planner::plan(query.clone(), &mut |_| false).unwrap();
-        PlanCacheEntry {
-            handles: EntryHandles {
-                template: template.into(),
-                query: Arc::new(query),
-                plan: Arc::new(plan),
-                generation,
-                key_stats_epoch: None,
-            },
-            raw: RawStatement {
-                text: raw.into(),
-                values: Arc::new(Vec::new()),
-            },
-            hold: None,
-        }
-    }
-
-    /// The raw fast path: an entry remembers its last raw text, and an
-    /// exact repeat resolves to that entry's template without any
-    /// normalizer input.
-    #[test]
-    fn raw_lookup_finds_the_last_raw_text() {
-        let mut cache = PlanCache::default();
-        cache.insert(entry("RETURN $__AUTO_INT_0__ AS one", 0, "RETURN 1 AS one"));
-        assert!(cache.lookup_raw("RETURN 1 AS one").is_some());
-        assert_eq!(
-            &*cache
-                .lookup_raw("RETURN 1 AS one")
-                .unwrap()
-                .handles
-                .template,
-            "RETURN $__AUTO_INT_0__ AS one"
-        );
-        assert!(cache.lookup_raw("RETURN 2 AS one").is_none());
-    }
-
-    /// The template is the real key: present/absent, and the entry
-    /// handles it carries for the stage-3 check.
-    #[test]
-    fn template_lookup_hands_the_entry_handles() {
-        let mut cache = PlanCache::default();
-        assert!(cache.find_template("t").is_none());
-        cache.insert(entry("t", 7, "RETURN 1 AS one"));
-        let handles = cache.find_template("t").expect("present");
-        assert_eq!(handles.generation, 7);
-        // The shared plan is the one the entry was built with.
-        assert!(Arc::strong_count(&handles.plan) >= 1);
-        assert!(cache.find_template("other").is_none());
-        // A replan updates the plan and the generation in place.
-        let query = (*handles.query).clone();
-        assert_eq!(query.parts.len(), 1);
-        let fresh = Arc::new(relate_planner::plan(query, &mut |_| false).unwrap());
-        cache.update_plan("t", Arc::clone(&fresh), 8, Some(3));
-        let replanned = cache.find_template("t").expect("present");
-        assert_eq!(replanned.generation, 8);
-        assert_eq!(replanned.key_stats_epoch, Some(3));
-        assert!(Arc::ptr_eq(&replanned.plan, &fresh));
-    }
-
-    /// Freshness is the commit generation AND, only for a plan that read
-    /// the per-key statistics, their epoch; a plan that never read them
-    /// ignores the epoch entirely.
-    #[test]
-    fn freshness_compares_the_epoch_only_for_a_plan_that_read_the_statistics() {
-        let mut cache = PlanCache::default();
-        cache.insert(entry("t", 7, "RETURN 1 AS one"));
-        let unstamped = cache.find_template("t").expect("present");
-        assert!(
-            unstamped.is_fresh(7, 0) && unstamped.is_fresh(7, 99),
-            "no stamp: any epoch"
-        );
-        assert!(!unstamped.is_fresh(8, 0), "the generation still decides");
-        let stamped = EntryHandles {
-            key_stats_epoch: Some(5),
-            ..unstamped
-        };
-        assert!(stamped.is_fresh(7, 5));
-        assert!(!stamped.is_fresh(7, 6), "the epoch moved past the stamp");
-        assert!(!stamped.is_fresh(8, 5), "the generation moved");
-    }
-
-    /// At most `PLAN_CACHE_CAPACITY` entries: the least recently used
-    /// falls off the back.
-    #[test]
-    fn capacity_evicts_the_least_recently_used() {
-        let mut cache = PlanCache::default();
-        for i in 0..PLAN_CACHE_CAPACITY {
-            cache.insert(entry(&format!("t{i}"), 0, "RETURN 1 AS one"));
-        }
-        assert_eq!(cache.len(), PLAN_CACHE_CAPACITY);
-        // Touch the oldest so the next insert evicts the second-oldest
-        // instead.
-        assert!(cache.find_template("t0").is_some());
-        cache.insert(entry("fresh", 0, "RETURN 1 AS one"));
-        assert_eq!(cache.len(), PLAN_CACHE_CAPACITY);
-        assert!(
-            cache.find_template("t0").is_some(),
-            "the touched entry survives"
-        );
-        assert!(cache.find_template("fresh").is_some());
-        assert!(
-            cache.find_template("t1").is_none(),
-            "the untouched LRU evicts"
-        );
-    }
-
-    /// Inserting the same template replaces the old entry (an insert
-    /// after an eviction race, or a re-insert of a dropped shape).
-    #[test]
-    fn insert_replaces_the_same_template() {
-        let mut cache = PlanCache::default();
-        cache.insert(entry("t", 1, "RETURN 1 AS one"));
-        cache.insert(entry("t", 2, "RETURN 2 AS one"));
-        assert_eq!(cache.len(), 1);
-        assert_eq!(cache.find_template("t").unwrap().generation, 2);
-        assert!(cache.lookup_raw("RETURN 2 AS one").is_some());
-        assert!(cache.lookup_raw("RETURN 1 AS one").is_none());
-    }
-
-    /// `note_raw` keeps the fast path's memory per template.
-    #[test]
-    fn note_raw_remembers_the_latest_text_and_values() {
-        let mut cache = PlanCache::default();
-        cache.insert(entry("t", 0, "RETURN 1 AS one"));
-        cache.note_raw(
-            "t",
-            "RETURN 41 AS one",
-            &[("__AUTO_INT_0__".into(), Value::Int(41))],
-        );
-        let hit = cache
-            .lookup_raw("RETURN 41 AS one")
-            .expect("the noted text hits");
-        assert_eq!(
-            hit.values.as_ref(),
-            &[("__AUTO_INT_0__".into(), Value::Int(41))]
-        );
-    }
-
-    /// The normalizer's values convert to the engine's parameter values,
-    /// lists included.
-    #[test]
-    fn engine_values_convert_lists() {
-        let values = engine_values(vec![
-            ("a".into(), NormalizedValue::Int(1)),
-            (
-                "b".into(),
-                NormalizedValue::List(vec![
-                    NormalizedValue::Str("x".into()),
-                    NormalizedValue::Float(2.5),
-                ]),
-            ),
-        ])
-        .expect("in-bound literals convert");
-        assert_eq!(values[0].1, Value::Int(1));
-        assert_eq!(
-            values[1].1,
-            Value::List(Arc::new(
-                vec![Value::String("x".into()), Value::Float(2.5),]
-            ))
-        );
-    }
-
-    /// REL8-1120: a literal list nested past the value-depth bound
-    /// (ADR-0462) refuses conversion — the payload boundary is where the
-    /// hit path catches the one value-dependent literal class the plan
-    /// itself cannot, so an over-deep literal never rides a cached plan.
-    #[test]
-    fn engine_values_refuse_over_depth_list() {
-        let nested = |depth: u32| -> NormalizedValue {
-            let mut value = NormalizedValue::Int(0);
-            for _ in 0..depth {
-                value = NormalizedValue::List(vec![value]);
-            }
-            value
-        };
-        // A scalar is depth 0 and each list wrap adds one (ADR-0462), so
-        // `bound` wraps sit exactly at the cap and one more refuses.
-        let bound = relate_core::MAX_VALUE_DEPTH;
-        let in_bound = engine_values(vec![("a".into(), nested(bound))]);
-        assert!(in_bound.is_some(), "a list at the bound converts");
-        let over_bound = engine_values(vec![("a".into(), nested(bound + 1))]);
-        assert!(over_bound.is_none(), "a list past the bound refuses");
-    }
-
-    /// ADR-0541: tokens are resolved only in the compiled plan. The cached
-    /// statement tree stays `Unresolved`; the plan carries the store's ids.
-    #[test]
-    fn statement_tree_holds_no_resolved_tokens() {
-        use relate_names::{Token, TokenId};
-        struct Interned;
-        impl relate_names::TokenResolver for Interned {
-            fn resolve(&self, name: &str) -> Token {
-                if name == "Person" || name == "KNOWS" || name == "age" {
-                    Token::Id(TokenId(7))
-                } else {
-                    Token::Absent
-                }
-            }
-        }
-        let query = relate_front::parse_and_lower(
-            "MATCH (n:Person)-[:KNOWS]->(m) WHERE n.age > 1 RETURN m",
-        )
-        .unwrap();
-        let resolved = relate_planner::plan_with_tokens(
-            query.clone(),
-            &mut |_| false,
-            &relate_planner::NoPatternStats,
-            &Interned,
-        )
-        .unwrap();
-
-        let relate_ir::Clause::Match { patterns, .. } = &query.parts[0].clauses[0] else {
-            panic!("expected MATCH first");
-        };
-        assert!(patterns[0]
-            .nodes
-            .iter()
-            .all(|n| n.labels.iter().all(|(_, t)| *t == Token::Unresolved)));
-        assert!(patterns[0]
-            .rels
-            .iter()
-            .all(|r| r.types.iter().all(|(_, t)| *t == Token::Unresolved)));
-
-        let relate_ir::Clause::Match { patterns, .. } = &resolved.parts[0][0] else {
-            panic!("expected MATCH first");
-        };
-        assert_eq!(patterns[0].nodes[0].labels[0].1, Token::Id(TokenId(7)));
-        assert_eq!(patterns[0].rels[0].types[0].1, Token::Id(TokenId(7)));
-    }
-}
+#[path = "plan_cache_tests.rs"]
+mod tests;

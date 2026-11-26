@@ -787,7 +787,7 @@ always-on `parse_ms` / `plan_ms` / `execute_ms` split (ADR-0491) and the
 fine sub-split `lex_parse_ms` / `rewrite_ms` / `lower_ms` /
 `result_generation_ms`, all in milliseconds — plus a `planCache` string,
 the plan-cache outcome (`miss` / `hit-raw-fastpath` / `hit-template` /
-`replan-generation-mismatch` / `bypassed`), which explains a hit's
+`replan` / `bypassed`, the vocabulary of ADR-0687), which explains a hit's
 near-zero parse window. These are Relate extension keys the reference
 server does not send: they sit after `bookmarks` (the Neo4j members keep
 their exact reference order), official drivers ignore unknown members, and

@@ -400,43 +400,74 @@ impl Database {
             (store, wal)
         };
         let commit_timing = commit_timing_env();
-        let db = Self {
-            inner: Arc::new(Shared::new(
-                graph,
-                store,
-                wal,
-                SharedOpenState {
-                    resolved,
-                    ontology,
-                    commit_timing,
-                    open_peak_transient_bytes,
-                },
-            )?),
-        };
-        // The committed schema's open tail (ADR-0649): applied after
-        // the schema mirror verification (inside the load above) and
-        // after the WAL replay, through the replay path's own redo
-        // machinery — never inside the load, where the mirror's
-        // checkpointed-state comparison would read a file edit as
-        // drift. Idempotent: every open re-applies the committed
-        // facts, so a machine whose sidecar predates a file edit
-        // converges without a checkpoint.
-        if let Some(committed) = committed {
-            crate::committed::apply(&db.inner, committed)?;
-        }
-        // Each start_* helper is the same gate `Database::promote` /
-        // `demote` later reuse (ADR-0440): a writable open starts the
-        // timers, a follow open starts the follow thread, and a `ReadOnly`
-        // open — writable nor following — starts nothing.
+        let shared = Arc::new(Shared::new(
+            graph,
+            store,
+            wal,
+            SharedOpenState {
+                resolved,
+                ontology,
+                commit_timing,
+                open_peak_transient_bytes,
+            },
+        )?);
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(lease) = writer_lease {
-            *db.inner.writer_lease.lock()? = Some(lease);
-        }
-        crate::resize::start_checkpoint_timer(&db.inner)?;
-        crate::resize::start_durability_timer(&db.inner)?;
-        crate::resize::start_follow_thread(&db.inner)?;
-        Ok(db)
+        let lease: InstalledLease = writer_lease;
+        #[cfg(target_arch = "wasm32")]
+        let lease: InstalledLease = ();
+        finish_open(&shared, committed, lease)?;
+        Ok(Self { inner: shared })
     }
+}
+
+/// The writer lease a writable open installs on `Shared`: the platform's
+/// lease where the filesystem layer keeps one, the unit carrier where it has
+/// none (wasm). Kept a named type so [`finish_open`] has one signature on
+/// both targets.
+#[cfg(not(target_arch = "wasm32"))]
+type InstalledLease = Option<relate_storage::WriterLease>;
+#[cfg(target_arch = "wasm32")]
+type InstalledLease = ();
+
+/// The open tail, everything after [`Shared::new`]: the committed schema's
+/// apply, the token table's baseline drain, the writer-lease install and the
+/// three background-thread starts. One named step, so `open_store` reads
+/// resolve → open → build → finish and the constructor stops growing per
+/// feature. The lease carrier is [`InstalledLease`] — empty on wasm, where
+/// there is no filesystem lease to install.
+fn finish_open(
+    shared: &Arc<Shared>,
+    committed: Option<relate_storage::CommittedSchema>,
+    _writer_lease: InstalledLease,
+) -> Result<()> {
+    // The committed schema's open tail (ADR-0649): applied after the schema
+    // mirror verification (inside the load above) and after the WAL replay,
+    // through the replay path's own redo machinery — never inside the load,
+    // where the mirror's checkpointed-state comparison would read a file
+    // edit as drift. Idempotent: every open re-applies the committed facts,
+    // so a machine whose sidecar predates a file edit converges without a
+    // checkpoint.
+    if let Some(committed) = committed {
+        crate::committed::apply(shared, committed)?;
+    }
+    // ADR-0687: the state this open installed — the WAL replay and the
+    // committed schema above — is the token table's baseline, not a change:
+    // no plan can predate the open, so the mutation sites' reports are
+    // drained and discarded rather than read as fresh DDL by the first
+    // commit's publish.
+    drop(shared.graph.take_applied_token_changes());
+    // Each start_* helper is the same gate `Database::promote` / `demote`
+    // later reuse (ADR-0440): a writable open starts the timers, a follow
+    // open starts the follow thread, and a `ReadOnly` open — writable nor
+    // following — starts nothing.
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(lease) = _writer_lease {
+        *shared.writer_lease.lock()? = Some(lease);
+    }
+    crate::resize::start_checkpoint_timer(shared)?;
+    crate::resize::start_durability_timer(shared)?;
+    crate::resize::start_follow_thread(shared)?;
+    Ok(())
 }
 
 /// LABS-903's turn-into, one named operation: release a loaded durable

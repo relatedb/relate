@@ -109,14 +109,14 @@ pub use exec::graph_stats::GraphStats;
 pub use exec::procedures::{check_explicit_arity, check_implicit_passing_mode};
 pub use exec::{
     catalog_create_statements, ddl_notifications::ddl_notifications, execute, execute_read_at,
-    execute_read_streaming_at, ExecRequest, QueryResult, ReadAdmission,
+    execute_read_streaming_at, ExecRequest, GradeProbe, QueryResult, ReadAdmission,
 };
 pub use frontier_decline::{FrontierDecline, FrontierDeclineReason, FrontierRunDecline};
 pub use function_registry::builtin_function_deprecation;
 pub use graph::constraint_keys::admission::{ConstraintAdmission, SlotPosition};
 pub use graph::{
-    CheckpointTheater, ContainsCount, DatabaseEntry, Graph, Procedure, QueryStats, SchemaSnapshot,
-    SnapshotPin,
+    AppliedTokenChanges, CheckpointTheater, ContainsCount, DatabaseEntry, Graph, Procedure,
+    QueryStats, SchemaSnapshot, SnapshotPin,
 };
 pub use metrics::{
     BatchFacts, ClauseMetricsRecord, FrontierCounters, InTxBatches, KernelRung, MemoCounters,

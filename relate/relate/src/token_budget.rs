@@ -225,9 +225,26 @@ pub(crate) struct PlanHold {
 }
 
 impl PlanHold {
+    /// Grow this hold to `logical`'s rounded size when the pool can take it,
+    /// and skip when it cannot: `false` means the previous reservation stands
+    /// and the caller's optional memory is simply not retained — the plan
+    /// cache's raw-text bound.
+    pub(crate) fn grow_or_skip(&mut self, logical: u64) -> bool {
+        self.raise(logical)
+    }
+
+    /// Grow this hold to `logical`'s rounded size, best effort: a refusal
+    /// leaves the previous reservation, because the caller's growth must land
+    /// anyway — a re-plan serves the fresh plan whatever the pool says.
+    pub(crate) fn grow_best_effort(&mut self, logical: u64) {
+        let _ = self.raise(logical);
+    }
+
     /// Move this hold to the rounded size of `logical`. Growth uses the
-    /// admission ceiling. A refusal leaves the previous reservation.
-    pub(crate) fn try_raise(&mut self, logical: u64) -> bool {
+    /// admission ceiling. A refusal leaves the previous reservation. Private:
+    /// the two policies above are the call sites' vocabulary, so no future
+    /// mutator can drop the refusal answer by accident.
+    fn raise(&mut self, logical: u64) -> bool {
         let next = rounded_logical_bytes(logical);
         if next == self.bytes {
             return true;

@@ -468,6 +468,14 @@ pub fn chain_bytes(shape: ChainShape, stride: u64) -> u64 {
     }
 }
 
+/// The signed logical-byte delta of a version chain moving from `before` to
+/// `after` — the one spelling of the install/edit/delete seams' growth term
+/// (the charge seam's signed delta, after-shape minus before-shape). Beside
+/// [`chain_bytes`] so no seam hand-spells the subtraction and its casts.
+pub fn chain_growth(before: ChainShape, after: ChainShape, stride: u64) -> i64 {
+    chain_bytes(after, stride) as i64 - chain_bytes(before, stride) as i64
+}
+
 /// One id family's version-chain tally — the census harness's count shape
 /// (research-only, ADR-0476). Beside [`chain_bytes`] so every
 /// [`ChainShape`] arm is matched in one module.

@@ -6,6 +6,8 @@
 //! (ids, pins, charging, catalog reads); the seams that install a version,
 //! maintain the indexes/adjacency/counts, and push redo live here.
 
+use std::ops::ControlFlow;
+
 use super::id_vec::IdVec;
 use super::*;
 use crate::adjacency::Supersede;
@@ -47,6 +49,10 @@ impl Graph {
         }
         let xmin = self.xmin_for_install();
         let live = LiveNode::from_parts(&self.interner, labels, properties);
+        // ADR-0687: a create's report rule — its label ids only, the
+        // property keys covered by the label stamp (`token_changes`'s
+        // "what a seam reports").
+        self.note_changed_tokens(live.labels.iter().copied());
         let charge =
             crate::memory::live_node_account_live(&live, &self.interner, &self.index_charge());
         // LABS-370 (v1 follow-up) / LABS-851: the exact label counts
@@ -71,9 +77,11 @@ impl Graph {
         self.string_dirty_mark_node(id);
         self.charge(
             charge as i64
-                + crate::memory::chain_bytes(self.node_chain_shape(id), node_version_stride())
-                    as i64
-                - crate::memory::chain_bytes(before_shape, node_version_stride()) as i64
+                + crate::memory::chain_growth(
+                    before_shape,
+                    self.node_chain_shape(id),
+                    node_version_stride(),
+                )
                 + self.nodes.array_bytes() as i64
                 - before_array as i64,
         );
@@ -133,6 +141,10 @@ impl Graph {
         }
         let xmin = self.xmin_for_install();
         let live = LiveRel::from_parts(&self.interner, start, end, &rel_type, properties);
+        // ADR-0687: a create's report rule — its type id only, the
+        // property keys covered by the type stamp (`token_changes`'s
+        // "what a seam reports").
+        self.note_changed_tokens(std::iter::once(live.type_id));
         let charge = crate::memory::live_rel_account_live(&live);
         let ts = live.payload.ts(&self.interner);
         let (out_side, in_side) = (self.out_side(), self.in_side());
@@ -165,8 +177,11 @@ impl Graph {
         self.rel_index_add(id);
         self.charge(
             charge as i64
-                + crate::memory::chain_bytes(self.rel_chain_shape(id), rel_version_stride()) as i64
-                - crate::memory::chain_bytes(before_shape, rel_version_stride()) as i64
+                + crate::memory::chain_growth(
+                    before_shape,
+                    self.rel_chain_shape(id),
+                    rel_version_stride(),
+                )
                 + self.rels.array_bytes() as i64
                 - before_array as i64
                 + adj,
@@ -219,12 +234,28 @@ impl Graph {
         let mut n = self
             .cow_node(id)
             .expect("a live node has a copy-on-write version");
-        let kid = self.interner.intern(key);
+        // ADR-0687's property-edit rule: report the key the edit touched
+        // beside the node's labels — the (label, key) equality and range
+        // cardinalities a seek consult read. A set interns its key; a removal
+        // resolves the id without minting and reports it only when the live
+        // version carried the key, so a `SET n.k = null` for a key the node
+        // never had changes nothing and stamps nothing.
+        let key_id = if value.is_null() {
+            self.interner
+                .get_id(key)
+                .filter(|&kid| n.props.get(kid).is_some())
+        } else {
+            Some(self.interner.intern(key))
+        };
+        self.note_changed_tokens(key_id.into_iter().chain(self.live_label_ids(id)));
         let (op, props_set) = if value.is_null() {
-            n.props.remove(kid);
+            if let Some(kid) = key_id {
+                n.props.remove(kid);
+            }
             (RedoOp::remove_node_prop(id, key.to_string()), 0i64)
         } else {
-            n.props.set(kid, value.clone());
+            n.props
+                .set(key_id.expect("a set interns its key id"), value.clone());
             (RedoOp::set_node_prop(id, key.to_string(), value.clone()), 1)
         };
         // The edited live view is in hand: hand it to the map before it
@@ -258,6 +289,24 @@ impl Graph {
         let end = r.end;
         let type_id = r.type_id;
         let xmax = self.tombstone_ts();
+        // ADR-0687's property-edit rule: the key the edit touched beside the
+        // rel type. A set interns its key; a removal resolves the id without
+        // minting and reports it only when the interner holds an id for a
+        // key the payload carried. A Triple payload answers its three
+        // structural field names (`id`, `amount`, `ts`) without the
+        // interner — `from_map` stores the shape and interns nothing — so
+        // removing one finds a carried value under a name with no id, and
+        // the id-keyed stamp table has nothing to record for it. The
+        // removal itself proceeds below either way.
+        let key_id = if value.is_null() {
+            match self.interner.get_id(key) {
+                Some(kid) => r.payload.get(&self.interner, key).is_some().then_some(kid),
+                None => None,
+            }
+        } else {
+            Some(self.interner.intern(key))
+        };
+        self.note_changed_tokens(key_id.into_iter().chain(std::iter::once(type_id)));
         let (op, props_set) = if value.is_null() {
             r.payload.remove(&self.interner, key);
             (RedoOp::remove_rel_prop(id, key.to_string()), 0i64)
@@ -298,51 +347,6 @@ impl Graph {
         self.charge_rel_after_edit(id, before_bytes, before_shape);
     }
 
-    pub fn merge_properties_node(&self, id: NodeId, map: &BTreeMap<String, Value>) {
-        // One cycle for the whole map, mirroring how `install_node` takes a
-        // map in one pass: one scope probe, one cow, one tracked-edit
-        // completion, one index/charge update.
-        let before = self.node(id);
-        if before.is_none() || map.is_empty() {
-            return;
-        }
-        let before_shape = self.node_chain_shape(id);
-        let keys = self.tracked_node_edit(id, |scope| {
-            map.keys().any(|key| {
-                self.interner
-                    .get_id(key)
-                    .is_some_and(|kid| scope.touches_node_key(kid))
-            })
-        });
-        let mut n = self
-            .cow_node(id)
-            .expect("a live node has a copy-on-write version");
-        let mut props_set = 0i64;
-        let mut ops = Vec::with_capacity(map.len());
-        for (key, value) in map {
-            let kid = self.interner.intern(key);
-            if value.is_null() {
-                n.props.remove(kid);
-                ops.push(RedoOp::remove_node_prop(id, key.clone()));
-            } else {
-                n.props.set(kid, value.clone());
-                props_set += 1;
-                ops.push(RedoOp::set_node_prop(id, key.clone(), value.clone()));
-            }
-        }
-        // The edited live view is in hand: hand it to the map before it
-        // moves into the version chain.
-        self.finish_node_edit(keys, id, Some(&n));
-        self.put_node(id, n);
-        self.bump_stats(|s| s.properties_set += props_set);
-        for op in ops {
-            self.push_redo(op);
-        }
-        self.mark_node_dirty(id);
-        self.index_add(id);
-        self.charge_node_after_edit(id, before.as_ref(), before_shape);
-    }
-
     /// Tombstone timestamp for a delete: the write ts while in a write,
     /// else the commit ts clamped to ≥ 1 so the tombstone is never the
     /// "no tombstone" sentinel 0. Both MVCC delete paths share this rule.
@@ -368,6 +372,18 @@ impl Graph {
                 return;
             };
             let (start, end, type_id) = (live.start, live.end, live.type_id);
+            // ADR-0687's delete rule: the dying version's type and
+            // property-key ids while they still exist (`token_changes`'s
+            // "what a seam reports") — no later walk recovers them.
+            let mut changed = vec![type_id];
+            // The walk is the full set: the visitor never breaks, so its
+            // flow continues after every key id.
+            let walk = live.payload.key_ids(&self.interner).for_each(|kid| {
+                changed.push(kid);
+                ControlFlow::Continue(())
+            });
+            debug_assert!(walk.is_continue());
+            self.note_changed_tokens(changed);
             // LABS-370: the pair counts are exact (the counting operator
             // answers from them), so a delete leaves its (start-label, type,
             // end-label) triples — the mirror of the create-path bump.
@@ -391,9 +407,11 @@ impl Graph {
         in_side.tombstone_deleted(end, type_id, id, ts);
         let adj_after = out_side.floor(start) + in_side.floor(end);
         self.charge(
-            crate::memory::chain_bytes(before_shape.after_delete(), rel_version_stride()) as i64
-                - crate::memory::chain_bytes(before_shape, rel_version_stride()) as i64
-                + adj_after as i64
+            crate::memory::chain_growth(
+                before_shape,
+                before_shape.after_delete(),
+                rel_version_stride(),
+            ) + adj_after as i64
                 - adj_before as i64
                 + sealed_refusable
                 + sealed_spill,
@@ -417,12 +435,17 @@ impl Graph {
         // version before the tombstone (entity guard first, map lock last).
         self.constraint_keys_delete_node(id);
         let ts = self.tombstone_ts();
-        let mut found = false;
         // The tombstone's dying labels, carried out of the `nodes` guard
         // so the reclamation candidates (ADR-0595) are appended after it
         // is released — the lock contract `suspect_postings` states, and
-        // the shape the label twins' sites already have.
-        let mut dying: Option<Vec<u32>> = None;
+        // the shape the label twins' sites already have. The one carrier of
+        // "the live version was tombstoned": a missing entry is a missing
+        // node, and every later step runs in one block off it.
+        // The one carrier of "the live version was tombstoned": its label
+        // ids and its property-key ids, both collected under the guard the
+        // dying version is borrowed in. A missing entry is a missing node,
+        // and every later step runs in one block off it.
+        let mut dying: Option<(Vec<u32>, Vec<u32>)> = None;
         let before_shape = self.node_chain_shape(id);
         if let Some(mut vers) = self.nodes.get_mut(&id) {
             if let Some(live) = vers.tombstone(ts) {
@@ -431,27 +454,31 @@ impl Graph {
                 // the count state does not. The node-liveness seam's
                 // one call.
                 self.bump_node_population_stats(&live.labels, CountDelta::Remove);
-                dying = Some(live.labels.clone());
-                found = true;
+                let keys = live.props.iter().map(|(kid, _)| kid).collect();
+                dying = Some((live.labels.clone(), keys));
             }
         }
-        if let Some(dying) = dying {
-            // ADR-0595: the tombstone's dying buckets — the labels the
-            // record carried, or the empty-label bucket when it carried
-            // none — become reclamation candidates here, at the removal
-            // site, for the apply's tail drain.
-            self.suspect_postings(id, &dying);
-        }
-        if found {
-            self.charge(
-                crate::memory::chain_bytes(before_shape.after_delete(), node_version_stride())
-                    as i64
-                    - crate::memory::chain_bytes(before_shape, node_version_stride()) as i64,
-            );
-            self.bump_stats(|s| s.nodes_deleted += 1);
-            self.push_redo(RedoOp::delete_node(id));
-            self.mark_node_dirty(id);
-        }
+        let Some((dying_labels, dying_keys)) = dying else {
+            return Ok(());
+        };
+        // ADR-0687's delete rule: the dying version's label ids AND its
+        // property-key ids — the tombstone is the last place the keys
+        // exist, so no later walk could report them (`token_changes`'
+        // "what a seam reports"; `delete_rel`'s report is the twin).
+        self.note_changed_tokens(dying_labels.iter().copied().chain(dying_keys));
+        // ADR-0595: the tombstone's dying buckets — the labels the
+        // record carried, or the empty-label bucket when it carried
+        // none — become reclamation candidates here, at the removal
+        // site, for the apply's tail drain.
+        self.suspect_postings(id, &dying_labels);
+        self.charge(crate::memory::chain_growth(
+            before_shape,
+            before_shape.after_delete(),
+            node_version_stride(),
+        ));
+        self.bump_stats(|s| s.nodes_deleted += 1);
+        self.push_redo(RedoOp::delete_node(id));
+        self.mark_node_dirty(id);
         Ok(())
     }
 }

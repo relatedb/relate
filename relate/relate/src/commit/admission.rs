@@ -10,7 +10,7 @@ use relate_executor::{Graph, RedoOp, SlotPosition};
 use web_time::Instant;
 
 use super::{Accepted, Admitted, CommitSlot, Waiters};
-use crate::shared::Reserved;
+use crate::shared::capacity::Reserved;
 use crate::{Error, Result, Shared};
 use relate_executor::ConstraintAdmission;
 

@@ -116,3 +116,8 @@ could not resolve.
  (plus the plan and `rowCap` terminal lines, [ADR-0403](./0403-in-band-truncation-records.md)) unless the flag
   asks for the line back. The json and envelope riders, the toon entries,
   and decision 2's always-on measurement are unchanged.
+- [ADR-0687](./0687-plan-cache-token-footprint-invalidation.md) renames decision 3's `replan-generation-mismatch`
+  outcome to `replan`: epoch, degraded-grade and background re-plans are not
+  generation mismatches, and the outcome owns the timing story — no parse, a
+  fresh plan — not the cause. The variant and its `as_str` spell `replan` on
+  every surface; the rest of the vocabulary stands.

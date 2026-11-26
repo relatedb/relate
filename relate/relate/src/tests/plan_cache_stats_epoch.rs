@@ -1,7 +1,8 @@
-//! The plan cache and the per-key statistics epoch (ADR-0503 and
-//! ADR-0696): a cached plan whose planning consulted the per-key value
+//! The plan cache and the per-key statistics epoch (ADR-0503, ADR-0696,
+//! ADR-0700): a cached plan whose planning consulted the per-key value
 //! statistics replans once those statistics change, and a plan that never
-//! consulted them does not.
+//! consulted them does not — composed with ADR-0687's footprint rules,
+//! which decide the commit half of freshness.
 //!
 //! No production planner rung consults the statistics yet, so these tests
 //! drive the consult through the store's test seam
@@ -63,7 +64,7 @@ fn a_plan_priced_while_unmeasured_replans_once_the_statistics_exist() {
     assert_eq!(outcome(&mut c, COUNT_C1), PlanCacheOutcome::Miss);
     assert_eq!(
         outcome(&mut c, COUNT_C1),
-        PlanCacheOutcome::ReplanGenerationMismatch,
+        PlanCacheOutcome::Replan,
         "the statistics published after the plan was priced"
     );
     assert!(
@@ -72,6 +73,50 @@ fn a_plan_priced_while_unmeasured_replans_once_the_statistics_exist() {
     );
     // The same template with another literal shares the entry.
     assert!(is_hit(outcome(&mut c, COUNT_C2)));
+}
+
+/// The two causes compose (ADR-0687 decision 5, ADR-0700 decisions 3-4):
+/// a within-threshold footprint commit re-stamps the entry and serves a
+/// clean hit without disturbing its statistics stamp, and because the
+/// statistics epoch is global, another label's publication still re-plans
+/// a plan that read the statistics.
+#[test]
+fn a_restamp_keeps_the_statistics_stamp_and_a_foreign_publication_replans() {
+    let (db, mut c) = store();
+    consult_city_country(&db, true);
+    // Miss (unmeasured), Replan (the completion published City), hit.
+    assert_eq!(outcome(&mut c, COUNT_C1), PlanCacheOutcome::Miss);
+    assert_eq!(outcome(&mut c, COUNT_C1), PlanCacheOutcome::Replan);
+    assert!(is_hit(outcome(&mut c, COUNT_C1)));
+    // A commit on the City footprint with small drift (60 -> 61 rows) is a
+    // re-stamp, not a re-plan: the plan still serves, clean.
+    c.query("CREATE (:City {country: 'C1'})").unwrap();
+    assert!(
+        is_hit(outcome(&mut c, COUNT_C1)),
+        "drift inside the threshold re-stamps and serves"
+    );
+    {
+        let entries = crate::plan_cache::lock(&db.inner);
+        assert_eq!(entries.front_dirty(), Some(false), "inside the threshold");
+        assert_eq!(
+            entries.front_generation(),
+            Some(db.inner.stats_generation.current()),
+            "the entry was re-stamped at the current generation"
+        );
+    }
+    // Point the planning consult at another, unbuilt label: its statement
+    // misses, and its completion publishes `Person` — no commit, so only
+    // the statistics epoch moves.
+    *db.inner.test_plan_consult.lock().unwrap() = Some(("Person".to_string(), "id".to_string()));
+    let before = epoch(&db);
+    assert_eq!(outcome(&mut c, PEOPLE), PlanCacheOutcome::Miss);
+    assert!(epoch(&db) > before, "Person's statistics were published");
+    assert_eq!(
+        outcome(&mut c, COUNT_C1),
+        PlanCacheOutcome::Replan,
+        "the re-stamp kept the plan's statistics stamp: a foreign publication still re-plans it"
+    );
+    assert!(is_hit(outcome(&mut c, COUNT_C1)), "the replan re-stamped");
 }
 
 /// A plan that never consulted the statistics is not replanned when some
@@ -91,8 +136,5 @@ fn a_plan_that_never_consulted_the_statistics_is_not_replanned() {
         "an unrelated publication is no reason to replan"
     );
     // The statement that did consult replans.
-    assert_eq!(
-        outcome(&mut c, COUNT_C1),
-        PlanCacheOutcome::ReplanGenerationMismatch
-    );
+    assert_eq!(outcome(&mut c, COUNT_C1), PlanCacheOutcome::Replan);
 }

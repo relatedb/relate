@@ -3,18 +3,17 @@
 //! caller-pinned timestamp; [`execute_read_streaming_at`] is the same run
 //! with the statement's batch consumer attached.
 
-use relate_core::{Error, QueryClockGuard, Result, Value};
+use relate_core::{Error, Result, Value};
+use relate_ir::Clause;
 
 use crate::consumer::{BatchFlow, StreamSink, BATCH_ROWS};
-use crate::ctx::QueryCtx;
 use crate::graph::QueryStats;
+use crate::metrics::PlanMetricsSite;
 use crate::overlay::ExecGraph;
 use crate::row::Row;
 
-use super::dispatch::{execute_part_read_streamed, streamable_part};
-use super::{
-    execute_plan_read_seeded, finish_statement, plan_mutates_store, QueryResult, ReadAdmission,
-};
+use super::dispatch::{execute_part_read_seeded, execute_part_read_streamed, streamable_part};
+use super::{begin_statement_entry, finish_statement, walk_statement, QueryResult, ReadAdmission};
 
 /// Execute a read-only plan at the caller-pinned timestamp in `admission`
 /// without repinning. The caller must keep its `Graph::pin_now()` guard alive
@@ -58,56 +57,63 @@ fn execute_read_inner(
         .with_schema(admission.schema)
         .with_cancel(admission.cancel)
         .with_ontology_document(admission.ontology_document);
-    view.check_cancelled()?;
     // A read view carries no scratch, so the resets are vacuous and this
-    // call is the declared-name seeding — kept through the same one
-    // statement-entry operation every write entry takes, never a second
-    // spelling of it.
-    view.begin_statement(admission.request.plan);
-    let _clock = QueryClockGuard::new();
-    // A read admission records its write-attempt fact from the same canonical
-    // plan walk as every write entry — never a hardcoded "a read cannot
-    // write": a mutation operator reaching this route is still an attempt (the
-    // read-only scratch refuses to apply it). A read view applies nothing, so
-    // its applied count is the zero the admission starts with.
-    let attempted = plan_mutates_store(admission.request.plan);
-    // ADR-0395: the freshly constructed view carries a zeroed counter —
-    // the read admission's statement gets its own budget.
-    let qctx =
-        QueryCtx::new(admission.request.query_text).with_principal(admission.request.principal);
+    // prelude is the declared-name seeding — the same one every write entry
+    // takes, never a second spelling of it. The write-attempt fact comes from
+    // the same canonical plan walk as every write entry, never a hardcoded "a
+    // read cannot write": a mutation operator reaching this route is still an
+    // attempt (the read-only scratch refuses to apply it), and a read view
+    // applies nothing, so its applied count is the zero the admission starts
+    // with. ADR-0395: the freshly constructed view carries a zeroed counter,
+    // so the read admission's statement gets its own budget. The cancellation
+    // check is the prelude's, in every entry's order — a cancelled statement
+    // bails before any row flows, and the view it reset is dropped. The
+    // admission's request carries no batch-commit sink (a read commits no
+    // batches) and the read view carries no transaction clock, so the prelude
+    // reads both absences off the request and the graph it already takes.
+    let entry = begin_statement_entry(&view, &admission.request)?;
     let plan = admission.request.plan;
     let params = admission.request.params;
-    let seeds = vec![Row::new()];
-    let finish = |mut result: QueryResult| {
-        result.stats = QueryStats::default();
-        finish_statement(result, &view, attempted)
-    };
-    match sink {
-        // A PROFILE run keeps the materialized terminal end to end: its
-        // result rows feed the epilogue's plan enrichment, so the consumer
-        // stays disengaged and the caller replays them itself.
-        Some(sink) if admission.request.plan_metrics.is_none() => {
-            let result = match streamable_part(plan)? {
-                Some(part) => execute_part_read_streamed(&view, part, params, seeds, qctx, sink)?,
-                None => execute_plan_read_seeded(&view, plan, params, seeds, qctx, None)?,
-            };
-            let mut result = finish(result)?;
-            // A shape that did not stream (or a streamed part whose RETURN
-            // input could not take the per-batch form) replays its rows.
-            if !sink.engaged() {
-                replay_result(sink, &mut result)?;
+    // One terminal decision, before the walk: a PROFILE statement keeps the
+    // materialized terminal end to end — its result rows feed the epilogue's
+    // plan enrichment — so a consumer stays disengaged and the caller replays
+    // the rows itself. Every other attached consumer streams.
+    let mut stream = sink.filter(|_| admission.request.plan_metrics.is_none());
+    let run_part =
+        |part_clauses: &[Clause], part_seeds: Vec<Row>, site: Option<PlanMetricsSite<'_>>| {
+            execute_part_read_seeded(&view, part_clauses, params, part_seeds, entry.ctx, site)
+        };
+    let mut result = match stream.as_deref_mut() {
+        Some(sink) => match streamable_part(plan)? {
+            Some(part) => {
+                execute_part_read_streamed(&view, part, params, vec![entry.root], entry.ctx, sink)?
             }
-            Ok(result)
-        }
-        _ => finish(execute_plan_read_seeded(
+            None => walk_statement(
+                &view,
+                plan,
+                vec![entry.root],
+                admission.request.plan_metrics,
+                run_part,
+            )?,
+        },
+        None => walk_statement(
             &view,
             plan,
-            params,
-            seeds,
-            qctx,
+            vec![entry.root],
             admission.request.plan_metrics,
-        )?),
+            run_part,
+        )?,
+    };
+    result.stats = QueryStats::default();
+    let mut result = finish_statement(result, &view, entry.attempted)?;
+    if let Some(sink) = stream {
+        // A shape that did not stream (or a streamed part whose RETURN input
+        // could not take the per-batch form) replays its rows.
+        if !sink.engaged() {
+            replay_result(sink, &mut result)?;
+        }
     }
+    Ok(result)
 }
 
 /// The materialized terminal's consumer delivery (ADR-0682): a statement

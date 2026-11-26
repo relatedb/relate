@@ -30,7 +30,7 @@ use crate::Result;
 use crate::{CancelToken, Value};
 
 #[cfg(not(target_arch = "wasm32"))]
-use super::dispatch::RetryHost;
+use super::reservation::RetryHost;
 #[cfg(not(target_arch = "wasm32"))]
 use super::QueryOutcome;
 

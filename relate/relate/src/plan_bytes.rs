@@ -12,26 +12,56 @@ use relate_ir::{
     walk_clauses, walk_pattern_payloads, walk_query, Clause, Expr, MapProjectionItem, PathPattern,
     PatternPayload, Query,
 };
-use relate_names::{SmallName, Token};
+use relate_names::{SmallName, Token, TokenId};
 use relate_planner::LogicalPlan;
+
+use crate::plan_footprint::{PlanFootprint, SeekRecord};
 
 /// Heap overhead charged for one visited clause or expression node.
 const NODE_BYTES: u64 = 64;
 
 /// Logical bytes of one cache entry: template, lowered query, plan, raw
-/// text, and extracted values.
+/// text, extracted values, and the plan's token footprint.
 pub(crate) fn entry_bytes(
     template: &str,
     query: &Query,
     plan: &LogicalPlan,
     text: &str,
     values: &[(String, Value)],
+    footprint: &PlanFootprint,
 ) -> u64 {
     str_logical_bytes(template)
         .saturating_add(query_bytes(query))
         .saturating_add(plan_bytes(plan))
         .saturating_add(str_logical_bytes(text))
         .saturating_add(values_bytes(values))
+        .saturating_add(footprint_bytes(footprint))
+}
+
+/// Logical bytes of a plan's token footprint (ADR-0687): the property-key
+/// ids and the counted label and relationship-type entries beside them,
+/// plus each recorded seek's own record and bound expression.
+fn footprint_bytes(footprint: &PlanFootprint) -> u64 {
+    let counted = (footprint.labels.len() as u64)
+        .saturating_add(footprint.rel_types.len() as u64)
+        .saturating_mul(std::mem::size_of::<(TokenId, Option<u64>)>() as u64);
+    (footprint.prop_keys.len() as u64)
+        .saturating_mul(std::mem::size_of::<TokenId>() as u64)
+        .saturating_add(counted)
+        .saturating_add(
+            footprint
+                .seeks
+                .iter()
+                .fold(0u64, |total, seek| total.saturating_add(seek_bytes(seek))),
+        )
+}
+
+/// One seek record's logical bytes: the record itself, its bound
+/// expression's node, and that expression's own payload.
+fn seek_bytes(seek: &SeekRecord) -> u64 {
+    (std::mem::size_of::<SeekRecord>() as u64)
+        .saturating_add(NODE_BYTES)
+        .saturating_add(expr_payload(&seek.bound))
 }
 
 /// Logical bytes of the plan an original compile keeps while it runs.
@@ -268,6 +298,44 @@ mod tests {
         patterns[0].nodes[0].prop_keys = vec![keyed("name"), keyed("age")];
         patterns[0].rels[0].prop_keys = vec![keyed("w")];
         assert_eq!(tokens_bytes(&patterns), (1 + 2 + 1 + 1) * entry);
+    }
+
+    /// ADR-0687: an entry is charged for its plan's footprint — every
+    /// counted label and relationship-type entry, every property-key id
+    /// and every recorded seek cardinality — so the cache hold covers it.
+    #[test]
+    fn entry_bytes_charges_the_footprint() {
+        let query = relate_front::parse_and_lower("RETURN 1 AS one").unwrap();
+        let plan = relate_planner::plan(query.clone(), &mut |_| false).unwrap();
+        let bare = entry_bytes(
+            "t",
+            &query,
+            &plan,
+            "RETURN 1 AS one",
+            &[],
+            &PlanFootprint::default(),
+        );
+        let seek = |planned: u64, bound: i64| SeekRecord {
+            label: SmallName::from_name("Person"),
+            prop: SmallName::from_name("age"),
+            op: relate_ir::BinaryOp::Eq,
+            bound: Expr::Int(bound),
+            planned,
+        };
+        let footprint = PlanFootprint {
+            labels: vec![(TokenId(0), Some(3))],
+            rel_types: vec![(TokenId(1), Some(8))],
+            prop_keys: vec![TokenId(2)],
+            seeks: vec![seek(3, 1), seek(5, 2)],
+            absent: false,
+        };
+        let charged = entry_bytes("t", &query, &plan, "RETURN 1 AS one", &[], &footprint);
+        assert_eq!(
+            charged - bare,
+            2 * std::mem::size_of::<(TokenId, Option<u64>)>() as u64
+                + std::mem::size_of::<TokenId>() as u64
+                + 2 * (std::mem::size_of::<SeekRecord>() as u64 + NODE_BYTES)
+        );
     }
 
     /// A property access carries one token beside its key name.

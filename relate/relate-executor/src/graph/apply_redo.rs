@@ -90,6 +90,9 @@ impl Graph {
                     label,
                     property,
                 } => {
+                    // ADR-0687: schema DDL moves the full-invalidation
+                    // epoch — no token footprint describes an index.
+                    self.note_schema_change();
                     self.install_named_index(IndexDef {
                         name,
                         label,
@@ -97,6 +100,7 @@ impl Graph {
                     })?;
                 }
                 RedoOp::DropIndex { name } => {
+                    self.note_schema_change();
                     self.catalog.lock().unwrap().drop_index(&name);
                     let removed = {
                         let mut theater = self.theater.lock().unwrap();
@@ -117,16 +121,20 @@ impl Graph {
                     kind,
                     property_type,
                     enforced_label,
-                } => self.apply_create_constraint(ConstraintDef {
-                    name,
-                    relationship,
-                    label,
-                    properties,
-                    kind,
-                    property_type,
-                    enforced_label,
-                })?,
+                } => {
+                    self.note_schema_change();
+                    self.apply_create_constraint(ConstraintDef {
+                        name,
+                        relationship,
+                        label,
+                        properties,
+                        kind,
+                        property_type,
+                        enforced_label,
+                    })?
+                }
                 RedoOp::DropConstraint { name } => {
+                    self.note_schema_change();
                     self.catalog.lock().unwrap().drop_constraint(&name);
                     self.theater
                         .lock()
@@ -137,6 +145,7 @@ impl Graph {
                     self.constraint_keys_drop(&name);
                 }
                 RedoOp::CatalogDerivedConstraint { constraint } => {
+                    self.note_schema_change();
                     if let Some(enforced) = &constraint.enforced_label {
                         // An enforced label is always a node label (even on a
                         // relationship constraint, `sourceLabel`/`targetLabel`
@@ -177,6 +186,7 @@ impl Graph {
                     detail,
                     options,
                 } => {
+                    self.note_schema_change();
                     // Decode before mutating: a corrupted op is an error,
                     // never a silently dropped index detail/options entry.
                     let options = redo::props_from_json(&options)?;
@@ -211,9 +221,13 @@ impl Graph {
                     // a no-op.
                 }
                 RedoOp::PutGraphType { name, body } => {
+                    self.note_schema_change();
                     self.theater.lock().unwrap().graph_types.insert(name, body);
                 }
-                RedoOp::SetCurrentGraphType { body } => self.apply_current_graph_type(&body)?,
+                RedoOp::SetCurrentGraphType { body } => {
+                    self.note_schema_change();
+                    self.apply_current_graph_type(&body)?
+                }
                 RedoOp::PullIdentityPut {
                     source,
                     kind,
