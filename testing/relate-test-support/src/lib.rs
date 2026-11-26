@@ -30,6 +30,7 @@ pub mod plan_rung;
 pub mod pokec;
 pub mod preview;
 pub mod profiler;
+pub mod range_index;
 #[cfg(feature = "read_log")]
 pub mod read_log;
 pub mod recording_engine;
