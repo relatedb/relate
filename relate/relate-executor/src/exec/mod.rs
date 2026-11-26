@@ -853,6 +853,8 @@ mod graph_stats_key_tests;
 #[cfg(test)]
 mod graph_stats_tests;
 #[cfg(test)]
+mod hub_join_gate_tests;
+#[cfg(test)]
 mod id_seek_tests;
 mod index_aggregates;
 #[cfg(test)]
