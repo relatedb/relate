@@ -162,6 +162,15 @@ fn node_json(
     let (fused_into, fused_metrics) = fused_fields(node);
     out.insert("fused_into".to_string(), fused_into);
     out.insert("fused_metrics".to_string(), fused_metrics);
+    // REL8-2047: a batched `CALL { … } IN TRANSACTIONS` body subtree's
+    // root names its `CallSubquery` parent operator's id — always present,
+    // `null` on every node of the statement's own pipeline (the same one
+    // absence spelling as `fused_into`), so a consumer can tell a body
+    // operator from the pipeline's data-flow child.
+    out.insert(
+        "body_of".to_string(),
+        node.body_of.map_or(Value::Null, |parent| json!(parent)),
+    );
     out.insert("children".to_string(), Value::Array(children));
     // The operator's warnings: the remedy-bearing notifications raised for
     // it (ADR-0363), looked up by the operator id the engine stamps — the
@@ -266,78 +275,120 @@ fn actual_json(metrics: &PlanMetricsWire, subtree_ns: i64, loops: Option<u64>) -
     // every operator that skipped nothing, the same never-missing-key
     // rule.
     out.insert("zone_skips".to_string(), json!(metrics.zone_skips));
-    // ADR-0478: the frontier family's run counters — always present as
-    // the nested set, all zeros on every operator the family declined,
-    // the same never-missing-key rule. The NFA rung's own facts ride
-    // the same object (ADR-0516): the cells, the rule memo's hits and
-    // misses, the admission asks by verdict, and the budget fraction
-    // the rule's work spent.
-    out.insert(
-        "frontier".to_string(),
-        json!({
-            "edge_visits": metrics.frontier.edge_visits,
-            "levels": metrics.frontier.levels,
-            "endpoints": metrics.frontier.endpoints,
-            "cells": metrics.frontier.cells,
-            "memo_hits": metrics.frontier.memo_hits,
-            "memo_misses": metrics.frontier.memo_misses,
-            "representative_proofs": metrics.frontier.representative_proofs,
-            "search_proven": metrics.frontier.search_proven,
-            "search_disproven": metrics.frontier.search_disproven,
-            "declined_exhausted": metrics.frontier.declined_exhausted,
-            "budget_fraction": metrics.frontier.budget_fraction,
-        }),
-    );
-    // ADR-0516: the frontier rung's run-time decline — always present,
-    // `null` when the rung never declined, the one absence spelling the
-    // document uses (a consumer never faces a missing-key rule).
-    out.insert(
-        "frontier_decline".to_string(),
-        json!(metrics.frontier_decline),
-    );
-    // ADR-0654: the expression-memo counters — unlike the always-present
-    // groups above, present only when a memo was probed on the node (the
-    // plan wire's presence-only rule), so a memo-free plan carries no
-    // `memo` key. `bytes` is the memo tables' allocation, never part of
-    // `memory_bytes`; `kinds` is non-empty on the root only.
-    if let Some(memo) = metrics.memo {
-        let mut group = json!({
-            "probes": memo.probes,
-            "hits": memo.hits,
-            "inserts": memo.inserts,
-            "refused": memo.refused,
-            "bytes": memo.bytes,
-            "disabled_count": memo.disabled_count,
-        });
-        if !memo.kinds.is_empty() {
-            group["kinds"] = json!(memo.kinds.names().collect::<Vec<_>>());
-        }
-        out.insert("memo".to_string(), group);
+    let frontier = actual_frontier(metrics);
+    out.insert("frontier".to_string(), frontier.counters);
+    out.insert("frontier_decline".to_string(), frontier.decline);
+    if let Some(memo) = actual_memo(metrics) {
+        out.insert("memo".to_string(), memo);
     }
-    // Always present, `null` when the operator walked no pattern: the one
-    // absence spelling the document uses (a consumer never faces a
-    // missing-key rule).
-    out.insert(
-        "start".to_string(),
-        match &metrics.start {
-            Some(start) => json!({
-                "element": start.element,
-                "backward": start.backward,
-                "reason": start.reason,
-            }),
-            None => Value::Null,
-        },
-    );
-    // LABS-1117: which rung served the clause's MATCH walk — always
-    // present, `null` when no rung served it (the one absence spelling).
-    out.insert(
-        "kernel".to_string(),
-        match metrics.kernel {
-            Some(rung) => json!({"rung": rung.as_str(), "hops": rung.hops()}),
-            None => Value::Null,
-        },
-    );
+    if let Some(in_tx) = actual_in_tx(metrics) {
+        out.insert("in_tx".to_string(), in_tx);
+    }
+    let walk = actual_start_kernel(metrics);
+    out.insert("start".to_string(), walk.start);
+    out.insert("kernel".to_string(), walk.kernel);
     Value::Object(out)
+}
+
+/// ADR-0478: the frontier family's run counters — always present as the
+/// nested set, all zeros on every operator the family declined, the
+/// document's never-missing-key rule. The NFA rung's own facts ride the
+/// same object (ADR-0516): the cells, the rule memo's hits and misses,
+/// the admission asks by verdict, and the budget fraction the rule's work
+/// spent. The run-time decline is always present too, `null` when the rung
+/// never declined.
+fn actual_frontier(metrics: &PlanMetricsWire) -> ActualFrontier {
+    let group = json!({
+        "edge_visits": metrics.frontier.edge_visits,
+        "levels": metrics.frontier.levels,
+        "endpoints": metrics.frontier.endpoints,
+        "cells": metrics.frontier.cells,
+        "memo_hits": metrics.frontier.memo_hits,
+        "memo_misses": metrics.frontier.memo_misses,
+        "representative_proofs": metrics.frontier.representative_proofs,
+        "search_proven": metrics.frontier.search_proven,
+        "search_disproven": metrics.frontier.search_disproven,
+        "declined_exhausted": metrics.frontier.declined_exhausted,
+        "budget_fraction": metrics.frontier.budget_fraction,
+    });
+    ActualFrontier {
+        counters: group,
+        decline: json!(metrics.frontier_decline),
+    }
+}
+
+/// The frontier group's two document entries, named so the pairing is the
+/// type's rather than the call site's destructuring order.
+struct ActualFrontier {
+    counters: Value,
+    decline: Value,
+}
+
+/// ADR-0654: the expression-memo counters — unlike the always-present
+/// groups, present only when a memo was probed on the node (the plan
+/// wire's presence-only rule), so a memo-free plan carries no `memo` key.
+/// `bytes` is the memo tables' allocation, never part of `memory_bytes`;
+/// `kinds` is non-empty on the root only.
+fn actual_memo(metrics: &PlanMetricsWire) -> Option<Value> {
+    let memo = metrics.memo?;
+    let mut group = json!({
+        "probes": memo.probes,
+        "hits": memo.hits,
+        "inserts": memo.inserts,
+        "refused": memo.refused,
+        "bytes": memo.bytes,
+        "disabled_count": memo.disabled_count,
+    });
+    if !memo.kinds.is_empty() {
+        group["kinds"] = json!(memo.kinds.names().collect::<Vec<_>>());
+    }
+    Some(group)
+}
+
+/// REL8-2047: the `CALL { … } IN TRANSACTIONS` batch facts — present only
+/// when the arm ran batches (the memo group's presence-only rule), so a
+/// plan with no batched call carries no `in_tx` key.
+fn actual_in_tx(metrics: &PlanMetricsWire) -> Option<Value> {
+    if !metrics.intx.ran() {
+        return None;
+    }
+    let intx = &metrics.intx;
+    Some(json!({
+        "batches": intx.batches,
+        "committed": intx.committed,
+        "rolled_back": intx.rolled_back,
+        "peak_input_rows_bytes": intx.peak_input_rows_bytes,
+        "peak_output_rows_bytes": intx.peak_output_rows_bytes,
+        "peak_scratch_bytes": intx.peak_scratch_bytes,
+        "peak_wal_bytes": intx.peak_wal_bytes,
+    }))
+}
+
+/// The walk's chosen start (always present, `null` when the operator
+/// walked no pattern) and the rung that served its `MATCH` walk (LABS-1117,
+/// always present, `null` when no rung served it) — the document's one
+/// absence spelling for both.
+fn actual_start_kernel(metrics: &PlanMetricsWire) -> ActualWalk {
+    let start = match &metrics.start {
+        Some(start) => json!({
+            "element": start.element,
+            "backward": start.backward,
+            "reason": start.reason,
+        }),
+        None => Value::Null,
+    };
+    let kernel = match metrics.kernel {
+        Some(rung) => json!({"rung": rung.as_str(), "hops": rung.hops()}),
+        None => Value::Null,
+    };
+    ActualWalk { start, kernel }
+}
+
+/// The walk's two document entries, named for the same reason as
+/// [`ActualFrontier`].
+struct ActualWalk {
+    start: Value,
+    kernel: Value,
 }
 
 #[cfg(test)]

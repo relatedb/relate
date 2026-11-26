@@ -762,7 +762,7 @@ fn fused_breakdown_trees() -> Vec<(&'static str, relate::PlanNode)> {
 }
 
 fn step_metrics(step: &relate::PlanNode) -> Option<relate::FusedChildMetrics> {
-    step.fused.and_then(|fused| fused.metrics)
+    step.fused().and_then(|fused| fused.metrics)
 }
 
 /// Virtual plan operators: an index-seek-started MATCH breaks down into
@@ -775,7 +775,7 @@ fn fused_breakdown_has_a_seek_step_and_one_expand_step_per_hop() {
         let parent = &tree.children[0];
         assert_eq!(parent.operator, "NodeIndexSeek", "{prefix}: {tree:?}");
         assert!(
-            parent.fused.is_none(),
+            parent.fused().is_none(),
             "{prefix}: the parent is the fused operator"
         );
         assert_eq!(
@@ -802,7 +802,7 @@ fn fused_breakdown_has_a_seek_step_and_one_expand_step_per_hop() {
         );
         for step in &parent.children {
             assert_eq!(
-                step.fused.map(|fused| fused.parent),
+                step.fused().map(|fused| fused.parent),
                 Some(parent.id),
                 "{prefix}: {tree:?}"
             );

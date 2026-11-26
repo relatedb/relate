@@ -1907,7 +1907,18 @@ expression-memo group when a memo was probed on the operator (ADR-0654;
 presence-only, the set together): `MemoProbes`, `MemoHits`, `MemoInserts`,
 `MemoRefused`, `MemoBytes` (the memo tables' allocation, never part of
 `MemoryBytes`) and `MemoDisabledCount`, with the root's `MemoKinds` — a list
-of the memo type names (`node-label`, `datetime`) behind its sums — and `FrontierDeclineReason` (ADR-0516, ADR-0582) when the rung did
+of the memo type names (`node-label`, `datetime`) behind its sums — and the
+`CALL { … } IN TRANSACTIONS` batch facts on the `CallSubquery` operator
+(ADR-0681; presence-only when the arm ran batches, the seven integers
+together): `InTxBatches`, `InTxCommitted`, `InTxRolledBack` and the
+per-batch maxima `InTxPeakInputRowsBytes`/`InTxPeakOutputRowsBytes`
+(the largest input batch's and installed output's retained row bytes),
+`InTxPeakScratchBytes` (the most scratch one batch created, redo
+excluded) and `InTxPeakWalBytes` (the most redo-log bytes at a commit —
+the WAL payload), the `Details` cell marking the operator
+`[in-tx batches=N committed=M rolled-back=K]` and `[in-tx-peak …]`; the
+same operator's plan children are the body's operators, EXPLAIN and
+PROFILE both, behind the pipeline's data-flow child — and `FrontierDeclineReason` (ADR-0516, ADR-0582) when the rung did
 not serve the clause: the typed reason's stable name. A run-time decline
 (`rearrival-budget`, ADR-0516, `table-budget`, the sparse tables'
 allocation ceiling, ADR-0521, or `short-cap`, a capped run whose BFS ended

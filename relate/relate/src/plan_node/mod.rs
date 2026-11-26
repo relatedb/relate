@@ -12,13 +12,16 @@
 //! formatter crate (ADR-0359); [`serialize`] is the machine-native wire
 //! form (ADR-0345).
 
+mod clause;
 #[cfg(test)]
 mod fixtures;
 mod fused;
+mod metric_args;
 mod notifications;
 mod seek;
 mod serialize;
 mod subject;
+mod tree;
 mod warning;
 
 pub use fused::{FusedChild, FusedChildMetrics};
@@ -29,7 +32,6 @@ pub(crate) use warning::patterns_share_an_anchor;
 
 use std::collections::BTreeMap;
 
-use relate_ir::Clause;
 use relate_model::wire::Notification;
 use relate_planner::LogicalPlan;
 
@@ -93,13 +95,30 @@ pub struct PlanNode {
     /// (chain/hub-star/frontier/walker) is a runtime fact and lives on
     /// [`ClauseMetrics::kernel`].
     pub pattern_engine: Option<relate_executor::PatternEngine>,
-    /// The fused virtual child fact (virtual plan operators): `Some` on
-    /// a display-only breakdown step of its fused parent operator — the
-    /// seek step of an index-seek-started MATCH or one hop's `Expand`
-    /// step, never an executed one — `None` on every other node. The
-    /// parent link and the step's measured pair travel together inside
-    /// [`FusedChild`], so the half-states are unrepresentable.
-    pub fused: Option<FusedChild>,
+    /// The node's child role, when it is not the pipeline's data-flow
+    /// child: `None` on every real operator, `Some` on a child the walks
+    /// must tell apart from the clause it feeds — the one owner of that
+    /// fact, so a second role can never arrive as a second parallel field.
+    /// The two roles are mutually exclusive by construction (a node is
+    /// attached as one or the other), so the field is one `Option`.
+    pub role: Option<ChildRole>,
+}
+
+/// Why a node is not its parent's data-flow child — the one child-role
+/// fact [`PlanNode::is_executed_child`] reads.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ChildRole {
+    /// A display-only fused virtual step of its parent operator
+    /// (ADR-0622): the seek step of an index-seek-started MATCH or one
+    /// hop's `Expand` step. The parent link and the step's measured pair
+    /// travel together inside [`FusedChild`], so the half-states are
+    /// unrepresentable.
+    Fused(FusedChild),
+    /// The root of a batched `CALL { … } IN TRANSACTIONS` body subtree the
+    /// `CallSubquery` operator renders as its children (REL8-2047), its
+    /// parent's operator id: the body runs inside the operator's batch, so
+    /// its work is that operator's record, never a per-body-operator one.
+    Body { parent: usize },
 }
 
 /// The typed plan tree drops **iteratively** (ADR-0628's security-round
@@ -219,7 +238,7 @@ impl PlanTree {
 /// rows produced, store accesses, row-materialization bytes, and elapsed
 /// time, collected by the executor's dispatch loop and stamped onto the
 /// node the plan tree builds from the same clause.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct ClauseMetrics {
     /// Rows the operator produced (the rows flowing out of the clause).
     pub rows: u64,
@@ -306,6 +325,14 @@ pub struct ClauseMetrics {
     /// The memo types behind the root's [`ClauseMetrics::memo`] (ADR-0654
     /// §3): empty on every operator but the root.
     pub memo_kinds: relate_model::wire::MemoKindsWire,
+    /// The `CALL { … } IN TRANSACTIONS` batch facts (REL8-2047): batches
+    /// run, committed, rolled back, and the per-batch maxima — the input
+    /// batch's and the installed output's retained row bytes, the scratch
+    /// the batch created, and the redo log's reserved bytes at commit (the
+    /// WAL payload it wrote). All-zero on every other operator; carried by
+    /// the `CallSubquery` operator the batched call's record reports at.
+    /// Re-exported by this crate beside the other metric types.
+    pub intx: relate_executor::InTxBatches,
 }
 
 /// The one record→metric conversion: destructured, so a new
@@ -330,6 +357,7 @@ impl From<relate_executor::ClauseMetricsRecord> for ClauseMetrics {
             frontier,
             frontier_decline,
             memo,
+            intx,
         } = record;
         ClauseMetrics {
             rows,
@@ -347,6 +375,7 @@ impl From<relate_executor::ClauseMetricsRecord> for ClauseMetrics {
             frontier_decline,
             memo,
             memo_kinds: Default::default(),
+            intx,
         }
     }
 }
@@ -374,7 +403,7 @@ impl PlanNode {
             statement_echo: String::new(),
             token_estimate: None,
             pattern_engine: None,
-            fused: None,
+            role: None,
         }
     }
 
@@ -422,16 +451,59 @@ impl PlanNode {
     /// hop step and on EXPLAIN trees) are set together, so the
     /// half-state is unrepresentable.
     pub fn with_fused(mut self, parent: usize, metrics: Option<FusedChildMetrics>) -> PlanNode {
-        self.fused = Some(FusedChild { parent, metrics });
+        self.role = Some(ChildRole::Fused(FusedChild { parent, metrics }));
         self
     }
 
-    /// The node's executed children: every child except a display-only
-    /// fused breakdown step (ADR-0622). The one skip policy for a walk
-    /// that reads executed operators or their metrics — the wire twin is
-    /// `PlanNodeWire::executed_children`.
+    /// Mark the node the root of a batched `CALL { … } IN TRANSACTIONS`
+    /// body subtree (REL8-2047), naming its `CallSubquery` parent — the
+    /// body arm's one stamp, the [`Self::with_fused`] idiom, so no caller
+    /// writes the `role` field directly.
+    pub fn with_body(mut self, parent: usize) -> PlanNode {
+        self.role = Some(ChildRole::Body { parent });
+        self
+    }
+
+    /// The node's fused-child fact, when it is a display-only fused step
+    /// (ADR-0622) — the `role`'s fused arm, read by the walkers and the
+    /// wire emitter. The match is exhaustive over [`ChildRole`], so a
+    /// third role cannot compile without deciding this narrowing.
+    pub fn fused(&self) -> Option<FusedChild> {
+        match &self.role {
+            Some(ChildRole::Fused(fused)) => Some(*fused),
+            Some(ChildRole::Body { .. }) | None => None,
+        }
+    }
+
+    /// The `CallSubquery` parent operator's id, when this node is a
+    /// batched body subtree's root (REL8-2047) — the `role`'s body arm,
+    /// exhaustive for the same reason as [`Self::fused`].
+    pub fn body_of(&self) -> Option<usize> {
+        match self.role {
+            Some(ChildRole::Body { parent }) => Some(parent),
+            Some(ChildRole::Fused(_)) | None => None,
+        }
+    }
+
+    /// Whether this node is an executed child of its parent — the one
+    /// child-role rule both walks read. Two child roles are skipped: a
+    /// display-only fused breakdown step (ADR-0622), whose measured pair
+    /// is a phase of the fused parent's clause totals, and a batched
+    /// `CALL { … } IN TRANSACTIONS` body's operator root (REL8-2047),
+    /// whose work is the `CallSubquery` operator's batch record. The wire
+    /// twin is `PlanNodeWire::is_executed_child`.
+    fn is_executed_child(&self) -> bool {
+        self.role.is_none()
+    }
+
+    /// The node's executed children: every child
+    /// [`Self::is_executed_child`] admits — the one skip policy for a
+    /// walk that reads executed operators or their metrics; the wire twin
+    /// is `PlanNodeWire::executed_children`.
     pub fn executed_children(&self) -> impl Iterator<Item = &PlanNode> {
-        self.children.iter().filter(|child| child.fused.is_none())
+        self.children
+            .iter()
+            .filter(|child| child.is_executed_child())
     }
 
     /// The echoed statement — the formatter's header input (external
@@ -464,9 +536,9 @@ impl PlanNode {
     /// column and the wire form's `args.Id` both read. The engine's
     /// construction walk stamps its own tree as it builds it; a hand-built
     /// tree calls this before rendering or serializing. This pass is also
-    /// the fused link's maintainer: a fused child's `parent` is re-derived
-    /// from the node it nests under, so a renumbered tree cannot carry a
-    /// stale link.
+    /// the role links' maintainer: a child's `role` carries the parent id
+    /// it nests under (a fused step's and a batched body root's alike), so
+    /// a renumbered tree cannot carry a stale link.
     pub fn assign_ids(&mut self) {
         let mut next = 0usize;
         self.assign_ids_at(&mut next);
@@ -478,8 +550,10 @@ impl PlanNode {
         *next += 1;
         let parent = self.id;
         for child in &mut self.children {
-            if let Some(fused) = child.fused.as_mut() {
-                fused.parent = parent;
+            match &mut child.role {
+                Some(ChildRole::Fused(fused)) => fused.parent = parent,
+                Some(ChildRole::Body { parent: body }) => *body = parent,
+                None => {}
             }
             child.assign_ids_at(next);
         }
@@ -506,7 +580,7 @@ pub(crate) fn profiled_tree(
     stats: &dyn PlanStats,
 ) -> PlanTree {
     let mut cursor = BuildCursor::default();
-    let root = plan_tree_at(plan, 1, metrics, stats, &mut cursor);
+    let root = stage_tree(plan, StagePos::stage(1), metrics, stats, &mut cursor);
     PlanTree {
         root,
         staged: cursor.staged,
@@ -547,154 +621,4 @@ impl BuildCursor {
     }
 }
 
-/// The recursive stage builder: `stage` is this plan's number in the
-/// `NEXT` chain — the root of the chain is stage 1 and every `Next` child
-/// introduces the stage one later, named in its details.
-fn plan_tree_at(
-    plan: &LogicalPlan,
-    stage: usize,
-    metrics: Option<&ClauseMetricsMap>,
-    stats: &dyn PlanStats,
-    cursor: &mut BuildCursor,
-) -> PlanNode {
-    let mut node = stage_node(plan, stage, metrics, stats, cursor);
-    if let Some(next) = plan.next.as_deref() {
-        let mut next_node = PlanNode::new(
-            "Next",
-            format!("stage {}", stage + 1),
-            Vec::new(),
-            Vec::new(),
-        );
-        next_node.id = cursor.take_id();
-        next_node
-            .children
-            .push(plan_tree_at(next, stage + 1, metrics, stats, cursor));
-        node.children.push(next_node);
-    }
-    node
-}
-
-/// The node for one stage: the parts' pipelines under a `Union` node when
-/// the plan is multi-part, else the single part's pipeline.
-fn stage_node(
-    plan: &LogicalPlan,
-    stage: usize,
-    metrics: Option<&ClauseMetricsMap>,
-    stats: &dyn PlanStats,
-    cursor: &mut BuildCursor,
-) -> PlanNode {
-    if let [part] = plan.parts.as_slice() {
-        return part_tree(part, 0, stage, metrics, stats, cursor);
-    }
-    // The joiner is uniform across boundaries (mixing UNION and UNION ALL
-    // is a parse error), so the operator name carries it without loss;
-    // children are the parts' pipelines in statement order.
-    let union_all = plan
-        .union_all
-        .first()
-        .copied()
-        .expect("multi-part plan carries a joiner flag per boundary");
-    let mut node = PlanNode::new(
-        if union_all { "UnionAll" } else { "Union" },
-        format!("{} parts", plan.parts.len()),
-        Vec::new(),
-        Vec::new(),
-    );
-    node.id = cursor.take_id();
-    for (part_index, part) in plan.parts.iter().enumerate() {
-        node.children
-            .push(part_tree(part, part_index, stage, metrics, stats, cursor));
-    }
-    node
-}
-
-/// The pipeline of one plan part: one node per clause, the projection
-/// outermost, each earlier clause as the child of the one after it. The
-/// pre-order ids fall out of the build order — no layout arithmetic: the
-/// clause nodes' ids are claimed outermost-first (a clause's node
-/// precedes its chain child's subtree and its own fused breakdown
-/// steps), and the fused steps (virtual plan operators: a seek-started
-/// MATCH's seek and per-hop `Expand` steps) take theirs as the build
-/// reaches them, right behind the chain child's subtree. The breakdown
-/// rides after the chain child, so the pipeline's data-flow child stays
-/// first (the wire's input-rows fact reads it). The clause's
-/// operator-scoped notifications are staged under the node's id in the
-/// same pass — never through a positional list zipped by a later walk.
-fn part_tree(
-    part: &[Clause],
-    part_index: usize,
-    stage: usize,
-    metrics: Option<&ClauseMetricsMap>,
-    stats: &dyn PlanStats,
-    cursor: &mut BuildCursor,
-) -> PlanNode {
-    // The clause nodes' pre-order ids, claimed outermost-first: the part's
-    // last clause is its root, so clause `i` takes `base + (len - 1 - i)`.
-    // Each node precedes the whole subtree under it (the chain child, then
-    // its fused steps).
-    let base = cursor.reserve(part.len());
-    let mut chain: Option<PlanNode> = None;
-    for (clause_index, clause) in part.iter().enumerate() {
-        let mut facts = clause_node(clause, stats);
-        let breakdown = facts.fused.take();
-        let mut node = PlanNode::new(
-            facts.operator.name(),
-            facts.details,
-            facts.identifiers,
-            Vec::new(),
-        )
-        .with_estimated_rows(facts.estimated_rows)
-        .with_warnings(facts.warnings)
-        .with_metrics(
-            metrics
-                .and_then(|m| m.get(&(stage, part_index, clause_index)))
-                .copied(),
-        );
-        node.id = base + (part.len() - 1 - clause_index);
-        // LABS-1117: the store's static pattern-engine rung, stamped on a
-        // MATCH operator so every EXPLAIN/PROFILE tree carries it.
-        node.pattern_engine = facts.pattern_engine;
-        // `EstimationMiss` (typed node warnings): derived beside the
-        // metrics through the one derivation helper — the same 10x
-        // policy the ratio cell's warning marker reads.
-        if let Some(miss) =
-            warning::estimation_miss_warning(node.estimated_rows, node.metrics.map(|m| m.rows))
-        {
-            node.warnings.push(miss);
-        }
-        // Each earlier clause becomes the child of its successor, so data
-        // flows bottom-up like Neo4j's plan (scans deepest,
-        // `ProduceResults` on top).
-        if let Some(child) = chain.take() {
-            node.children.push(child);
-        }
-        // Virtual plan operators: the fused MATCH's breakdown steps,
-        // behind the chain child, fused into this node.
-        if let Some(breakdown) = breakdown {
-            node.children.extend(fused::build_children(
-                breakdown,
-                cursor,
-                node.id,
-                node.metrics,
-            ));
-        }
-        // The typed aggregation fact and the input child's estimate are
-        // both in hand here, so the eager-buffer notification is staged
-        // with the node instead of being re-derived by a tree walk.
-        if matches!(facts.operator, ClauseOperator::EagerAggregation) {
-            if let Some(notification) = notifications::eager_aggregation_notification(
-                node.children.first().and_then(|child| child.estimated_rows),
-                node.id,
-            ) {
-                facts.notifications.push(notification);
-            }
-        }
-        cursor.stage(node.id, facts.notifications);
-        chain = Some(node);
-    }
-    chain.expect("part has a clause")
-}
-
-mod clause;
-
-use clause::{clause_node, ClauseOperator};
+use tree::{stage_tree, StagePos};

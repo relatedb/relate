@@ -20,6 +20,16 @@ pub const ESTIMATED_ROWS: &str = "EstimatedRows";
 /// separate flag. A fused child never carries the PROFILE metric block:
 /// rows, time and memory stay the fused parent's clause totals.
 pub const FUSED_INTO: &str = "FusedInto";
+/// The plan's peak logical workspace bytes (ADR-0463's receipt): the
+/// root's one admission figure, emitted when admission is on.
+pub const PEAK_LOGICAL_BYTES: &str = "PeakLogicalBytes";
+/// The batched `CALL { … } IN TRANSACTIONS` body role marker
+/// (REL8-2047): the `CallSubquery` parent operator's non-negative id on
+/// the root of a body subtree the plan renders as children, so a walk can
+/// tell a body operator from the pipeline's data-flow child — the
+/// `FusedInto` shape for the display-only steps. Absent on every node of
+/// the statement's own pipeline.
+pub const BODY_OF: &str = "BodyOf";
 /// The walk-side keys a fused virtual child never carries (virtual plan
 /// operators): the walk's read kinds and its phase time stay the fused
 /// parent's. The fused-child parser rejects these together with
@@ -111,6 +121,23 @@ pub const FRONTIER_SEARCH_PROVEN: &str = "FrontierSearchProven";
 pub const FRONTIER_SEARCH_DISPROVEN: &str = "FrontierSearchDisproven";
 pub const FRONTIER_DECLINED_EXHAUSTED: &str = "FrontierDeclinedExhausted";
 pub const FRONTIER_BUDGET_FRACTION: &str = "FrontierBudgetFraction";
+/// The group's ten integer keys in the order of `PlanFrontierWire`'s
+/// fields (edges, levels, endpoints, cells, memo hits, memo misses,
+/// representative proofs, search proven, search disproven, declined
+/// exhausted): the one table the decoder, the producer and any consumer
+/// iterate.
+pub const FRONTIER_GROUP_KEYS: [&str; 10] = [
+    FRONTIER_EDGES,
+    FRONTIER_LEVELS,
+    FRONTIER_ENDPOINTS,
+    FRONTIER_CELLS,
+    FRONTIER_MEMO_HITS,
+    FRONTIER_MEMO_MISSES,
+    FRONTIER_REPRESENTATIVE_PROOFS,
+    FRONTIER_SEARCH_PROVEN,
+    FRONTIER_SEARCH_DISPROVEN,
+    FRONTIER_DECLINED_EXHAUSTED,
+];
 /// The expression-memo group (ADR-0654): the probes, hits, inserts,
 /// refused inserts, table bytes and disabled-memo count the operator's
 /// memos reported, emitted together only on a PROFILE node whose memos
@@ -132,6 +159,33 @@ pub const MEMO_GROUP_KEYS: [&str; 6] = [
     MEMO_REFUSED,
     MEMO_BYTES,
     MEMO_DISABLED_COUNT,
+];
+/// The `CALL { … } IN TRANSACTIONS` batch facts (REL8-2047): the batch
+/// counters — run, committed, rolled back — and the per-batch maxima (the
+/// input batch's and the installed output's retained row bytes, the
+/// scratch the batch created, the redo log's reserved bytes at commit —
+/// the WAL payload it wrote), emitted together only on a PROFILE node
+/// whose arm ran batches (`InTxBatches > 0`), with the metric set — a
+/// half-present set is a wire-contract break.
+pub const IN_TX_BATCHES: &str = "InTxBatches";
+pub const IN_TX_COMMITTED: &str = "InTxCommitted";
+pub const IN_TX_ROLLED_BACK: &str = "InTxRolledBack";
+pub const IN_TX_PEAK_INPUT_ROWS_BYTES: &str = "InTxPeakInputRowsBytes";
+pub const IN_TX_PEAK_OUTPUT_ROWS_BYTES: &str = "InTxPeakOutputRowsBytes";
+pub const IN_TX_PEAK_SCRATCH_BYTES: &str = "InTxPeakScratchBytes";
+pub const IN_TX_PEAK_WAL_BYTES: &str = "InTxPeakWalBytes";
+/// The group's seven integer keys in the order of `PlanInTxWire`'s fields
+/// (batches, committed, rolled back, peak input bytes, peak output bytes,
+/// peak scratch bytes, peak WAL bytes): the one table the decoder, the
+/// producer and any consumer iterate.
+pub const IN_TX_GROUP_KEYS: [&str; 7] = [
+    IN_TX_BATCHES,
+    IN_TX_COMMITTED,
+    IN_TX_ROLLED_BACK,
+    IN_TX_PEAK_INPUT_ROWS_BYTES,
+    IN_TX_PEAK_OUTPUT_ROWS_BYTES,
+    IN_TX_PEAK_SCRATCH_BYTES,
+    IN_TX_PEAK_WAL_BYTES,
 ];
 /// The memo types behind the group, one name each from
 /// [`MemoKindWire::NAMES`](crate::wire::MemoKindWire::NAMES) — emitted

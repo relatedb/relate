@@ -42,7 +42,7 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 pub use plan_node::{
-    ClauseMetrics, FusedChild, FusedChildMetrics, PlanArtifacts, PlanNode, PlanWarning,
+    ChildRole, ClauseMetrics, FusedChild, FusedChildMetrics, PlanArtifacts, PlanNode, PlanWarning,
 };
 pub use relate_core::{
     node_element_id, parse_node_element_id, parse_rel_element_id, rel_element_id,
@@ -105,8 +105,8 @@ pub use relate_error::{
 };
 pub use relate_executor::{
     BatchFlow, FrontierCounters, FrontierDecline, FrontierDeclineReason, FrontierRunDecline,
-    KernelRung, MemoCounters, PatternEngine, PhaseTimes, Procedure, PullKind, QueryStats,
-    StartReason, StatementEffect, StoreReads, WalkStart,
+    InTxBatches, KernelRung, MemoCounters, PatternEngine, PhaseTimes, Procedure, PullKind,
+    QueryStats, StartReason, StatementEffect, StoreReads, WalkStart,
 };
 // Research-only (speed-of-light kernels), quarantined behind the
 // non-default `research` cargo feature (ADR-0476): this re-export and the

@@ -20,6 +20,7 @@ mod bar_function;
 mod batch_consumer;
 mod bytes_value;
 mod call_in_transactions_batch_pass;
+mod call_in_transactions_profile;
 mod cancellation;
 mod canonical_registries;
 mod case_expression;

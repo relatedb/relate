@@ -18,7 +18,8 @@ use relate_core::tokens::WorkspaceCharge;
 use relate_core::Result;
 
 use crate::ctx::ExecCtx;
-use crate::metrics::PlanMetricsSite;
+
+use crate::metrics::ParkedRecord;
 use crate::row::Row;
 
 use super::batch_tail::BATCH_ROWS;
@@ -86,13 +87,20 @@ pub(crate) struct RowStream<'a> {
 }
 
 impl<'a> RowStream<'a> {
+    /// The one construction form every constructor states its value
+    /// through — the source and the facts together, so no construction
+    /// path's result is patched after the fact.
+    fn from_source(rows: Source<'a>, facts: Option<Rc<ParkedFacts<'a>>>) -> Self {
+        Self {
+            rows,
+            stopped: false,
+            facts,
+        }
+    }
+
     /// Wrap the rows a clause arm already holds — the held path.
     pub(crate) fn held(rows: Vec<Row>) -> Self {
-        Self {
-            rows: Source::Held(rows.into_iter()),
-            stopped: false,
-            facts: None,
-        }
+        Self::from_source(Source::Held(rows.into_iter()), None)
     }
 
     /// Wrap held rows carrying the clause's PROFILE record — the held form
@@ -101,19 +109,15 @@ impl<'a> RowStream<'a> {
     /// and the facts report at drain, stop or exhaustion like the produced
     /// forms'. The rows are in hand, so the count is known up front; the
     /// clause's own time is the arm's, not this stream's.
-    pub(crate) fn held_profiled(
-        rows: Vec<Row>,
-        record: Option<(PlanMetricsSite<'a>, usize)>,
-    ) -> Self {
+    pub(crate) fn held_profiled(rows: Vec<Row>, record: Option<ParkedRecord<'a>>) -> Self {
         let stats = Rc::new(StreamedStats::new(record.is_some()));
         for row in &rows {
             stats.note_row(row);
         }
-        Self {
-            rows: Source::Held(rows.into_iter()),
-            stopped: false,
-            facts: ParkedFacts::new(stats, record),
-        }
+        Self::from_source(
+            Source::Held(rows.into_iter()),
+            ParkedFacts::new(stats, record),
+        )
     }
 
     /// Wrap a sequence produced one row at a time — a breaker emitting
@@ -121,27 +125,26 @@ impl<'a> RowStream<'a> {
     /// never materializes it. The consumer batches it like the held source
     /// (ADR-0660).
     pub(crate) fn emitting(rows: impl Iterator<Item = Result<Row>> + 'a) -> Self {
-        Self {
-            rows: Source::Produced(Box::new(rows)),
-            stopped: false,
-            facts: None,
-        }
+        Self::from_source(Source::Produced(Box::new(rows)), None)
     }
 
     /// Wrap a sequence whose every pull does work that must finish even
     /// when the consumer stops early — the `CALL { … } IN TRANSACTIONS`
-    /// arm, whose pulls run and commit one batch each. A page's `LIMIT`
-    /// stops the statement's rows, never the remaining batches: the
-    /// materializing form ran every batch too, so [`Self::stop`] runs the
-    /// rest and discards their rows.
+    /// arm, whose pulls run and commit one batch each, and the write
+    /// barrier's transformed batches. A page's `LIMIT` stops the
+    /// statement's rows, never the remaining batches: the materializing
+    /// form ran every batch too, so [`Self::stop`] runs the rest and
+    /// discards their rows.
     ///
     /// `record` is the clause's PROFILE position: with one attached, each
     /// pull is timed and each yielded row counted, so the clause reports
     /// the rows it actually produced once its consumer drains or stops the
-    /// stream — never the empty probe of a produced source.
+    /// stream — never the empty probe of a produced source. The `IN
+    /// TRANSACTIONS` arm's batch-facts cell rides inside its record
+    /// (REL8-2047); every other completing form parks a plain record.
     pub(crate) fn emitting_to_completion(
         rows: impl Iterator<Item = Result<Row>> + 'a,
-        record: Option<(PlanMetricsSite<'a>, usize)>,
+        record: Option<ParkedRecord<'a>>,
     ) -> Self {
         let stats = Rc::new(StreamedStats::new(record.is_some()));
         let facts = ParkedFacts::new(Rc::clone(&stats), record);
@@ -149,42 +152,29 @@ impl<'a> RowStream<'a> {
         let counted = std::iter::from_fn(move || {
             iterator_item(stats.counted_step(|| inner.next().transpose()))
         });
-        Self {
-            rows: Source::Completing(Box::new(counted)),
-            stopped: false,
-            facts,
-        }
+        Self::from_source(Source::Completing(Box::new(counted)), facts)
     }
 
     /// Wrap a generator clause's spine as the stream — the parked form,
     /// whose projection consumer may materialize it under the generator's
     /// own charge — carrying its PROFILE position so the clause reports the
     /// rows it generated once the consumer is done.
-    pub(crate) fn profiled(
-        feed: StreamedFeed<'a>,
-        record: Option<(PlanMetricsSite<'a>, usize)>,
-    ) -> Self {
+    pub(crate) fn profiled(feed: StreamedFeed<'a>, record: Option<ParkedRecord<'a>>) -> Self {
         // The stats handle is derived from the feed that owns it, never
         // carried beside it — read before the feed moves into the source.
         let facts = ParkedFacts::new(feed.stats(), record);
-        Self {
-            rows: Source::Generator(feed),
-            stopped: false,
-            facts,
-        }
+        Self::from_source(Source::Generator(feed), facts)
     }
 
     /// Wrap a generated sequence that no consumer materializes — the
     /// expanding form, drained or stopped by the clause that follows —
     /// carrying the generator's PROFILE facts.
-    pub(crate) fn expanding(
-        feed: StreamedFeed<'a>,
-        record: Option<(PlanMetricsSite<'a>, usize)>,
-    ) -> Self {
+    pub(crate) fn expanding(feed: StreamedFeed<'a>, record: Option<ParkedRecord<'a>>) -> Self {
+        // The stats handle is read before the feed moves into the source,
+        // as `profiled` does — the expanding twin states its whole value
+        // in one construction, the unprofiled `emitting` never patched.
         let facts = ParkedFacts::new(feed.stats(), record);
-        let mut stream = Self::emitting(feed);
-        stream.facts = facts;
-        stream
+        Self::from_source(Source::Produced(Box::new(feed)), facts)
     }
 
     /// The next batch, `None` once the stream is spent. An error ends the
@@ -398,7 +388,7 @@ impl<'a> RowStream<'a> {
     pub(crate) fn write_barrier<'b>(
         self,
         mut write: impl FnMut(Vec<Row>) -> Result<Vec<Row>> + 'b,
-        record: Option<(PlanMetricsSite<'a>, usize)>,
+        record: Option<ParkedRecord<'a>>,
     ) -> Result<RowStream<'b>>
     where
         'a: 'b,

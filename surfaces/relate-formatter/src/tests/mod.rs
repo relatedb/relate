@@ -241,16 +241,7 @@ fn profile_fixture() -> PlanFixture {
             memory_bytes: 25,
             expression_built_bytes: 7,
             time_ns: 26_000,
-            reads: Default::default(),
-            phases: Default::default(),
-            start: None,
-            kernel: None,
-            batched: false,
-            zone_skips: 0,
-            frontier: Default::default(),
-            frontier_decline: None,
-            memo: Default::default(),
-            memo_kinds: Default::default(),
+            ..Default::default()
         })),
     )
 }

@@ -22,18 +22,8 @@ fn profiled(
             rows,
             db_hits,
             memory_bytes: 60,
-            expression_built_bytes: 0,
             time_ns: time_us * 1_000,
-            reads: Default::default(),
-            phases: Default::default(),
-            start: None,
-            kernel: None,
-            batched: false,
-            zone_skips: 0,
-            frontier: Default::default(),
-            frontier_decline: None,
-            memo: Default::default(),
-            memo_kinds: Default::default(),
+            ..Default::default()
         },
     ))
 }

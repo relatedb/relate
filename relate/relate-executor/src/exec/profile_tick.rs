@@ -1,5 +1,9 @@
 //! The per-clause PROFILE tick and the streamed-generator facts (`UNWIND`,
 //! `LOAD CSV`) the clause dispatcher (`dispatch.rs`) reports through it.
+//! The parked record every streamed form reports at — with the `CALL { … }
+//! IN TRANSACTIONS` batch-facts cell it can carry (REL8-2047) — lives in
+//! the PROFILE vocabulary module (`crate::metrics`) beside the site and
+//! the record it is built from.
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -12,7 +16,7 @@ use web_time::Instant;
 use relate_core::Result;
 
 use crate::eval::rows_logical_bytes;
-use crate::metrics::PlanMetricsSite;
+use crate::metrics::{ParkedRecord, PlanMetricsSite};
 use crate::overlay::ExecGraph;
 use crate::row::Row;
 
@@ -241,13 +245,13 @@ impl StreamedStats {
 }
 
 /// A streamed generator's PROFILE facts: the statistics its generator
-/// filled and the PROFILE position its facts are reported at. The stream
+/// filled and the PROFILE record its facts are reported at. The stream
 /// owns them; a shared handle keeps them reachable after the stream is
 /// consumed, so the projection can exclude the generator's time from its
 /// own record.
 pub(super) struct ParkedFacts<'a> {
     stats: Rc<StreamedStats>,
-    record: (PlanMetricsSite<'a>, usize),
+    record: ParkedRecord<'a>,
     /// Reported once: the stream reports at drain, stop or error, and the
     /// consumer's close reports again only to read the time it excludes.
     reported: Cell<bool>,
@@ -255,13 +259,13 @@ pub(super) struct ParkedFacts<'a> {
 
 impl<'a> ParkedFacts<'a> {
     /// The facts both parked forms carry — the stats handle the feed owns
-    /// plus the PROFILE position — reported once. `None` for a stream with
-    /// no clause record: the one spelling of "this stream reports nothing",
-    /// so the constructors store the answer directly and `facts.is_some()`
+    /// plus the PROFILE record — reported once. `None` for a stream with
+    /// no record: the one spelling of "this stream reports nothing", so
+    /// the constructors store the answer directly and `facts.is_some()`
     /// states "this stream has a clause record".
     pub(super) fn new(
         stats: Rc<StreamedStats>,
-        record: Option<(PlanMetricsSite<'a>, usize)>,
+        record: Option<ParkedRecord<'a>>,
     ) -> Option<Rc<Self>> {
         record.map(|record| {
             Rc::new(Self {
@@ -277,7 +281,7 @@ impl<'a> ParkedFacts<'a> {
         if self.reported.replace(true) {
             return;
         }
-        record_streamed_clause(Some(self.record), &self.stats);
+        record_streamed_clause(&self.record, &self.stats);
     }
 }
 
@@ -300,14 +304,15 @@ pub(super) fn finish_parked_feed(
 /// it: the rows it generated, one row's size as its in-flight memory (it
 /// yields one row at a time, so its working set is one row, not the
 /// retained total), no expression bytes (no list was built), and the time
-/// its generator ran, which the consumer's own record excludes.
-fn record_streamed_clause(record: Option<(PlanMetricsSite<'_>, usize)>, stats: &StreamedStats) {
-    let Some((site, clause)) = record else {
-        return;
-    };
-    site.sink.record_clause(clause_record(
-        &site,
-        clause,
+/// its generator ran, which the consumer's own record excludes. The
+/// record's cell — the `IN TRANSACTIONS` arm's accumulated batch facts
+/// (REL8-2047), absent on every other streamed clause — stamps onto the
+/// record at this one site.
+fn record_streamed_clause(record: &ParkedRecord<'_>, stats: &StreamedStats) {
+    let site = &record.site;
+    let mut noted = clause_record(
+        site,
+        record.clause,
         // The generator's own facts are its time alone: it reads no store,
         // builds no expression bytes, walks nothing.
         StageDelta {
@@ -318,5 +323,11 @@ fn record_streamed_clause(record: Option<(PlanMetricsSite<'_>, usize)>, stats: &
         stats.row_bytes(),
         None,
         None,
-    ));
+    );
+    // REL8-2047: the batch facts the arm's loop noted land on its own
+    // record — the one clause kind that runs batches, so the stamp has one
+    // site, never a parameter every other record constructor passes as
+    // zero.
+    noted.intx = record.intx_facts();
+    site.sink.record_clause(noted);
 }

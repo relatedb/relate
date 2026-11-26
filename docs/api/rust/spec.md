@@ -1380,7 +1380,7 @@ The plan representation is the `PlanNode` tree:
   type count), `None` where no signal covers the operator; `metrics`
   (`Option<ClauseMetrics { rows, db_hits, memory_bytes, expression_built_bytes,
   time_ns, reads, start, phases, batched, zone_skips, frontier, frontier_decline,
-  memo, memo_kinds }>` — `reads` is the
+  memo, memo_kinds, intx }>` — `reads` is the
   `StoreReads` kind mix behind `db_hits` (hops / neighbor walks / node
   reads), `start` the `Option<WalkStart>` naming the walk's element,
   direction and reason class, both re-exported by this crate (LABS-369,
@@ -1459,7 +1459,26 @@ The plan representation is the `PlanNode` tree:
   `hits/probes` (`*`-suffixed when `disabled_count > 0`) and the wire
   emits `MemoProbes`, `MemoHits`, `MemoInserts`, `MemoRefused`,
   `MemoBytes`, `MemoDisabledCount` together with the metric set only when
-  `probes > 0`, plus the root's `MemoKinds` list of names) is
+  `probes > 0`, plus the root's `MemoKinds` list of names) — and `intx`
+  the `CALL { … } IN TRANSACTIONS` batch facts the `CallSubquery`
+  operator reports (ADR-0681): `batches` (transactions the arm ran),
+  `committed`, `rolled_back` (the per-batch failure the `ON ERROR` policy
+  handled), and the per-batch maxima — `peak_input_rows_bytes` (the
+  largest input batch's retained row bytes), `peak_output_rows_bytes`
+  (the largest installed output's), `peak_scratch_bytes` (the most
+  scratch one batch created — entities, adjacency and property state,
+  the redo log excluded) and `peak_wal_bytes` (the most redo-log bytes
+  one batch carried at its commit — the WAL payload it wrote). All-zero
+  on every other operator and on an arm that ran no batch; the `Details`
+  cell marks the operator `[in-tx batches=N committed=M rolled-back=K]`
+  and `[in-tx-peak …]` and the wire emits `InTxBatches`, `InTxCommitted`,
+  `InTxRolledBack`, `InTxPeakInputRowsBytes`, `InTxPeakOutputRowsBytes`,
+  `InTxPeakScratchBytes`, `InTxPeakWalBytes` together with the metric set
+  only when `batches > 0`. The same operator's plan children are the
+  body's operators (EXPLAIN and PROFILE both): each body clause renders
+  as a child behind the pipeline's data-flow child, carrying no metrics
+  of its own — the body runs inside the operator's batch, so its work is
+  the operator's record. A plain `CALL { … }` keeps the opaque node) is
   `None` on every EXPLAIN node and stamped on every clause-granularity
   node the dispatch loop executed on a PROFILE run (ADR-0344). `kernel`
   (`Option<KernelRung>`, LABS-1117) names the traversal rung that served
@@ -1535,19 +1554,35 @@ The plan representation is the `PlanNode` tree:
   contract. An embedded consumer that wants plan text depends on the
   formatter crate (`relate-formatter` is a surface crate — not available
   to, and not used by, the engine).
-- `PlanNode.fused: Option<FusedChild>` (ADR-0622) — `Some` on a display-only
-  fused virtual child: the seek step or one `Expand` hop step nested under a
-  seek-started `MATCH` that has at least one relationship; `None` on every
-  other node. `FusedChild { parent: usize, metrics: Option<FusedChildMetrics> }`
-  keeps the fused parent's operator id and the step's measured pair together,
-  so a flag without a parent is unrepresentable. `FusedChildMetrics { seek_ns,
-  node_reads }` is the seek step's only measured data on a PROFILE tree; a hop
-  step and every EXPLAIN child has `metrics: None`, and a fused child never
-  carries the parent's `PlanMetrics` (rows, time, db hits, memory). On the wire
-  (`to_value`) the fact is `args.FusedInto` (the parent
-  id) and, on the seek step, `args.SeekTimeNs` + `args.NodeReads`;
-  `relate_model::wire::plan_node_wire` parses them and rejects any
-  half-state. Build one with `PlanNode::with_fused(parent, metrics)`; `PlanNode::executed_children()` yields the children that are not fused — the one skip policy for a walk reading executed operators or metrics.
+- `PlanNode.role: Option<ChildRole>` — the one owner of "this node is not
+  its parent's data-flow child", `None` on every real operator. The two
+  roles are mutually exclusive by construction, so the field is one
+  `Option`:
+  - `ChildRole::Fused(FusedChild)` (ADR-0622) — a display-only fused
+    virtual child: the seek step or one `Expand` hop step nested under a
+    seek-started `MATCH` that has at least one relationship.
+    `FusedChild { parent: usize, metrics: Option<FusedChildMetrics> }`
+    keeps the fused parent's operator id and the step's measured pair
+    together, so a flag without a parent is unrepresentable.
+    `FusedChildMetrics { seek_ns, node_reads }` is the seek step's only
+    measured data on a PROFILE tree; a hop step and every EXPLAIN child has
+    `metrics: None`, and a fused child never carries the parent's
+    `PlanMetrics` (rows, time, db hits, memory). On the wire (`to_value`)
+    the fact is `args.FusedInto` (the parent id) and, on the seek step,
+    `args.SeekTimeNs` + `args.NodeReads`; `relate_model::wire::plan_node_wire`
+    parses them and rejects any half-state. Build one with
+    `PlanNode::with_fused(parent, metrics)`; `PlanNode::fused()` reads it
+    back.
+  - `ChildRole::Body { parent }` (REL8-2047) — the root of a batched
+    `CALL { … } IN TRANSACTIONS` body subtree the `CallSubquery` operator
+    renders as its children, `parent` the operator's id. On the wire
+    (`to_value`) the fact is `args.BodyOf` (the parent id), and the agent
+    plan document carries it as `body_of` (`null` where absent);
+    `PlanNode::body_of()` reads it back.
+  `PlanNode::executed_children()` yields the children whose `role` is
+  `None` — the one skip policy for a walk reading executed operators or
+  metrics, so a fused step or a body operator is never counted or laid out
+  as a child of the statement's own pipeline.
 - `PlanNode::to_neo4j_value(plan_text)` — the Neo4j-facing plan value
   (ADR-0357), called on a result's plan root: the machine-native form
   decorated with the root args Neo4j's plan carries —

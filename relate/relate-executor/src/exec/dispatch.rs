@@ -11,7 +11,7 @@ use relate_planner::LogicalPlan;
 use crate::consumer::StreamSink;
 use crate::ctx::{ExecCtx, QueryCtx};
 use crate::graph::QueryStats;
-use crate::metrics::PlanMetricsSite;
+use crate::metrics::{ParkedRecord, PlanMetricsSite};
 use crate::overlay::ExecGraph;
 use crate::row::Row;
 
@@ -245,6 +245,12 @@ fn run_clauses_mode(
         // its position, so both half-states (a tick with no sink, a sink
         // with no position) are unrepresentable.
         let mut metrics_tick = profile.map(|site| profile_tick(graph, site));
+        // The clause's parked PROFILE record, built once per iteration
+        // beside the tick it shares the site with: the one position value
+        // every parked form below reports through, so "this clause is
+        // PROFILEd" is spelled once per clause — the feed builders'
+        // `profiled` flag and the record derive from the same value.
+        let record = profile.map(|site| ParkedRecord::at(site, i));
         // The two MATCH fast paths (the search MATCH and the folded
         // MATCH) consume more than this clause; `skip` carries how many
         // extra clauses they swallowed past `i` (0 for the ordinary
@@ -288,13 +294,7 @@ fn run_clauses_mode(
                 // in the create arm, beside the hoisting that needs it; the
                 // arm's own stream reports the clause's rows.
                 defer_produced(
-                    create_from_stream(
-                        graph,
-                        stream,
-                        patterns,
-                        params,
-                        profile.map(|site| (site, i)),
-                    )?,
+                    create_from_stream(graph, stream, patterns, params, record)?,
                     &mut metrics_tick,
                 )
             }
@@ -344,8 +344,8 @@ fn run_clauses_mode(
                     field_terminator: field_terminator.as_deref(),
                 };
                 park_and_defer(
-                    load_csv_feed(ctx, stream.drain()?, spec, profile.is_some())?,
-                    profile.map(|site| (site, i)),
+                    load_csv_feed(ctx, stream.drain()?, spec, record.is_some())?,
+                    record,
                     &mut metrics_tick,
                 )
             }
@@ -384,23 +384,16 @@ fn run_clauses_mode(
                     scope,
                 };
                 if let Some(tx) = in_transactions.as_ref() {
-                    let out = exec_call_in_transactions(
-                        graph,
-                        stream,
-                        spec,
-                        tx,
-                        params,
-                        qctx,
-                        profile.map(|site| (site, i)),
-                    )?;
+                    let out =
+                        exec_call_in_transactions(graph, stream, spec, tx, params, qctx, record)?;
                     // The stream reports the call's own PROFILE record
                     // once its consumer drains or stops it, never a zero
                     // probe at this tail.
                     defer_produced(out, &mut metrics_tick)
                 } else if call_product_parks(clauses.get(i + 1), query) {
                     park_and_defer(
-                        call_subquery_feed(ctx, qctx, stream.drain()?, spec, profile.is_some())?,
-                        profile.map(|site| (site, i)),
+                        call_subquery_feed(ctx, qctx, stream.drain()?, spec, record.is_some())?,
+                        record,
                         &mut metrics_tick,
                     )
                 } else {
@@ -432,7 +425,7 @@ fn run_clauses_mode(
                 // unchanged, so the arm never holds the whole input.
                 write_and_defer(
                     stream,
-                    profile.map(|site| (site, i)),
+                    record,
                     |rows| {
                         exec_foreach(graph, &rows, variable, list, clauses, params, qctx)?;
                         Ok(rows)
@@ -480,7 +473,7 @@ fn run_clauses_mode(
                 on_match,
             } => write_and_defer(
                 stream,
-                profile.map(|site| (site, i)),
+                record,
                 |rows| exec_merge(graph, rows, pattern, on_create, on_match, params),
                 &mut metrics_tick,
             )?,
@@ -506,13 +499,13 @@ fn run_clauses_mode(
             }
             Clause::Set { items } => write_and_defer(
                 stream,
-                profile.map(|site| (site, i)),
+                record,
                 |rows| exec_set(graph, rows, items, params),
                 &mut metrics_tick,
             )?,
             Clause::Remove { items } => write_and_defer(
                 stream,
-                profile.map(|site| (site, i)),
+                record,
                 |rows| exec_remove(graph, rows, items, params),
                 &mut metrics_tick,
             )?,
@@ -523,10 +516,10 @@ fn run_clauses_mode(
                     stream.drain()?,
                     expression,
                     alias,
-                    profile.is_some(),
+                    record.is_some(),
                 );
                 if projection_follows(clauses.get(i + 1)) {
-                    park_and_defer(feed, profile.map(|site| (site, i)), &mut metrics_tick)
+                    park_and_defer(feed, record, &mut metrics_tick)
                 } else {
                     // The expanding form: a follower that is not a projection
                     // pulls the generator's rows as it consumes them
@@ -535,10 +528,7 @@ fn run_clauses_mode(
                     // the clause reports the rows it produced when the
                     // follower drains it — the tail must not record its zero
                     // probe in the meantime.
-                    defer_produced(
-                        RowStream::expanding(feed, profile.map(|site| (site, i))),
-                        &mut metrics_tick,
-                    )
+                    defer_produced(RowStream::expanding(feed, record), &mut metrics_tick)
                 }
             }
             Clause::Call {
@@ -569,7 +559,7 @@ fn run_clauses_mode(
                         where_clause: where_clause.as_ref(),
                     },
                     CallPipeline {
-                        profiled: profile.is_some(),
+                        profiled: record.is_some(),
                         parks: projection_follows(clauses.get(i + 1)),
                         terminal: i + 1 == clauses.len(),
                     },
@@ -582,9 +572,7 @@ fn run_clauses_mode(
                         last_result = call_result.or(last_result);
                         RowStream::held(call_rows)
                     }
-                    CallClauseOut::Parked(feed) => {
-                        park_and_defer(feed, profile.map(|site| (site, i)), &mut metrics_tick)
-                    }
+                    CallClauseOut::Parked(feed) => park_and_defer(feed, record, &mut metrics_tick),
                 }
             }
             Clause::With { .. } => {
@@ -828,7 +816,7 @@ fn call_product_parks(next: Option<&Clause>, query: &relate_ir::Query) -> bool {
 /// recording it again).
 fn park_and_defer<'a>(
     feed: StreamedFeed<'a>,
-    record: Option<(PlanMetricsSite<'a>, usize)>,
+    record: Option<ParkedRecord<'a>>,
     metrics_tick: &mut Option<ProfileTick<'a>>,
 ) -> RowStream<'a> {
     defer_produced(RowStream::profiled(feed, record), metrics_tick)
@@ -842,7 +830,7 @@ fn park_and_defer<'a>(
 /// write arms share.
 fn write_and_defer<'a>(
     stream: RowStream<'a>,
-    record: Option<(PlanMetricsSite<'a>, usize)>,
+    record: Option<ParkedRecord<'a>>,
     write: impl FnMut(Vec<Row>) -> Result<Vec<Row>> + 'a,
     metrics_tick: &mut Option<ProfileTick<'a>>,
 ) -> Result<RowStream<'a>> {
