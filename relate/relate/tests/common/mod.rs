@@ -233,30 +233,46 @@ pub fn reopened_with(
     (dir, db.connect().unwrap())
 }
 
-/// The first column of every result row as a `String` — the shape the
-/// title/name/note assertions of the SEARCH and procedure test crates all
-/// spelled inline.
-pub fn first_column_strings(result: &relate::QueryResult) -> Vec<String> {
+/// The first column of every row, decoded by `decode`; a wrong kind panics
+/// with the value. The one body behind the typed extractors below.
+fn first_column_as<T>(
+    result: &relate::QueryResult,
+    what: &str,
+    decode: impl Fn(&relate::Value) -> Option<T>,
+) -> Vec<T> {
     result
         .rows
         .iter()
-        .map(|row| match &row[0] {
-            relate::Value::String(value) => value.to_string(),
-            other => panic!("expected a string column, got {other:?}"),
+        .map(|row| {
+            decode(&row[0]).unwrap_or_else(|| panic!("expected a {what} column, got {:?}", row[0]))
         })
         .collect()
 }
 
+/// The first column of every result row as a `String` — the shape the
+/// title/name/note assertions of the SEARCH and procedure test crates all
+/// spelled inline.
+pub fn first_column_strings(result: &relate::QueryResult) -> Vec<String> {
+    first_column_as(result, "string", |value| match value {
+        relate::Value::String(text) => Some(text.to_string()),
+        _ => None,
+    })
+}
+
 /// The first column of every result row as a `bool`.
 pub fn first_column_bools(result: &relate::QueryResult) -> Vec<bool> {
-    result
-        .rows
-        .iter()
-        .map(|row| match &row[0] {
-            relate::Value::Bool(value) => *value,
-            other => panic!("expected a boolean column, got {other:?}"),
-        })
-        .collect()
+    first_column_as(result, "boolean", |value| match value {
+        relate::Value::Bool(flag) => Some(*flag),
+        _ => None,
+    })
+}
+
+/// The first column of every result row as an `i64`.
+pub fn first_column_ints(result: &relate::QueryResult) -> Vec<i64> {
+    first_column_as(result, "integer", |value| match value {
+        relate::Value::Int(number) => Some(*number),
+        _ => None,
+    })
 }
 
 /// The first column of every result row as a `Value` — the Value twin of
