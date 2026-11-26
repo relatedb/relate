@@ -58,27 +58,17 @@ pub(crate) use membership_index::member_of;
 // The expression walkers live in `relate-ir` next to `Expr::children`
 // so planner and executor share one traversal.
 pub(crate) use relate_ir::{
-    expr_vars, is_agg_expr, key_of, label_expr_vars, orient, var_key_side, var_prop,
+    all_vars_satisfy, expr_vars, is_agg_expr, key_of, label_expr_vars, orient, var_key_side,
+    var_prop,
 };
 
 pub(crate) use expr::{
     binary, binary_pure, cmp_bool, eval_case_with, in_op, in_rhs, ordering_operator, OrderingSide,
 };
 use expr::{eval_case, prop, reject_deleted_access, slice, subscript, unary};
-/// The one names-bound kernel: every variable `expr` reads satisfies
-/// `bound` — the shared core of the read-names policies, spelled once so
-/// a policy cannot drift from its siblings ([`expr_within`]'s
-/// allowed-set form, the seek recognizers' row-membership readiness in
-/// [`bound_ready`], and `exec::pushdown::expr_ready`'s row form).
-pub(crate) fn names_all_bound(expr: &Expr, bound: impl Fn(&str) -> bool) -> bool {
-    let mut used = HashSet::new();
-    expr_vars(expr, &mut used);
-    used.iter().all(|name| bound(name))
-}
-
 /// Whether every variable `expr` reads is in `allowed`.
 pub(crate) fn expr_within(expr: &Expr, allowed: &HashSet<String>) -> bool {
-    names_all_bound(expr, |name| allowed.contains(name))
+    all_vars_satisfy(expr, |name| allowed.contains(name))
 }
 
 /// The one stability fact every evaluate-early policy reads: no
@@ -90,7 +80,7 @@ pub(crate) fn row_stable(expr: &Expr) -> bool {
 
 /// Whether `expr` may evaluate on `row` as a seek recognizer's bound
 /// side: every variable it reads is already bound in `row`
-/// ([`names_all_bound`] against the row), and the expression is
+/// ([`all_vars_satisfy`] against the row), and the expression is
 /// [`row_stable`] — a nondeterministic call differs per row, and a
 /// scope-bearing form such as a subquery reads its own scope. The seek
 /// recognizers evaluate the bound side against the *entry* row, before
@@ -102,7 +92,7 @@ pub(crate) fn row_stable(expr: &Expr) -> bool {
 /// bound declines the seek; the residual re-applies the predicate per
 /// candidate row, which is the same answer, correctly reached.
 pub(crate) fn bound_ready(expr: &Expr, row: &Row) -> bool {
-    names_all_bound(expr, row_bound(row)) && row_stable(expr)
+    all_vars_satisfy(expr, row_bound(row)) && row_stable(expr)
 }
 
 /// The seek recognizers' one bound-side evaluation: [`bound_ready`] first,

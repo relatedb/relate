@@ -123,6 +123,91 @@ pub fn references_any(expr: &Expr, names: &HashSet<String>) -> bool {
     .is_break()
 }
 
+/// Whether every variable `expr` reads satisfies `ok` — [`expr_vars`]'s
+/// read set tested in place through the one walker ([`each_read`]), with no
+/// collected set and no per-name `String`, stopping at the first name that
+/// fails. The readiness predicates run this per candidate, where the
+/// collecting form's allocations dominated.
+pub fn all_vars_satisfy(expr: &Expr, ok: impl Fn(&str) -> bool) -> bool {
+    each_read(expr, &mut Vec::new(), &mut |name| ok(name))
+}
+
+/// The one unbound-read feed: `name` goes to `sink` unless an enclosing
+/// comprehension binds it. Both the bare-variable arm and a map projection's
+/// shorthand items read through it.
+fn feed_read(name: &SmallName, bound: &[SmallName], sink: &mut impl FnMut(&str) -> bool) -> bool {
+    !reads(name, bound) || name.with_str(sink)
+}
+
+/// The one read-set walk [`expr_vars`] and [`all_vars_satisfy`] share: feeds
+/// every name `expr` reads to `sink`, comprehension- and reduce-bound
+/// identifiers excluded, and stops (returning `false`) when the sink
+/// answers `false`. A subquery body or pattern form contributes the
+/// documented over-approximation (every name it mentions), collected once
+/// per such form.
+fn each_read(expr: &Expr, bound: &mut Vec<SmallName>, sink: &mut impl FnMut(&str) -> bool) -> bool {
+    fn feed(names: HashSet<String>, sink: &mut impl FnMut(&str) -> bool) -> bool {
+        names.iter().all(|name| sink(name))
+    }
+    // A subquery body contributes every name it mentions (the
+    // documented over-approximation) instead of the generic child
+    // descent — the one accessor decides which expressions open one.
+    if let Some(query) = expr.subquery_body() {
+        let mut names = HashSet::new();
+        exists_outer_vars(query, &mut names);
+        return feed(names, sink);
+    }
+    // A map projection's shorthand items are reads the children walk cannot
+    // see, tested through the same unbound-read predicate as the
+    // bare-variable arm — a shorthand name an enclosing comprehension binds
+    // is excluded exactly like a bound variable — before its value
+    // expressions descend as children.
+    if let Expr::MapProjection { items, .. } = expr {
+        if !map_projection_shorthand_names(items).all(|name| feed_read(name, bound, sink)) {
+            return false;
+        }
+    }
+    match expr {
+        Expr::Variable(v) => feed_read(v, bound, sink),
+        Expr::PatternPred { path } | Expr::ShortestPath { path, .. } => {
+            let mut names = HashSet::new();
+            path_pattern_mentions(path, &mut names);
+            feed(names, sink)
+        }
+        Expr::PatternComp {
+            path,
+            predicate,
+            projection,
+        } => {
+            let mut names = HashSet::new();
+            path_pattern_mentions(path, &mut names);
+            feed(names, sink)
+                && predicate
+                    .as_ref()
+                    .is_none_or(|predicate| each_read(predicate, bound, sink))
+                && each_read(projection, bound, sink)
+        }
+        other => {
+            let mut going = true;
+            walk_scope_children(other, &mut |child, scope| {
+                if !going {
+                    return;
+                }
+                match scope {
+                    ChildScope::Enclosing => going = each_read(child, bound, sink),
+                    ChildScope::Element(names) => {
+                        let mark = bound.len();
+                        bound.extend(names);
+                        going = each_read(child, bound, sink);
+                        bound.truncate(mark);
+                    }
+                }
+            });
+            going
+        }
+    }
+}
+
 /// Collect the variable names an expression references, comprehension- and
 /// reduce-bound identifiers excluded.
 ///
@@ -137,62 +222,13 @@ pub fn references_any(expr: &Expr, names: &HashSet<String>) -> bool {
 /// here rather than treated as opaque, and a map projection's shorthand
 /// items count as reads).
 pub fn expr_vars(expr: &Expr, out: &mut HashSet<String>) {
-    fn go(expr: &Expr, bound: &mut Vec<SmallName>, out: &mut HashSet<String>) {
-        // A subquery body contributes every name it mentions (the
-        // documented over-approximation) instead of the generic child
-        // descent — the one accessor decides which expressions open one.
-        if let Some(query) = expr.subquery_body() {
-            exists_outer_vars(query, out);
-            return;
-        }
-        match expr {
-            Expr::Variable(v) => {
-                if reads(v, bound) {
-                    // Map-bridge: the String-keyed variable sink stays until
-                    // the typed expr_vars sink (LABS-936) lands; the text
-                    // render happens once per collected name, at this feed.
-                    out.insert(v.to_string());
-                }
-            }
-            Expr::PatternPred { path } | Expr::ShortestPath { path, .. } => {
-                path_pattern_mentions(path, out);
-            }
-            Expr::PatternComp {
-                path,
-                predicate,
-                projection,
-            } => {
-                path_pattern_mentions(path, out);
-                if let Some(predicate) = predicate {
-                    go(predicate, bound, out);
-                }
-                go(projection, bound, out);
-            }
-            // The shorthand items are reads the children walk cannot see,
-            // tested through the same unbound-read predicate as the
-            // bare-variable arm — a shorthand name an enclosing
-            // comprehension binds is excluded exactly like a bound
-            // variable.
-            Expr::MapProjection { items, .. } => {
-                for name in map_projection_shorthand_names(items) {
-                    if reads(name, bound) {
-                        out.insert(name.to_string());
-                    }
-                }
-                expr.each_child(&mut |child| go(child, bound, out));
-            }
-            other => walk_scope_children(other, &mut |child, scope| match scope {
-                ChildScope::Enclosing => go(child, bound, out),
-                ChildScope::Element(names) => {
-                    let mark = bound.len();
-                    bound.extend(names);
-                    go(child, bound, out);
-                    bound.truncate(mark);
-                }
-            }),
-        }
-    }
-    go(expr, &mut Vec::new(), out);
+    // Map-bridge: the String-keyed variable sink stays until the typed
+    // expr_vars sink (LABS-936) lands; the text render happens once per
+    // collected name, at this feed.
+    each_read(expr, &mut Vec::new(), &mut |name| {
+        out.insert(name.to_string());
+        true
+    });
 }
 
 /// Collect the variable names an expression reads from the **current row**
