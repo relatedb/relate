@@ -611,6 +611,12 @@ pub fn string(value: &str) -> relate::Value {
     relate::Value::String(value.into())
 }
 
+/// Builds an integer value for row assertions — the one canonical spelling;
+/// the per-crate `int` copies it replaced are gone.
+pub fn int(value: i64) -> relate::Value {
+    relate::Value::Int(value)
+}
+
 /// A `Value::List` of `Value::String` — the one canonical spelling of a
 /// list-of-strings expectation (the hoisted twin of `uuid_label_predicates`'
 /// `labels` and `schema_procedures`' `strings`; F-1-53).

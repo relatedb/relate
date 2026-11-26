@@ -1,5 +1,6 @@
 //! Graph builders: the hub-and-fan, range-start, layered and star
-//! fixtures, the `build` pair, and the name-keyed `Builder`.
+//! fixtures, the `build` pair, the person fixture, and the name-keyed
+//! `Builder`.
 use std::collections::BTreeMap;
 
 use relate_core::{NodeId, RelId, Value};
@@ -234,4 +235,18 @@ pub(crate) fn named_a_to_b_pairs(pairs: usize) -> Graph {
         builder.edge(a, b);
     }
     builder.done()
+}
+
+/// One `:Person` with `firstName`/`lastName`/`ID` — the person fixture the
+/// path-fold suites share.
+pub(crate) fn person_named(g: &Graph, id: i64, first: &str, last: &str) -> NodeId {
+    g.create_node(
+        vec!["Person".into()],
+        BTreeMap::from([
+            ("firstName".into(), Value::String(first.into())),
+            ("lastName".into(), Value::String(last.into())),
+            ("ID".into(), Value::Int(id)),
+        ]),
+    )
+    .unwrap()
 }

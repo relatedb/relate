@@ -17,11 +17,7 @@ use crate::common;
 
 use relate::Value;
 
-use common::{connection, err_text, list, refused_literal, run};
-
-fn int(value: i64) -> Value {
-    Value::Int(value)
-}
+use common::{connection, err_text, int, list, refused_literal, run};
 
 fn seed() -> relate::Connection {
     let mut c = connection();

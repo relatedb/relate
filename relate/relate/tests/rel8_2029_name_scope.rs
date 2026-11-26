@@ -15,12 +15,8 @@
 
 mod common;
 
-use common::{connection, first_column, for_each_engine, rows, run, scalar_one};
+use common::{connection, first_column, for_each_engine, int, rows, run, scalar_one};
 use relate::Value;
-
-fn int(value: i64) -> Value {
-    Value::Int(value)
-}
 
 /// Issue 34's graph: `(:A {id: 1})-[:R]->(:M {id: 2})-[:R]->(:B {id: 3})`.
 fn chain(conn: &mut relate::Connection) {

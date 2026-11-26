@@ -22,7 +22,7 @@ use relate_ir::{NodePattern, PathPattern};
 use crate::overlay::ExecGraph;
 use crate::row::{Row, RowRung};
 
-use super::{bind_trail, binding, pattern_node_ok, rel_edge_ok, Binding};
+use super::{bind_trail, binding, pattern_node_ok, rel_edge_ok, rel_variable_row_bound, Binding};
 
 /// LABS-193/LABS-249: existence probe for a pattern predicate (or an
 /// EXISTS { MATCH } body) with at least one row-bound endpoint: anchors
@@ -120,10 +120,8 @@ fn probe_plan(graph: &ExecGraph<'_>, row: &Row, path: &PathPattern) -> ProbePlan
     // bind_trail before the destination's node checks run — a binding
     // the walked trail must equal, not a fresh slot — so the probe
     // cannot skip it; walk it.
-    if let Some(v) = &rp.variable {
-        if row.get_name(v).is_some() {
-            return ProbePlan::Ineligible;
-        }
+    if rel_variable_row_bound(rp, row) {
+        return ProbePlan::Ineligible;
     }
     let e0 = binding(&path.nodes[0], row);
     let e1 = binding(&path.nodes[1], row);

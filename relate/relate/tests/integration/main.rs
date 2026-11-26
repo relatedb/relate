@@ -113,6 +113,7 @@ mod publish_race;
 mod read_only;
 mod recovery_fails_closed;
 mod rel8_2030_value_ordering;
+mod rel8_2076_row_bound_rel_fold;
 mod return_item_column_names;
 mod return_sharing;
 mod round_precision;

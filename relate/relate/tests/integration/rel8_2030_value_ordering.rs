@@ -10,12 +10,8 @@
 
 use crate::common;
 
-use common::{connection, first_column, first_column_strings, list, map, row, rows, run};
+use common::{connection, first_column, first_column_strings, int, list, map, row, rows, run};
 use relate::Value;
-
-fn int(value: i64) -> Value {
-    Value::Int(value)
-}
 
 fn float(value: f64) -> Value {
     Value::Float(value)
