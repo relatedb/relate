@@ -640,6 +640,11 @@ impl Connection {
             // the run's own result pairs with `admitted: true`.
             self.query_read(&ctx, logical, params, cypher, token, stream)
         };
+        // The statement-completion seam (ADR-0696 §3) runs once the outcome
+        // below is built, so the maintenance never lands in the statement's
+        // EXECUTE window: a failed or cancelled statement serves nothing.
+        let serve_key_statistics =
+            matches!(&arm, ArmRun::Admitted(Ok(_)) | ArmRun::NotAdmitted(Ok(_)));
         let (result, admitted) = match arm {
             ArmRun::Refused(e) => return QueryOutcome::not_admitted(Err(e)),
             ArmRun::Admitted(result) => (result, true),
@@ -699,6 +704,12 @@ impl Connection {
             // always stages its failure with its columns.
             Err(error) => Executed::staging_failure(logical, ctx.stamp, stamp_tail, error),
         });
+        // Every arm has returned, so the statement's own pin and guards are
+        // released (an explicit transaction's pin stays with the
+        // transaction), and its phase stamps are already closed.
+        if serve_key_statistics {
+            self.serve_key_statistics(token);
+        }
         QueryOutcome { result, admitted }
     }
 

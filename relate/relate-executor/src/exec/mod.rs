@@ -849,6 +849,8 @@ mod foreach;
 mod foreach_tests;
 pub mod graph_stats;
 #[cfg(test)]
+mod graph_stats_key_tests;
+#[cfg(test)]
 mod graph_stats_tests;
 #[cfg(test)]
 mod id_seek_tests;

@@ -177,6 +177,28 @@ impl PatternStats for GraphPatternStats<'_> {
         relate_executor::GraphStats::new(self.graph, self.params).degree_moments(labels, rel_types)
     }
 
+    /// The per-key value statistics ride the same delegation: without this
+    /// forward the plan path answered the trait's default `None` and no
+    /// live plan could read a measured key (the `range_rows` precedent).
+    fn key_stats(
+        &self,
+        label: &NamedToken,
+        property: &NamedToken,
+    ) -> Option<std::sync::Arc<relate_planner::KeyStats>> {
+        relate_executor::GraphStats::new(self.graph, self.params).key_stats(label, property)
+    }
+
+    /// The unindexed-equality estimate rides the same delegation.
+    fn equality_estimate(
+        &self,
+        label: &NamedToken,
+        property: &NamedToken,
+        value: &Expr,
+    ) -> Option<relate_planner::RowEstimate> {
+        relate_executor::GraphStats::new(self.graph, self.params)
+            .equality_estimate(label, property, value)
+    }
+
     /// The in-degree sum rides the same delegation.
     fn in_degree_sum(&self, labels: &[NamedToken], rel_types: &[NamedToken]) -> Option<u128> {
         relate_executor::GraphStats::new(self.graph, self.params).in_degree_sum(labels, rel_types)
@@ -205,6 +227,57 @@ mod tests {
             Some(Value::String(Arc::from("Toronto")))
         );
         assert_eq!(Expr::Parameter("missing".into()).seek_value(&params), None);
+    }
+
+    /// The plan-time adapter forwards the per-key statistics: the first
+    /// consult of an unbuilt label is `None` and requests the build, the
+    /// engine's maintenance entry serves it, and the next consult measures
+    /// the key (the forward being what makes a live plan see it at all; the
+    /// statement-completion seam that calls the entry is tested in
+    /// `connection/stats_pump.rs`).
+    #[test]
+    fn key_statistics_reach_the_plan_time_adapter_after_the_build_is_served() {
+        use relate_names::SmallName;
+        use relate_planner::PatternStats;
+
+        let graph = relate_executor::Graph::default();
+        graph.begin_write().unwrap();
+        for i in 0..60 {
+            let country = Value::String(Arc::from(format!("C{}", i % 6)));
+            graph
+                .create_node(
+                    vec!["City".into()],
+                    BTreeMap::from([("country".to_string(), country)]),
+                )
+                .unwrap();
+        }
+        graph.commit_write();
+        let params = BTreeMap::new();
+        let stats = super::GraphPatternStats::new(&graph, &params);
+        let named = |name: &str| relate_names::unresolved(SmallName::from_name(name));
+        let (city, country) = (named("City"), named("country"));
+        let value = Expr::String("C1".into());
+        assert!(stats.key_stats(&city, &country).is_none(), "unbuilt");
+        assert!(stats.equality_estimate(&city, &country, &value).is_none());
+
+        assert_eq!(graph.build_pending_key_stats(usize::MAX, || true), 1);
+
+        let built = stats.key_stats(&city, &country).expect("built");
+        assert_eq!(built.count, 60);
+        assert!(
+            (5..=7).contains(&built.distinct),
+            "6 values: {}",
+            built.distinct
+        );
+        let estimate = stats
+            .equality_estimate(&city, &country, &value)
+            .expect("measured");
+        assert_eq!(estimate.provenance, relate_planner::Provenance::Sketched);
+        assert!(
+            (8..=12).contains(&estimate.rows),
+            "10 rows each: {}",
+            estimate.rows
+        );
     }
 
     /// The plan-time adapter forwards the in-degree sum to the executor's

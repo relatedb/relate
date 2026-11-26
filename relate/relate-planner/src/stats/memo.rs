@@ -1,10 +1,11 @@
 //! ADR-0508's per-statement memo over the planner's value-keyed stats
 //! consults: one [`PatternStats`] wrapper, built once by
 //! [`crate::plan_with_stats`] for a whole plan call and dropped at plan
-//! return, that answers the three value-keyed consults
+//! return, that answers the value-keyed consults
 //! ([`PatternStats::equality_rows`], [`PatternStats::range_rows`],
-//! [`PatternStats::contains_rows`]) from a table of the consults already
-//! made and forwards every other method unmemoized — the counter reads
+//! [`PatternStats::contains_rows`], [`PatternStats::equality_estimate`])
+//! and the per-key figures ([`PatternStats::key_stats`]) from a table of
+//! the consults already made and forwards every other method unmemoized — the counter reads
 //! (`label_rows`, `rel_type_rows`, `degree_tail`) are O(1) keyed by
 //! interned names, where a memo lookup would cost about as much as the
 //! answer, so the split is stated once, here, and nowhere else.
@@ -29,6 +30,7 @@ use relate_names::{NamedToken, SmallName};
 use super::ContainsCount;
 use super::DegreeMoments;
 use super::PatternStats;
+use super::{KeyStats, RowEstimate};
 
 /// The borrowed classification of a consult operand into its memo identity
 /// (ADR-0508 §1): a parameter, keyed by its parameter name (a sound key
@@ -169,6 +171,11 @@ struct Consults {
     equality: Vec<(PairQuestion, u64)>,
     range: Vec<(RangeQuestion, u64)>,
     contains: Vec<(PairQuestion, ContainsCount)>,
+    estimate: Vec<(PairQuestion, RowEstimate)>,
+    /// The `(label, property)` key figures. The question has no operand,
+    /// so it cannot ride [`StatsMemo::pair_consult`]; the answer is an
+    /// `Arc`, so a repeat clones a pointer, not the heavy values.
+    keys: Vec<((SmallName, SmallName), Arc<KeyStats>)>,
 }
 
 /// ADR-0508's per-statement memo: see the [module](self) docs.
@@ -324,6 +331,37 @@ impl PatternStats for StatsMemo<'_> {
 
     fn rel_type_rows(&self, rel_type: &NamedToken) -> Option<u64> {
         self.inner.rel_type_rows(rel_type)
+    }
+
+    fn key_stats(&self, label: &NamedToken, property: &NamedToken) -> Option<Arc<KeyStats>> {
+        let mut consults = self.consults.borrow_mut();
+        if let Some((_, answer)) = consults
+            .keys
+            .iter()
+            .find(|((l, p), _)| *l == label.0 && *p == property.0)
+        {
+            return Some(Arc::clone(answer));
+        }
+        let answer = self.inner.key_stats(label, property)?;
+        consults
+            .keys
+            .push(((label.0.clone(), property.0.clone()), Arc::clone(&answer)));
+        Some(answer)
+    }
+
+    fn equality_estimate(
+        &self,
+        label: &NamedToken,
+        property: &NamedToken,
+        value: &Expr,
+    ) -> Option<RowEstimate> {
+        self.pair_consult(
+            &mut self.consults.borrow_mut().estimate,
+            &label.0,
+            &property.0,
+            value,
+            || self.inner.equality_estimate(label, property, value),
+        )
     }
 
     fn degree_tail(&self, label: &NamedToken, rel_type: &NamedToken) -> Option<u64> {
