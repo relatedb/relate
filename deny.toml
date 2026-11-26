@@ -1,10 +1,12 @@
 # cargo-deny policy — one file, two gates:
 #
-# - The scheduled RustSec advisory scan
-#   (.github/workflows/cargo-deny.yml). Only `cargo deny check advisories`
-#   runs there, on a weekly cadence against the repo-root Cargo.lock and
+# - The nightly RustSec advisory scan
+#   (.github/workflows/dependency-advisories.yml, ADR-0702). Only
+#   `cargo deny check advisories` runs there, against the repo-root
+#   Cargo.lock and the fuzz crate's lock (surfaces/relate-ffi/fuzz) and
 #   the RustSec advisory database cargo-deny fetches at run time — the
-#   [advisories] section below, not a pull-request gate.
+#   [advisories] section below, not a pull-request gate. Every other
+#   ecosystem's advisories are triaged in osv-scanner.toml.
 # - The license policy for everything that ships in a Relate binary
 #   release (scripts/third-party-licenses.py; the release workflow's
 #   `licenses` job). The [licenses] allow-list is the Apache-2.0-compatible
@@ -30,6 +32,8 @@ ignore = [
     { id = "RUSTSEC-2026-0195", reason = "same pprof and inferno tooling chain as RUSTSEC-2026-0194, reading local profile data only; no untrusted XML reaches the parser" }, # expiry: 2027-05-14
     { id = "RUSTSEC-2025-0134", reason = "relate-bolt loads PEM key material through rustls-pemfile 2; the crate is unmaintained and its replacement (rustls-pki-types' PEM API) is a relate-bolt change beyond this scan — re-triage at expiry" }, # expiry: 2027-05-14
     { id = "RUSTSEC-2026-0435", reason = "thrift 0.17 is parquet's metadata codec; relate reads only engine-written checkpoints from its own store directory, so the hostile-peer wire path the advisory describes is unreachable; the fix needs parquet on thrift 0.23" }, # expiry: 2027-05-14
+    { id = "RUSTSEC-2026-0543", reason = "chrono is flagged unmaintained, not vulnerable, and no release fixes that; it carries the engine's temporal values and arrow and parquet depend on it too, so leaving it is an engine-wide temporal-type migration (jiff or time) of its own" }, # expiry: 2027-05-26
+    { id = "RUSTSEC-2026-0555", reason = "chrono-tz is flagged unmaintained with chrono and has no fixed release; relate-core resolves named time zones through it, and replacing it rides the same temporal-type migration as RUSTSEC-2026-0543" }, # expiry: 2027-05-26
 ]
 
 [bans]
@@ -42,7 +46,7 @@ ignore = [
 # there are none today.
 #
 # No [graph] exclude-dev here: a config-file exclusion applies to every
-# cargo-deny invocation — including the weekly advisories scan, which
+# cargo-deny invocation — including the nightly advisories scan, which
 # must see the full lock (CI toolchain dev-dependencies are exactly the
 # build-pipeline supply-chain surface the scan exists to cover). The
 # licenses gate scopes the exclusion to itself with the root-level

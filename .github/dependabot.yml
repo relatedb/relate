@@ -1,23 +1,43 @@
 # Dependabot keeps every dependency ecosystem the repo ships fresh: the
-# Cargo workspace and the Actions workflows at the top level, plus the
-# JavaScript, Python, Java and Go client surfaces. Each directory is the
-# manifest root named for its ecosystem; CI-only installs that have no
-# manifest to read (the spec harness's ad-hoc pip installs of behave and
-# maturin, ci.yml's pytest/maturin, the pinned neo4j driver in
-# release.yml and background-cadences.yml) are not inventable here and
-# stay out.
+# Cargo workspace, the Actions workflows and the server image's
+# digest-pinned base images at the top level, plus the JavaScript, Python,
+# Java, Go and .NET client surfaces, the fuzz crate's own Cargo lock and
+# the Bolt websocket example. Each directory is the manifest root named
+# for its ecosystem; CI-only installs that have no manifest to read (the
+# spec harness's ad-hoc pip installs of behave and maturin, ci.yml's
+# pytest/maturin, the pinned neo4j driver in release.yml and
+# background-cadences.yml) are not inventable here and stay out. The
+# nightly advisory scan (dependency-advisories.yml, ADR-0702) covers the
+# same manifests.
 version: 2
 updates:
   - package-ecosystem: cargo
     directory: "/"
     schedule:
       interval: weekly
+  - package-ecosystem: cargo
+    directory: "/surfaces/relate-ffi/fuzz"
+    schedule:
+      interval: weekly
   - package-ecosystem: github-actions
     directory: "/"
     schedule:
       interval: weekly
+  - package-ecosystem: docker
+    directory: "/"
+    schedule:
+      interval: weekly
+    ignore:
+      # The rust image's tag moves with rust-toolchain.toml, never alone;
+      # digest refreshes for the pinned tag still arrive.
+      - dependency-name: "rust"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
   - package-ecosystem: npm
     directory: "/clients/javascript"
+    schedule:
+      interval: weekly
+  - package-ecosystem: npm
+    directory: "/docs/api/bolt/examples/websocket"
     schedule:
       interval: weekly
   - package-ecosystem: pip
@@ -30,5 +50,9 @@ updates:
       interval: weekly
   - package-ecosystem: gomod
     directory: "/clients/go"
+    schedule:
+      interval: weekly
+  - package-ecosystem: nuget
+    directory: "/clients/dotnet"
     schedule:
       interval: weekly

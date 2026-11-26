@@ -1,0 +1,64 @@
+# osv-scanner policy for the nightly dependency advisory scan
+# (.github/workflows/dependency-advisories.yml, ADR-0702).
+#
+# The scan passes this file with --config, so it applies to every lock
+# file and manifest in the checkout and no per-directory
+# osv-scanner.toml can override it.
+#
+# Every advisory the scan reports is either fixed in the manifest or
+# listed below with a reason and an effectiveUntil date. Past that date
+# the ignore stops applying and the scan goes red again: a re-triage
+# prompt, not a standing accept. Re-triage means upgrading the
+# dependency, or writing a fresh reason with a new date.
+
+# Rust belongs to cargo-deny (deny.toml): it evaluates the resolved crate
+# graph rather than every lock entry, and keeps Rust triage in one file.
+[[PackageOverrides]]
+ecosystem = "crates.io"
+ignore = true
+reason = "Rust crates are scanned and triaged by cargo-deny against deny.toml"
+
+# The Bolt Java driver smoke (surfaces/relate-bolt/tests/java_driver_smoke)
+# pins neo4j-java-driver 5.28.5 as the interop baseline the Jepsen client
+# and the Bolt compatibility docs share; its Netty arrives transitively.
+# The smoke is a CI-only client speaking plain bolt:// to a relate server
+# it starts on loopback, and never ships. Moving the pin clears these.
+[[IgnoredVulns]]
+id = "GHSA-3p8m-j85q-pgmj"
+effectiveUntil = 2027-02-26
+reason = "Netty compression decoders: Bolt uses none, and the only peer is a loopback relate server in a CI-only smoke"
+
+[[IgnoredVulns]]
+id = "GHSA-558v-64gr-wgg4"
+effectiveUntil = 2027-02-26
+reason = "Netty Bzip2Decoder: Bolt uses no compression codec, and the only peer is a loopback relate server in a CI-only smoke"
+
+[[IgnoredVulns]]
+id = "GHSA-mj4r-2hfc-f8p6"
+effectiveUntil = 2027-02-26
+reason = "Netty Lz4FrameDecoder: Bolt uses no compression codec, and the only peer is a loopback relate server in a CI-only smoke"
+
+[[IgnoredVulns]]
+id = "GHSA-3qp7-7mw8-wx86"
+effectiveUntil = 2027-02-26
+reason = "Netty IpSubnetFilter is a server-side handler; the CI-only smoke runs the driver as a client"
+
+[[IgnoredVulns]]
+id = "GHSA-c4c3-7fpv-j4q5"
+effectiveUntil = 2027-02-26
+reason = "Netty SniHandler routing is server-side; the CI-only smoke runs the driver as a client"
+
+[[IgnoredVulns]]
+id = "GHSA-c653-97m9-rcg9"
+effectiveUntil = 2027-02-26
+reason = "TLS hostname verification: the CI-only smoke connects over plain bolt:// to a loopback relate server, no TLS"
+
+[[IgnoredVulns]]
+id = "GHSA-fccg-mwvh-qqg4"
+effectiveUntil = 2027-02-26
+reason = "Netty SNI ClientHello parsing is server-side; the CI-only smoke runs the driver as a client"
+
+[[IgnoredVulns]]
+id = "GHSA-x4gw-5cx5-pgmh"
+effectiveUntil = 2027-02-26
+reason = "Netty SniHandler allocation is server-side; the CI-only smoke runs the driver as a client"

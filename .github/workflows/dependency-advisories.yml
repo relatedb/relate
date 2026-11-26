@@ -1,0 +1,196 @@
+name: dependency advisories
+
+# Nightly dependency advisory scan (ADR-0702, supply-chain hardening).
+#
+# Advisory databases move independently of this repository — a new
+# advisory can name a version a lock has carried for months — so the scan
+# runs nightly against whatever is on main, rather than per PR (where it
+# would re-check the same locks and miss advisories published while no PR
+# is open).
+#
+# Two scanners, one triage home per finding:
+# - rust: cargo-deny against the RustSec database, over both Cargo locks
+#   (the workspace, and surfaces/relate-ffi/fuzz — its own workspace with
+#   its own lock). Triage lives in deny.toml.
+# - osv: osv-scanner over every other lock file and manifest in the
+#   checkout (npm, NuGet, Go, and Maven resolved transitively), plus
+#   relate-python's optional extras pinned at scan time by
+#   scripts/resolve-python-extras.py. Crates are excluded there. Triage
+#   lives in osv-scanner.toml.
+#
+# Any advisory that is not ignored fails the run. A failed scheduled run
+# opens one tracking issue, or comments on it while it stays open (the
+# report job — the spec gate watchdog's one-open-issue rule, ADR-0661 §6).
+
+on:
+  schedule:
+    # 05:00 UTC daily.
+    - cron: "0 5 * * *"
+  # The scheduled trigger only fires on the default branch; a manual run
+  # lets a feature branch exercise the scan before merge. A manual run
+  # never files the issue.
+  workflow_dispatch:
+
+# Read-only: the scans install pinned scanners and report findings. Only
+# the report job widens its token, to issues: write.
+permissions:
+  contents: read
+
+env:
+  # The scanner release assets come through scripts/github-download.sh,
+  # which requires a token in Actions so the download is not anonymous.
+  # The job token is not in the environment unless named here.
+  GITHUB_TOKEN: ${{ github.token }}
+
+jobs:
+  rust:
+    name: cargo deny advisories (${{ matrix.lock }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        # The directory of each Cargo lock.
+        lock: [".", "surfaces/relate-ffi/fuzz"]
+    steps:
+      - name: Patch CVE-2026-111943 (eMudhra CA compromise)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --only-upgrade -y ca-certificates
+          sudo update-ca-certificates --fresh
+          # Post-condition (remediation assurance): the compromised root
+          # must be absent from the rebuilt store -- an on-path attacker
+          # replaying validly-signed metadata could otherwise make the
+          # upgrade a silent no-op behind a green check. A fixed runner
+          # image satisfies this too, so it never false-fails the lane.
+          if find /usr/share/ca-certificates /etc/ssl/certs -iname '*emudhra*' -print -quit | grep -q .; then
+            echo "::error::eMudhra root still trusted after CA rebuild (CVE-2026-111943)"
+            exit 1
+          fi
+          dpkg-query -W -f='ca-certificates ${Version}' ca-certificates
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # cargo-deny shells out to `cargo metadata` only — no build — so
+      # the runner image's preinstalled cargo is enough; no toolchain
+      # step, no cache.
+      - name: Install the pinned cargo-deny
+        run: bash scripts/install-cargo-deny.sh
+
+      # --config names the one policy file for both locks; the fuzz leg's
+      # advisory-not-detected warnings for root-only ignores are expected.
+      - name: Scan the lock against the RustSec advisory database
+        env:
+          LOCK_DIR: ${{ matrix.lock }}
+        run: cargo deny --manifest-path "$LOCK_DIR/Cargo.toml" --config deny.toml check advisories
+
+  osv:
+    name: osv-scanner (npm, NuGet, Go, Maven, Python extras)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Patch CVE-2026-111943 (eMudhra CA compromise)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --only-upgrade -y ca-certificates
+          sudo update-ca-certificates --fresh
+          # Post-condition (remediation assurance): the compromised root
+          # must be absent from the rebuilt store -- an on-path attacker
+          # replaying validly-signed metadata could otherwise make the
+          # upgrade a silent no-op behind a green check. A fixed runner
+          # image satisfies this too, so it never false-fails the lane.
+          if find /usr/share/ca-certificates /etc/ssl/certs -iname '*emudhra*' -print -quit | grep -q .; then
+            echo "::error::eMudhra root still trusted after CA rebuild (CVE-2026-111943)"
+            exit 1
+          fi
+          dpkg-query -W -f='ca-certificates ${Version}' ca-certificates
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # The extras resolve for this interpreter (the version the other
+      # workflows' Python steps use).
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+
+      - name: Install the pinned osv-scanner
+        run: bash scripts/install-osv-scanner.sh "$RUNNER_TEMP/osv-scanner" >> "$GITHUB_PATH"
+
+      - name: Pin relate-python's optional extras
+        run: python scripts/resolve-python-extras.py "$RUNNER_TEMP/relate-python-extras.txt"
+
+      # Exit status 1 is "advisories found"; any other non-zero status is
+      # a scanner failure. Either fails the job after the summary prints.
+      - name: Scan every lock file and manifest
+        run: |
+          rc=0
+          osv-scanner scan source --recursive --config osv-scanner.toml \
+            --lockfile "requirements.txt:$RUNNER_TEMP/relate-python-extras.txt" \
+            --format json --output-file "$RUNNER_TEMP/osv-report.json" . || rc=$?
+          if [ -s "$RUNNER_TEMP/osv-report.json" ]; then
+            jq -r '.results[]? | .source.path as $src | .packages[]? | .package as $pkg | .groups[]?
+              | "::error title=\($pkg.ecosystem) \($pkg.name) \($pkg.version)::\(.ids | join(", ")) in \($src)"' \
+              "$RUNNER_TEMP/osv-report.json"
+          fi
+          exit "$rc"
+
+      - name: Upload the osv-scanner report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: osv-report
+          path: ${{ runner.temp }}/osv-report.json
+          if-no-files-found: ignore
+
+  report:
+    name: file the advisory alarm
+    needs: [rust, osv]
+    if: failure() && github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    steps:
+      - name: Patch CVE-2026-111943 (eMudhra CA compromise)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --only-upgrade -y ca-certificates
+          sudo update-ca-certificates --fresh
+          # Post-condition (remediation assurance): the compromised root
+          # must be absent from the rebuilt store -- an on-path attacker
+          # replaying validly-signed metadata could otherwise make the
+          # upgrade a silent no-op behind a green check. A fixed runner
+          # image satisfies this too, so it never false-fails the lane.
+          if find /usr/share/ca-certificates /etc/ssl/certs -iname '*emudhra*' -print -quit | grep -q .; then
+            echo "::error::eMudhra root still trusted after CA rebuild (CVE-2026-111943)"
+            exit 1
+          fi
+          dpkg-query -W -f='ca-certificates ${Version}' ca-certificates
+
+      # One alarm issue at a time (ADR-0661 §6): the first failure opens
+      # it, a failure while it is open lands as a comment, and the next
+      # failure after it is closed opens a fresh one.
+      - name: Open or comment on the tracking issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          RUST_RESULT: ${{ needs.rust.result }}
+          OSV_RESULT: ${{ needs.osv.result }}
+        run: |
+          title="Nightly dependency scan: unresolved advisories"
+          body="The nightly dependency advisory scan (ADR-0702) failed on main at $GITHUB_SHA.
+
+          - cargo-deny (Rust): $RUST_RESULT
+          - osv-scanner (npm, NuGet, Go, Maven, Python extras): $OSV_RESULT
+          - Run: $RUN_URL
+
+          Fix each finding, or ignore it with a reason and an expiry date in \`deny.toml\` (Rust) or \`osv-scanner.toml\` (everything else). An expired ignore lands here too."
+          open_issue=$(gh issue list --state open --search "\"$title\" in:title" --limit 20 --json number,title \
+            --jq "[.[] | select(.title == \"$title\") | .number][0] // empty")
+          if [ -n "$open_issue" ]; then
+            gh issue comment "$open_issue" --body "$body"
+          else
+            gh issue create --title "$title" --body "$body"
+          fi

@@ -137,8 +137,8 @@ run against the feature branch can exercise them early; see
 
 | Group | Workflows (schedule, first live run post-merge) |
 | --- | --- |
-| Nightly | `proptest-nightly.yml` (03:00 UTC), `graph-examples-nightly.yml` (03:17 UTC), `background-cadences.yml` nightly legs (03:30 UTC), `jepsen.yml` (04:50 UTC) |
-| Cadence | `stellar-nightshift.yml` (hourly, 01:00–06:00 UTC), `background-cadences.yml` 6-hourly legs (:17), `cargo-deny.yml` (Mondays 06:00 UTC — new in the branch, its first live run ever) |
+| Nightly | `proptest-nightly.yml` (03:00 UTC), `graph-examples-nightly.yml` (03:17 UTC), `background-cadences.yml` nightly legs (03:30 UTC), `jepsen.yml` (04:50 UTC), `dependency-advisories.yml` (05:00 UTC; its `report` job pins `issues: write`) |
+| Cadence | `stellar-nightshift.yml` (hourly, 01:00–06:00 UTC), `background-cadences.yml` 6-hourly legs (:17) |
 | Release chain | `release.yml` (next dispatch; chains `release-notes.yml`, and optionally `publish-registries.yml`, whose default path is a direct dispatch against the tag), `release-extensions.yml` (next package release; chains `publish-extensions-json.yml`), `publish-releases-json.yml` |
 
 What a first-run failure means:

@@ -31,6 +31,7 @@ merge.
 | Multi-OS sweep | `os-smoke` (macOS), `os-filesystem` + `os-surface` (Windows): the OS-dependent delta — storage filesystem depth + one-query surface smokes | `os-sweep` (macOS + Windows): storage depth plus the **complete** surface harness suites (MCP stdio, Bolt, HTTP, CLI e2e bundles) | 6-hourly (:17) |
 | Proptest elevated counts | `test` job: storage property suites at the default 256 cases | `proptest-nightly.yml`: 10000 in-memory / 1024 recovery cases (ADR-0268) | nightly 03:00 UTC |
 | Graph examples | (docs lanes) | `graph-examples-nightly.yml` | nightly |
+| Dependency advisories (ADR-0702) | — (advisory databases move independently of the tree; a PR scan would re-check the same locks) | `dependency-advisories.yml`: cargo-deny over both Cargo locks, osv-scanner over every other lock file and manifest; files, or comments on, one issue | nightly 05:00 UTC |
 
 Runner choice: `os-sweep` runs on the free-tier `macos-latest` /
 `windows-latest` runners, not the `windows-16-core` runners the continuous

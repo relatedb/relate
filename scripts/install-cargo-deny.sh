@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Install the pinned cargo-deny release into the cargo bin directory.
 #
-# The scheduled advisory scan (.github/workflows/cargo-deny.yml) runs
-# `cargo deny check advisories` against the repo-root Cargo.lock. The
+# The nightly advisory scan (.github/workflows/dependency-advisories.yml)
+# runs `cargo deny check advisories` against both Cargo locks. The
 # tarball comes from the EmbarkStudios release assets through
 # scripts/github-download.sh (never an anonymous releases/download GET
 # while a token is present), and each target's digest is pinned below:
