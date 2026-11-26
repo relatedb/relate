@@ -264,22 +264,23 @@ fn wait_for_addr(
 mod tests {
     use super::*;
 
-    /// A live session against a fresh store's serve child under `limit`, or
-    /// `None` (with the skip printed) when no `relate` binary is configured.
+    /// The serve child and its store directory, held for the test's lifetime
+    /// and never read.
     ///
-    /// The store directory must outlive the server, so the fixture owns the
+    /// The store directory must outlive the server, so the guard owns the
     /// ordering instead of leaving it to a tuple's or a pattern's order: the
     /// fields drop in declaration order, and `_server` is declared before
     /// `_dir` so the child is killed and reaped while its store directory is
-    /// still there. Both are held for their lifetimes and never read — that is
-    /// the whole fixture.
+    /// still there.
     struct LiveServe {
         _server: ServeChild,
-        session: relate_test_support::bolt::client::Session,
         _dir: tempfile::TempDir,
     }
 
-    fn live_serve(limit: u64) -> Option<LiveServe> {
+    /// A live session against a fresh store's serve child under `limit`, with
+    /// the guard that keeps the child and its store alive, or `None` (with the
+    /// skip printed) when no `relate` binary is configured.
+    fn live_serve(limit: u64) -> Option<(relate_test_support::bolt::client::Session, LiveServe)> {
         let Some(bin) = relate_test_support::relate_bin() else {
             eprintln!(
                 "skipping the live Bolt session test: {}",
@@ -290,11 +291,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let server = ServeChild::spawn_bolt(&bin, &dir.path().join("store"), limit).unwrap();
         let session = relate_test_support::bolt::client::Session::connect(&server.addr).unwrap();
-        Some(LiveServe {
-            _server: server,
+        Some((
             session,
-            _dir: dir,
-        })
+            LiveServe {
+                _server: server,
+                _dir: dir,
+            },
+        ))
     }
 
     /// A live session against a spawned `relate serve`: the 5.4
@@ -303,13 +306,9 @@ mod tests {
     /// RESET recovers the session.
     #[test]
     fn live_session_runs_parameterized_and_pipelined_statements() {
-        let Some(live) = live_serve(1 << 30) else {
+        let Some((mut session, _live)) = live_serve(1 << 30) else {
             return;
         };
-        // The session is moved out; `live` keeps the child and its store
-        // directory and drops whole, in declaration order (`server` before
-        // `dir`), so the child is reaped while the directory still exists.
-        let mut session = live.session;
         assert_eq!(
             session.version(),
             relate_test_support::bolt::client::BoltVersion::V5_4,
@@ -391,13 +390,9 @@ mod tests {
     /// batch's one commit plus its own).
     #[test]
     fn a_pipelined_create_batch_commits_once() {
-        let Some(live) = live_serve(1 << 30) else {
+        let Some((mut session, _live)) = live_serve(1 << 30) else {
             return;
         };
-        // The session is moved out; `live` keeps the child and its store
-        // directory and drops whole, in declaration order (`server` before
-        // `dir`), so the child is reaped while the directory still exists.
-        let mut session = live.session;
         // A MERGE is not CREATE-only: it commits alone, and its bookmark is
         // the reference point.
         session
@@ -495,10 +490,9 @@ mod tests {
             relate_test_support::bolt::Pack,
         )>,
     ) {
-        let Some(live) = live_serve(1 << 34) else {
+        let Some((mut session, _live)) = live_serve(1 << 34) else {
             panic!("set RELATE_BIN to compare builds");
         };
-        let mut session = live.session;
         let started = std::time::Instant::now();
         for s in 0..statements {
             let base = s as i64 * rows;
