@@ -67,7 +67,9 @@ struct Shape {
     /// The row's short name within its arm's family, for failure messages.
     name: &'static str,
     /// Whether the fan's far side is listed, so the far set is in play
-    /// (the shapes the far-set cost test runs).
+    /// (the shapes the far-set cost test runs): a side past the pair bound
+    /// or a scan is listed on the fan's behalf when it fits the listing
+    /// limit.
     far_listed: bool,
     /// The `RETURN` columns before the trail, naming the pattern's
     /// endpoints (one name for the loop, two otherwise).
@@ -613,5 +615,118 @@ fn a_lone_trailing_origin_keeps_the_layered_fan() {
     assert_eq!(
         comparable(rows, SELECTORS[0]),
         comparable(off, SELECTORS[0])
+    );
+}
+
+/// Label-only endpoints (no property map to seek) take the batched sweep:
+/// the far side is listed from its label on the fan's behalf. Across the
+/// selectors and directions, a rel-type union, ties, cycles and parallel
+/// edges, the rows are the per-origin fan's and the GPM walk's.
+#[test]
+fn label_only_endpoints_take_the_batched_sweep() {
+    let mut rng = StdRng::seed_from_u64(SEED ^ 0x0334);
+    let b = Builder::new();
+    let mut nodes = Vec::new();
+    for (label, count) in [("A", 90usize), ("H", 40), ("E", 20)] {
+        for i in 0..count {
+            nodes.push(b.prop_node(&format!("{label}{i}"), &[label], &[]));
+        }
+    }
+    for _ in 0..320 {
+        let (x, y) = (
+            rng.random_range(0..nodes.len()),
+            rng.random_range(0..nodes.len()),
+        );
+        let ty = ["R", "S", "T"][rng.random_range(0..3)];
+        b.rel(nodes[x], nodes[y], ty, &[]);
+    }
+    let g = b.done();
+    let mut batched = false;
+    for sel in SELECTORS {
+        for dir in DIRS {
+            let Selector { open, close, .. } = sel;
+            let (l, r) = dir.arrows();
+            let q = format!(
+                "MATCH p = {open}(a:A){l}[:R|S*..5]{r}(e:E){close} \
+                 RETURN a.id, e.id, length(p), [n IN nodes(p) | n.id]"
+            );
+            let _ = take_batches();
+            let (on, counts) = run(&g, &q);
+            batched |= take_batches() > 0;
+            assert!(counts.route_runs > 0, "the route must take {q}");
+            let (off, _) = without_batched_fan(|| without_far_set(|| run(&g, &q)));
+            assert_eq!(comparable(on.clone(), sel), comparable(off, sel), "{q}");
+            assert_eq!(comparable(on, sel), comparable(gpm(&g, &q), sel), "{q}");
+        }
+    }
+    assert!(batched, "no label-only fan took the batched sweep");
+}
+
+/// A label-only far side no node carries is the empty answer — and the
+/// route still takes the pattern, with no search run.
+#[test]
+fn an_empty_label_only_far_side_is_the_empty_pair() {
+    let mut rng = StdRng::seed_from_u64(SEED ^ 0x0335);
+    let g = graph(&mut rng, 40, 2, 60);
+    for q in [
+        "MATCH p = ANY SHORTEST (a)-[:R*..4]->(b:Missing) RETURN length(p)",
+        "MATCH p = ANY SHORTEST (a:Missing)-[:R*..4]->(b) RETURN length(p)",
+    ] {
+        let (rows, _) = run(&g, q);
+        assert!(rows.is_empty(), "{q}");
+        assert!(gpm(&g, q).is_empty(), "{q}");
+    }
+}
+
+/// A far node that is also an origin and lies on a cycle: the origin's own
+/// level settles it, yet a positive lower bound still owes the closed
+/// trails back to it, so the far set must not retire the origin there.
+/// Several origins and a labelled far side, so the far set is built and
+/// the batched sweep runs.
+#[test]
+fn an_origin_that_is_the_only_far_node_keeps_its_closed_trails() {
+    let g = Graph::default();
+    exec_autocommit(
+        &g,
+        "CREATE (x:L:F {id: 'x'}), (y:L {id: 'y'}), (z:L {id: 'z'}), \
+         (x)-[:R]->(y), (y)-[:R]->(x), (x)-[:R]->(x), (z)-[:R]->(x)",
+    )
+    .unwrap();
+    for q in [
+        "MATCH p = ALL SHORTEST (a:L)-[:R*1..3]->(b:F) RETURN a.id, length(p)",
+        "MATCH p = ANY SHORTEST (a:L)-[:R*1..3]-(b:F) RETURN a.id, length(p)",
+        "MATCH p = SHORTEST 2 (a:L)-[:R*1..3]->(b:F) RETURN a.id, length(p)",
+    ] {
+        let _ = take_batches();
+        let (rows, _) = run(&g, q);
+        // The k selector rides the class walk, not the sweep.
+        let sweeps = !q.contains("SHORTEST 2");
+        assert_eq!(take_batches() > 0, sweeps, "the far set's sweep for {q}");
+        assert_eq!(sorted(rows.clone()), gpm(&g, q), "{q}");
+        assert!(
+            rows.iter().any(|r| r[0] == Value::String("x".into())),
+            "{q}"
+        );
+    }
+}
+
+/// A label-less far side has no bucket to list: it would read the whole
+/// node store per input row, so the fan keeps testing each reached node
+/// (no far set, no batched sweep) and answers what the GPM walk answers.
+#[test]
+fn a_label_less_far_side_is_not_listed() {
+    let mut rng = StdRng::seed_from_u64(SEED ^ 0x0336);
+    let g = graph(&mut rng, 60, 2, 90);
+    let q = "MATCH p = ANY SHORTEST (a {g: 0})-[:R*..4]->(b) RETURN a.id, b.id, length(p)";
+    let _ = take_batches();
+    let (rows, _) = run(&g, q);
+    assert_eq!(
+        take_batches(),
+        0,
+        "a label-less far side must stay unlisted"
+    );
+    assert_eq!(
+        comparable(rows, SELECTORS[0]),
+        comparable(gpm(&g, q), SELECTORS[0])
     );
 }
