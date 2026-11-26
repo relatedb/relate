@@ -430,7 +430,7 @@ impl<'a> Route<'a> {
             return Ok(false);
         };
         if let Some(pair) = &self.filters.pair {
-            if pair.drops(self.ctx, self.shape.end, e, srow, &self.filters.endpoint)? {
+            if pair.drops(self.ctx, self.shape.end, e, srow)? {
                 return Ok(true);
             }
         }
