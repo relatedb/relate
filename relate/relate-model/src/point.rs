@@ -107,24 +107,41 @@ pub fn srid_dimension(srid: i32) -> Option<usize> {
     srid_facts(srid).map(|facts| facts.dimension)
 }
 
-/// Neo4j's longitude wrap into `[-180, 180]`, keeping both endpoints
-/// (180.0 → 180.0, -180.0 → -180.0, 180.5 → -179.5, -200.0 → 160.0,
-/// -540.0 → -180.0). This is the stored geographic-longitude domain for
-/// the producers that uphold it — the engine's `point()` constructor and
-/// the Query API typed decoders — so the POINT index's envelope clip
-/// (which assumes the domain) and the residual scan cannot disagree
-/// (LABS-1236). Bolt point parameters are stored bit-for-bit instead, by
-/// ADR-0177 §2.
+/// The stored geographic-longitude domain's lower bound, as `point()`
+/// validates it — the one home the bounds and one turn derive from.
+pub const LONGITUDE_MIN: f64 = -180.0;
+/// The stored geographic-longitude domain's upper bound.
+pub const LONGITUDE_MAX: f64 = 180.0;
+/// One full turn of [`LONGITUDE_MIN`]..[`LONGITUDE_MAX`] — the shift a
+/// wrapping band takes into the unwrapped frame.
+pub const LONGITUDE_TURN: f64 = LONGITUDE_MAX - LONGITUDE_MIN;
+/// The stored geographic-latitude domain's lower bound, as `point()`
+/// validates it.
+pub const LATITUDE_MIN: f64 = -90.0;
+/// The stored geographic-latitude domain's upper bound.
+pub const LATITUDE_MAX: f64 = 90.0;
+
+/// Neo4j's longitude wrap into `[LONGITUDE_MIN, LONGITUDE_MAX]`, keeping
+/// both endpoints (180.0 → 180.0, -180.0 → -180.0, 180.5 → -179.5,
+/// -200.0 → 160.0, -540.0 → -180.0). This is the stored
+/// geographic-longitude domain for the producers that uphold it — the
+/// engine's `point()` constructor and the Query API typed decoders — so the
+/// POINT index's envelope clip (which assumes the domain) and the residual
+/// scan cannot disagree (LABS-1236). Bolt point parameters are stored
+/// bit-for-bit instead, by ADR-0177 §2.
 pub fn wrap_longitude(longitude: f64) -> f64 {
-    let mut x = longitude;
-    if !(-180.0..=180.0).contains(&x) {
-        x %= 360.0;
-        if x > 180.0 {
-            x -= 360.0;
-        } else if x < -180.0 {
-            x += 360.0;
-        }
-    }
+    // One pipeline over the domain constants: the remainder lands in
+    // (-360, 360), and the endpoint ladder folds the two half-turns
+    // outside the domain back onto it. In-domain values take the
+    // remainder untouched (fmod keeps them bit-identical).
+    let x = longitude % LONGITUDE_TURN;
+    let x = if x > LONGITUDE_MAX {
+        x - LONGITUDE_TURN
+    } else if x < LONGITUDE_MIN {
+        x + LONGITUDE_TURN
+    } else {
+        x
+    };
     // Normalize -0.0 (from -360 % 360) to +0.0.
     if x == 0.0 {
         0.0
@@ -218,7 +235,7 @@ pub fn stored_point(
         }
     }
     if is_geographic(srid) {
-        if !(-90.0..=90.0).contains(&y) {
+        if !(LATITUDE_MIN..=LATITUDE_MAX).contains(&y) {
             return Err(PointDomainError::InvalidLatitude);
         }
         Ok(crate::value::PointValue {
