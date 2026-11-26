@@ -1,0 +1,208 @@
+//! Canonical-registry regression tests (audit C17): one table per concern —
+//! SHOW columns (front), procedure signatures (executor), known functions
+//! (front), aggregate names (ir, re-exported by `front::agg`) — consumed by
+//! every former duplicate site, so user-visible behavior cannot drift
+//! between validation, binding, execution, and the catalog.
+
+use crate::common;
+
+use relate::Value;
+
+use common::{connection, row, scalar_one};
+
+#[test]
+fn show_indexes_where_state_uses_the_default_columns() {
+    let mut c = connection();
+    c.query("CREATE INDEX person_name FOR (n:Person) ON (n.name)")
+        .unwrap();
+    // `state`/`id`/`populationPercent` are default columns: visible to a
+    // bare WHERE and to the projection after the clause.
+    // The two default lookup indexes every store carries are ONLINE and
+    // carry the committed schema id too.
+    let r = c
+        .query("SHOW INDEXES YIELD name, state WHERE state = 'ONLINE' RETURN name")
+        .unwrap();
+    assert_eq!(r.rows.len(), 3);
+    assert!(
+        r.rows
+            .iter()
+            .any(|row| row[0].as_string() == Some("person_name")),
+        "{:?}",
+        r.rows
+    );
+    let r = c
+        .query("SHOW INDEXES YIELD name, id WHERE id IS NOT NULL RETURN name")
+        .unwrap();
+    assert_eq!(r.rows.len(), 3);
+}
+
+#[test]
+fn show_constraints_where_id_uses_the_default_columns() {
+    let mut c = connection();
+    let r = c
+        .query("SHOW CONSTRAINTS YIELD name, id WHERE id IS NOT NULL RETURN name")
+        .unwrap();
+    assert_eq!(r.rows.len(), 0);
+}
+
+#[test]
+fn show_indexes_where_options_is_yield_only() {
+    let mut c = connection();
+    let err = c
+        .query("SHOW INDEXES WHERE options IS NULL RETURN name")
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("UndefinedVariable"), "{err}");
+    // The same column is reachable with an explicit YIELD.
+    c.query("SHOW INDEXES YIELD options RETURN options")
+        .unwrap();
+}
+
+#[test]
+fn vector_query_argument_is_list_of_float_everywhere() {
+    let mut c = connection();
+    // The SHOW PROCEDURES signature comes from the executor's canonical
+    // procedure registry — the same table compile-time validation reads.
+    let r = c
+        .query(
+            "SHOW PROCEDURES YIELD name, signature \
+             WHERE name = 'db.index.vector.queryNodes' RETURN signature",
+        )
+        .unwrap();
+    assert_eq!(r.rows.len(), 1);
+    let signature = r.rows[0][0].as_string().unwrap();
+    assert!(
+        signature.contains("query :: LIST<FLOAT>"),
+        "signature: {signature}"
+    );
+    // And a non-list static argument is rejected, not silently accepted.
+    let err = c
+        .query("CALL db.index.vector.queryNodes('idx', 5, 'notalist') YIELD node RETURN node")
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("InvalidArgumentType") || err.contains("InvalidValueType"),
+        "{err}"
+    );
+}
+
+#[test]
+fn builtin_procedure_defaults_come_from_the_registry() {
+    let mut c = connection();
+    // `db.awaitIndexes`'s only parameter has a default in the registry, so
+    // the call may omit it — validation and dispatch agree on the arity.
+    c.query("CALL db.awaitIndexes()").unwrap();
+    c.query("CALL db.awaitIndexes(5)").unwrap();
+}
+
+#[test]
+fn show_functions_matches_the_known_function_registry() {
+    let mut c = connection();
+    // Advertised by SHOW FUNCTIONS and accepted by the binder (the
+    // planner-level test proves the binder side; here the catalog side).
+    let r = c
+        .query("SHOW FUNCTIONS YIELD name WHERE name = 'linenumber' RETURN name")
+        .unwrap();
+    assert_eq!(r.rows.len(), 1);
+    // Aggregates are marked from the same single aggregate set.
+    let r = c
+        .query("SHOW FUNCTIONS YIELD name, aggregating WHERE aggregating RETURN name")
+        .unwrap();
+    let names: Vec<&str> = r.rows.iter().filter_map(|row| row[0].as_string()).collect();
+    for expected in [
+        "count",
+        "sum",
+        "stDev",
+        "stDevP",
+        "percentileCont",
+        "percentileDisc",
+    ] {
+        assert!(names.contains(&expected), "SHOW FUNCTIONS lost {expected}");
+    }
+}
+
+#[test]
+fn aggregate_aliases_lower_to_the_canonical_display_name() {
+    let mut c = connection();
+    // The CIP-128 snake_case spelling executes as the aggregate and keeps
+    // the Cypher-canonical column spelling from the single alias table.
+    // The operand is one number per row (LABS-709: the percentile
+    // aggregates raise on a non-numeric operand instead of dropping it), so
+    // this smoke test passes a scalar, not a list.
+    let r = c.query("RETURN percentile_cont(1.0, 0.5)").unwrap();
+    assert!(
+        r.header.columns[0].starts_with("percentileCont("),
+        "column: {}",
+        r.header.columns[0]
+    );
+    let r = c
+        .query("UNWIND [1.0, 2.0, 3.0] AS x RETURN stdev_samp(x) AS s")
+        .unwrap();
+    assert!(matches!(r.rows[0][0], Value::Float(_)));
+}
+
+/// The catalogue's mixed-case display spellings are callable in their own
+/// casing (ADR-0497 §11): the binder lowercases every call name, so the
+/// rendered spelling is a rendering fact and never a second admission rule.
+/// One case per shape — a plain name, a dotted name, a predicate, a list
+/// conversion and an aggregate.
+#[test]
+fn catalog_display_spellings_are_callable_in_their_own_casing() {
+    let mut c = connection();
+    let values = row(
+        &mut c,
+        "RETURN toBoolean('true') AS a, ToInteger('7') AS b, tOuPpEr('x') AS c, \
+         valueType(1) AS d, isEmpty([]) AS e, nullIf(1, 1) AS f, \
+         point.withinBBox(point({x: 1, y: 1}), point({x: 0, y: 0}), point({x: 2, y: 2})) AS g, \
+         toStringList([1, true]) AS h",
+    );
+    assert_eq!(
+        values,
+        vec![
+            Value::Bool(true),
+            Value::Int(7),
+            Value::String("X".into()),
+            Value::String("INTEGER NOT NULL".into()),
+            Value::Bool(true),
+            Value::Null,
+            Value::Bool(true),
+            Value::List(vec![Value::String("1".into()), Value::String("true".into())].into()),
+        ]
+    );
+
+    // The aggregate spelling: `stDev` (sample deviation) over two values.
+    let sigma = scalar_one(&mut c, "UNWIND [1.0, 2.0] AS x RETURN stDev(x) AS s");
+    assert!(
+        matches!(
+            &sigma,
+            Value::Float(sigma) if (sigma - std::f64::consts::FRAC_1_SQRT_2).abs() < 1e-12
+        ),
+        "stDev([1, 2]) = {sigma:?}"
+    );
+}
+
+#[test]
+fn zero_row_yield_star_keeps_the_full_column_header() {
+    // Pins the zero-row `YIELD *` header contract (the deliberate delta
+    // the catalog projection introduced): an always-false WHERE yields no
+    // rows, but the result still carries the command's full column table
+    // as its header — a zero-row SHOW keeps its column header instead of
+    // returning zero columns.
+    let mut c = connection();
+    let r = c.query("SHOW SETTINGS YIELD * WHERE 1 = 0").unwrap();
+    assert_eq!(r.rows.len(), 0);
+    assert_eq!(
+        r.header.columns,
+        [
+            "name",
+            "value",
+            "isDynamic",
+            "defaultValue",
+            "description",
+            "startupValue",
+            "isExplicitlySet",
+            "validValues",
+            "isDeprecated",
+        ]
+    );
+}

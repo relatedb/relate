@@ -27,6 +27,6 @@ esac
 ```
 
 Without `--load-csv-dir` or `RELATE_LOAD_CSV_DIR`, the same query fails
-with `LOAD CSV file unavailable`. The [CLI integration test](../../../../surfaces/relate-cli/tests/e2e_load_csv.rs)
+with `LOAD CSV file unavailable`. The [CLI integration test](../../../../surfaces/relate-cli/tests/integration/e2e_load_csv.rs)
 exercises the opt-in, default denial, environment fallback, flag precedence and
 the 8 MiB + 1 byte generic limit error in CI.

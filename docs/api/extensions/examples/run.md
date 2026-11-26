@@ -4,7 +4,7 @@ One extension is a package directory under the extensions dir. This
 example builds the smallest possible one — a POSIX `sh` child that speaks
 MCP stdio and reports a two-row import — installs it by hand, runs it into
 a store, and queries the result. It is the fixture the end-to-end suite
-[`surfaces/relate-cli/tests/e2e_run.rs`](../../../surfaces/relate-cli/tests/e2e_run.rs)
+[`surfaces/relate-cli/tests/integration/e2e_run.rs`](../../../surfaces/relate-cli/tests/integration/e2e_run.rs)
 drives through the real binary in CI (the same manifest, the same child,
 the same assertions; the wire-driven tests are unix-gated, like the host
 and protocol suites).

@@ -72,7 +72,7 @@ SURFACE = (
     "cargo test -p relate-mcp --test stdio_tools stdio_namespace_prefixes_tool_names -- --exact",
     "cargo test -p relate-bolt --lib server::tests::bolt_return_one -- --exact",
     "cargo test -p relate-http --lib query_api::tests::success_envelope_has_fields_values_and_empty_bookmarks -- --exact",
-    "cargo test -p relate-cli --test e2e_bundles test_one_shot_query_runs_in_every_bundle -- --exact",
+    "cargo test -p relate-cli --test integration e2e_bundles::test_one_shot_query_runs_in_every_bundle -- --exact",
     "source scripts/ffi-lib.sh",
     "bash scripts/ffi-compile-example.sh",
     "go test -C clients/go -count=1 -run '^TestReturnOne$' .",

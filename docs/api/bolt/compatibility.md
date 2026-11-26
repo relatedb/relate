@@ -311,7 +311,7 @@ client, not the server.
   (Relate reports versions `['2026.10-relate']`, ADR-0152 —
   clearly distinguishable from Neo4j's `['5.26.32']`), `CALL
   db.info()`, `SHOW DATABASES`, `SHOW INDEXES`. The procedure shapes
-  are pinned by `relate/relate/tests/dbms_procedures.rs` and
+  are pinned by `relate/relate/tests/integration/dbms_procedures.rs` and
   `relate/relate/tests/namespace.rs`.
 - **The Bolt 5 handshake extras are harmless — no workaround
   (LABS-598).** None of neo4j-go-driver v5.28.5's Bolt 5 handshake

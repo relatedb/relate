@@ -486,4 +486,4 @@ jobs:
           cargo test -p relate-mcp --test stdio_tools
           cargo test -p relate-bolt --lib
           cargo test -p relate-http --lib
-          cargo test -p relate-cli --test e2e_bundles
+          cargo test -p relate-cli --test integration e2e_bundles::

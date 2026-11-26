@@ -1529,7 +1529,7 @@ relate serve --database ./mydata --http 7474 --tx-idle-timeout-secs 120 --max-op
 ```
 
 The runnable example is the end-to-end suite
-`surfaces/relate-cli/tests/e2e_serve.rs`: it spawns the built binary
+`surfaces/relate-cli/tests/integration/e2e_serve.rs`: it spawns the built binary
 with both surfaces on one store, drives a statement through each (raw HTTP
 to the query endpoint, an MCP `tools/call` over its HTTP transport),
 asserts the shared credential behavior (401 without, success with) on both,

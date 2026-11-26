@@ -647,8 +647,8 @@ channel's first real content. The crates live in the workspace's
 (the placement ADR-0431 §11 records), each with its committed
 `package/extension.json` beside its source — the manifest the release
 pipeline will pack beside the built executable, and the one manifest the
-CLI e2e installs and drives (`surfaces/relate-cli/tests/e2e_fs_to_graph.rs`
-and `surfaces/relate-cli/tests/e2e_git_to_graph.rs`, the per-subject
+CLI e2e installs and drives (`surfaces/relate-cli/tests/integration/e2e_fs_to_graph.rs`
+and `surfaces/relate-cli/tests/integration/e2e_git_to_graph.rs`, the per-subject
 importer suites).
 Two summary deltas the wire forces on the importers, recorded here because
 the e2e pins them: the child's summary names its target `the store` (the
@@ -843,7 +843,7 @@ fixture suites below: the shipped children are not run in CI.
 [examples/run.md](examples/run.md) — author and install a fixture
 package, run it into a store, and query the result. Its runnable form is
 the end-to-end suite
-[`surfaces/relate-cli/tests/e2e_run.rs`](../../../surfaces/relate-cli/tests/e2e_run.rs),
+[`surfaces/relate-cli/tests/integration/e2e_run.rs`](../../../surfaces/relate-cli/tests/integration/e2e_run.rs),
 which runs the same fixture child through the real binary in CI (the
 wire-driven tests are unix-gated, like the host and protocol suites).
 
@@ -855,5 +855,5 @@ asset's parse, the manifest's agreement with the child).
 [examples/mcp-mount.md](examples/mcp-mount.md) — the MCP stdio mount's
 line protocol: the envelope, the `initialize` handshake and its
 confirmation, and the five tools. Its runnable form is
-[`surfaces/relate-cli/tests/e2e_extension_mcp.rs`](../../../surfaces/relate-cli/tests/e2e_extension_mcp.rs)
+[`surfaces/relate-cli/tests/integration/e2e_extension_mcp.rs`](../../../surfaces/relate-cli/tests/integration/e2e_extension_mcp.rs)
 plus the compiled fixture child the suite installs.
