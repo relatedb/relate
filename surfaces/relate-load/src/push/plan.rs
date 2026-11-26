@@ -113,34 +113,41 @@ pub(crate) fn display_labels(labels: &[String]) -> String {
 }
 
 impl EntityKind {
-    /// The scoped update policy — `Some` exactly for the kinds that write
-    /// (`NodeLabel`, `NodeCreate`, `Rel`). `None` for the counted buckets
-    /// (`NodeSkipped`, `RelSkipped`, `Dangling`), which never write and so
-    /// have no policy to state: a fabricated `skip` there would name a
-    /// real user-selectable policy the bucket never applies (LABS-932).
-    pub(crate) fn policy(&self) -> Option<UpdatePolicy> {
+    /// The writing kinds' scoped policy and statement — `Some` exactly for
+    /// the kinds that write (`NodeLabel`, `NodeCreate`, `Rel`), the one
+    /// place the written-vs-counted partition is spelled. `None` for the
+    /// counted buckets (`NodeSkipped`, `RelSkipped`, `Dangling`), which
+    /// never write: a fabricated `skip` policy there would name a real
+    /// user-selectable policy the bucket never applies (LABS-932), and a
+    /// writing group without a statement cannot be built, as the statement
+    /// rides those variants beside their rows.
+    fn writing(&self) -> Option<(UpdatePolicy, &str)> {
         match self {
-            EntityKind::NodeLabel { policy, .. }
-            | EntityKind::NodeCreate { policy, .. }
-            | EntityKind::Rel { policy, .. } => Some(*policy),
+            EntityKind::NodeLabel {
+                policy, statement, ..
+            }
+            | EntityKind::NodeCreate {
+                policy, statement, ..
+            }
+            | EntityKind::Rel {
+                policy, statement, ..
+            } => Some((*policy, statement)),
             EntityKind::NodeSkipped { .. }
             | EntityKind::RelSkipped { .. }
             | EntityKind::Dangling => None,
         }
     }
 
-    /// The statement a group writes with — `Some` exactly for the kinds
-    /// that write, as the statement rides those variants beside their
-    /// rows: a writing group without a statement cannot be built.
+    /// The scoped update policy — `Some` exactly for the writing kinds
+    /// (see [`Self::writing`]).
+    pub(crate) fn policy(&self) -> Option<UpdatePolicy> {
+        self.writing().map(|(policy, _)| policy)
+    }
+
+    /// The statement a group writes with — `Some` exactly for the writing
+    /// kinds (see [`Self::writing`]).
     pub(crate) fn statement(&self) -> Option<&str> {
-        match self {
-            EntityKind::NodeLabel { statement, .. }
-            | EntityKind::NodeCreate { statement, .. }
-            | EntityKind::Rel { statement, .. } => Some(statement),
-            EntityKind::NodeSkipped { .. }
-            | EntityKind::RelSkipped { .. }
-            | EntityKind::Dangling => None,
-        }
+        self.writing().map(|(_, statement)| statement)
     }
 
     /// The policy of a keyed kind — the writing kinds that pre-read and

@@ -120,16 +120,16 @@ impl BatchScan {
                 Err(error) if error.is_fatal() => break,
                 Err(_) => {}
             }
-            if carries(payload, Message::Goodbye) {
+            if carries(payload, Message::Goodbye, version) {
                 break;
             }
-            if carries(payload, Message::Reset) {
+            if carries(payload, Message::Reset, version) {
                 // A RESET supersedes everything queued before it: the RUNs
                 // ahead of the last reachable RESET answer IGNORED, so the
                 // count restarts there.
                 last_reset = Some(index);
                 reachable_runs = 0;
-            } else if carries(payload, Message::Run) {
+            } else if carries(payload, Message::Run, version) {
                 reachable_runs += 1;
             }
         }
@@ -156,11 +156,12 @@ impl BatchScan {
     }
 }
 
-/// Whether `payload`'s struct tag names `message`: two wire bytes, no decode
-/// and no allocation — the one payload predicate the pre-scan's RESET and RUN
-/// counts share.
-fn carries(payload: &[u8], message: Message) -> bool {
-    struct_tag(payload) == Some(message.signature())
+/// Whether `payload`'s struct tag names `message` at `version`: two wire
+/// bytes, no decode and no allocation — the one payload predicate the
+/// pre-scan's RESET, RUN and GOODBYE checks share, classified through
+/// [`Message::from_signature`] so the version gate is the crate's one table.
+fn carries(payload: &[u8], message: Message, version: BoltVersion) -> bool {
+    struct_tag(payload).and_then(|tag| Message::from_signature(tag, version)) == Some(message)
 }
 
 #[cfg(test)]
