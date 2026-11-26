@@ -68,14 +68,20 @@ pub fn check(root: &Path) -> Result<Vec<String>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
 
-    /// A scratch root holding the guard's two hardcoded subtrees, unique
-    /// per test (and per process) so parallel runs never share it.
-    fn temp_root(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir();
-        let root = dir.join(format!("xtask-fixture-sync-{tag}-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&root);
+    /// A scratch root holding the guard's two hardcoded subtrees, from
+    /// the crate's one scratch-dir policy (a `TempDir`, removed on every
+    /// exit path) — no per-test naming and no manual removal.
+    fn temp_root() -> tempfile::TempDir {
+        crate::scratch_dir().expect("scratch dir")
+    }
+
+    /// The clean pair: both subtrees built and ready for one mutation —
+    /// the arrange every violation test shares.
+    fn both_trees() -> tempfile::TempDir {
+        let root = temp_root();
+        build(&root.path().join(SOURCE));
+        build(&root.path().join(FACADE));
         root
     }
 
@@ -95,63 +101,51 @@ mod tests {
 
     #[test]
     fn identical_trees_are_clean() {
-        let root = temp_root("clean");
-        build(&root.join(SOURCE));
-        build(&root.join(FACADE));
-        assert_eq!(check(&root), Ok(Vec::new()));
-        let _ = fs::remove_dir_all(&root);
+        let root = both_trees();
+        assert_eq!(check(root.path()), Ok(Vec::new()));
     }
 
     #[test]
     fn drifted_byte_is_a_violation() {
-        let root = temp_root("drift");
-        build(&root.join(SOURCE));
-        build(&root.join(FACADE));
-        put(&root.join(FACADE), "manifest.json", b"manifest!");
-        let violations = check(&root).expect("both trees readable");
-        assert_eq!(violations.len(), 1);
+        let root = both_trees();
+        put(&root.path().join(FACADE), "manifest.json", b"manifest!");
+        let violations = check(root.path()).expect("both trees readable");
+        assert_eq!(violations.len(), 1, "{violations:?}");
         assert!(
             violations[0].contains("manifest.json: drifted from"),
             "{violations:?}"
         );
-        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
     fn file_missing_from_the_copy_is_a_violation() {
-        let root = temp_root("missing");
-        build(&root.join(SOURCE));
-        build(&root.join(FACADE));
-        fs::remove_file(root.join(FACADE).join("wal/00000001.log")).expect("remove copy file");
-        let violations = check(&root).expect("both trees readable");
-        assert_eq!(violations.len(), 1);
+        let root = both_trees();
+        fs::remove_file(root.path().join(FACADE).join("wal/00000001.log"))
+            .expect("remove copy file");
+        let violations = check(root.path()).expect("both trees readable");
+        assert_eq!(violations.len(), 1, "{violations:?}");
         assert!(
             violations[0].contains("wal/00000001.log: missing from the copy"),
             "{violations:?}"
         );
-        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
     fn stale_extra_file_in_the_copy_is_a_violation() {
-        let root = temp_root("stale");
-        build(&root.join(SOURCE));
-        build(&root.join(FACADE));
-        put(&root.join(FACADE), "wal/00000002.log", b"stale");
-        let violations = check(&root).expect("both trees readable");
-        assert_eq!(violations.len(), 1);
+        let root = both_trees();
+        put(&root.path().join(FACADE), "wal/00000002.log", b"stale");
+        let violations = check(root.path()).expect("both trees readable");
+        assert_eq!(violations.len(), 1, "{violations:?}");
         assert!(
             violations[0].contains("wal/00000002.log: not in"),
             "{violations:?}"
         );
-        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
     fn a_missing_source_tree_is_an_error_not_clean() {
-        let root = temp_root("nosource");
-        build(&root.join(FACADE));
-        assert!(check(&root).is_err());
-        let _ = fs::remove_dir_all(&root);
+        let root = temp_root();
+        build(&root.path().join(FACADE));
+        assert!(check(root.path()).is_err());
     }
 }

@@ -122,8 +122,8 @@ pub(crate) fn check(root: &Path) -> Result<Summary, Outcome> {
 /// The four stages in order, each classifying its own failures: the
 /// scratch `TempDir` is owned here, where its class is known.
 fn package_and_build(root: &Path, packages: &[Package]) -> Result<Summary, Outcome> {
-    let scratch = scratch_dir().map_err(|e| said(Outcome::Error, e))?;
-    let scratch = scratch.path();
+    let scratch_guard = crate::scratch_dir().map_err(|e| said(Outcome::Error, e))?;
+    let scratch = scratch_guard.path();
     let extracted = package_facade(root, scratch)?;
     let closure = patch_and_resolve(root, packages, &extracted.manifest)?;
     let examples = build_and_verify(root, &extracted, &closure)?;
@@ -258,14 +258,4 @@ fn build_failure(failure: String, stdout: &[u8]) -> String {
         Ok(_) => failure,
         Err(unreadable) => format!("{failure}\n({unreadable})"),
     }
-}
-
-/// A fresh scratch directory under the system temp dir, removed on
-/// every exit path — success, failure and panic alike — by `TempDir`'s
-/// Drop. Everything the check produces dies with it. Owned by the check
-/// root, where the scratch policy lives; the stage tests import it from
-/// here.
-fn scratch_dir() -> Result<tempfile::TempDir, String> {
-    tempfile::TempDir::new()
-        .map_err(|e| format!("failed to create a scratch directory under the system temp dir: {e}"))
 }

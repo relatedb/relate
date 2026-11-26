@@ -90,7 +90,7 @@ pub(super) fn extracted_package(pkg_root: &Path) -> Result<(PathBuf, String), St
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::package_check::scratch_dir;
+    use crate::scratch_dir;
     use crate::workspace::expect_success;
 
     #[test]

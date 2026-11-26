@@ -2,6 +2,7 @@ mod boundaries;
 mod fixture_sync;
 mod package_check;
 mod row_vec;
+mod wasm_pkg;
 mod workspace;
 
 use std::fs;
@@ -55,6 +56,17 @@ byte-identical, file for file, to the tree relate-storage owns at
 relate/relate-storage/tests/fixtures/pre_adr0084_default_wal/. A file
 missing, extra, or drifted on either side prints as
 `<tree>/<rel-path>: <reason>` and exits 1; an unreadable tree exits 2.
+
+Also runs the wasm-package guard (REL8-1234): the wasm bundle's npm
+manifest and the files its build produces must agree — every file the
+build emits (the js/ directory the build script copies wholesale, the
+wasm-bindgen output, snippets/, the package README stamped from
+npm/README.md) must be listed in
+surfaces/relate-wasm/npm/package.json.template's `files` array, every
+`files` entry must name something the build produces, and every
+`exports` subpath must point at a `files` entry. A disagreement prints
+as `<path>: <reason>` and exits 1; an unreadable or unparsable template
+or js/ tree, or a missing npm/README.md the build copies, exits 2.
 ";
 
 const CHECK_PACKAGE_HELP: &str = "\
@@ -126,16 +138,63 @@ fn usage_error(message: &str) -> ExitCode {
     ExitCode::from(2)
 }
 
+/// What one check concluded: its violations, and the opening of the one
+/// line it reports — what the check looked at, with no outcome in it.
+struct Verdict {
+    violations: Vec<String>,
+    opening: String,
+}
+
+/// A guard's verdict from a guard module's violations: the opening names
+/// the guard. The one adapter every guard row goes through, so a guard
+/// module stays a pure `root -> violations` fn.
+fn guard_verdict(label: &str, result: Result<Vec<String>, String>) -> Result<Verdict, String> {
+    let opening = format!("check-boundaries: {label}");
+    let violations = result.map_err(|e| format!("{opening}: {e}"))?;
+    Ok(Verdict {
+        violations,
+        opening,
+    })
+}
+
+/// The dependency-edge check as a `Verdict`: its opening carries the
+/// counts it read.
+fn dependency_edges(root: &Path) -> Result<Verdict, String> {
+    // The identity the failure path needs; the counts only exist once
+    // the graph is read.
+    let subject = "check-boundaries: dependency edges";
+    let packages = workspace::workspace_graph(root).map_err(|e| format!("{subject}: {e}"))?;
+    let report = boundaries::check(&packages);
+    // The bundle's protocol is plain strings, the shape the guard
+    // modules already return; the typed violations render the same way
+    // the check used to print them.
+    let violations: Vec<String> = report.violations.iter().map(ToString::to_string).collect();
+    Ok(Verdict {
+        opening: format!(
+            "check-boundaries: {} packages, {} edges checked",
+            report.packages, report.edges
+        ),
+        violations,
+    })
+}
+
+/// The checks `check-boundaries` runs, in one list: every entry returns
+/// the same `Verdict`, so a new guard is one row here and no dispatch
+/// shape sits outside the roster.
 fn check_boundaries() -> ExitCode {
-    let dependencies = check_dependencies();
-    let row_vec = check_row_vec();
-    let fixture_sync = check_fixture_sync();
+    let root = workspace_root();
     // All checks always run and print; exit 2 (I/O or metadata failure)
     // outranks a plain violation failure.
-    [dependencies, row_vec, fixture_sync]
-        .into_iter()
-        .max()
-        .map_or(ExitCode::SUCCESS, Outcome::exit_code)
+    [
+        dependency_edges(&root),
+        guard_verdict("executor Vec<Row> guard", row_vec::check(&root)),
+        guard_verdict("fixture copy guard", fixture_sync::check(&root)),
+        guard_verdict("wasm package guard", wasm_pkg::check(&root)),
+    ]
+    .into_iter()
+    .map(report)
+    .max()
+    .map_or(ExitCode::SUCCESS, Outcome::exit_code)
 }
 
 /// What one maintenance command concluded — the binary's one verdict
@@ -165,35 +224,19 @@ impl Outcome {
     }
 }
 
-fn check_dependencies() -> Outcome {
-    let packages = match workspace::workspace_graph(&workspace_root()) {
-        Ok(packages) => packages,
-        Err(e) => {
-            eprintln!("error: {e}");
-            return Outcome::Error;
-        }
-    };
-    let report = boundaries::check(&packages);
-    let summary = format!(
-        "check-boundaries: {} packages, {} edges checked, {} violations",
-        report.packages,
-        report.edges,
-        report.violations.len()
-    );
-    if report.violations.is_empty() {
-        println!("{summary}");
-        return Outcome::Clean;
-    }
-    for violation in &report.violations {
-        eprintln!("{violation}");
-    }
-    eprintln!("{summary}");
-    Outcome::Findings
-}
-
 /// The workspace root, from this crate's directory at `testing/xtask`.
 fn workspace_root() -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+}
+
+/// A fresh scratch directory under the system temp dir, removed on
+/// every exit path — success, failure and panic alike — by `TempDir`'s
+/// Drop. The crate's one scratch-dir policy: every check and test that
+/// needs a throwaway tree takes it from here (REL8-1234 lifted it out
+/// of `package_check`, which owned the only copy).
+fn scratch_dir() -> Result<tempfile::TempDir, String> {
+    tempfile::TempDir::new()
+        .map_err(|e| format!("failed to create a scratch directory under the system temp dir: {e}"))
 }
 
 /// A path's forward-slash rendering — the one spelling of a path that
@@ -236,18 +279,30 @@ fn walk_files(
     walk(root, root, leaf)
 }
 
-/// The one guard-report shape: clean on stdout under the check's label,
-/// each violation on stderr, and an I/O or metadata failure as exit 2.
-fn report_guard(label: &str, result: Result<Vec<String>, String>) -> Outcome {
-    match result {
-        Ok(violations) if violations.is_empty() => {
-            println!("check-boundaries: {label} clean");
+/// The one reporter, and the bundle's one protocol: every check returns
+/// a `Verdict` (or an error that already names it), so the dependency
+/// edge check and every guard are the same kind of thing. The outcome is
+/// composed here, never pre-rendered by a check — `: clean` on stdout
+/// when it found nothing, the violations then `: <n> violations` on
+/// stderr when it did — so a failing check cannot report itself clean,
+/// and an I/O or metadata failure exits 2.
+fn report(verdict: Result<Verdict, String>) -> Outcome {
+    match verdict {
+        Ok(Verdict {
+            violations,
+            opening,
+        }) if violations.is_empty() => {
+            println!("{opening}: clean");
             Outcome::Clean
         }
-        Ok(violations) => {
+        Ok(Verdict {
+            violations,
+            opening,
+        }) => {
             for violation in &violations {
                 eprintln!("{violation}");
             }
+            eprintln!("{opening}: {} violations", violations.len());
             Outcome::Findings
         }
         Err(e) => {
@@ -255,17 +310,6 @@ fn report_guard(label: &str, result: Result<Vec<String>, String>) -> Outcome {
             Outcome::Error
         }
     }
-}
-
-/// The executor `Vec<Row>` guard (ADR-0555); runs beside the dependency checks.
-fn check_row_vec() -> Outcome {
-    report_guard("executor Vec<Row> guard", row_vec::check(&workspace_root()))
-}
-
-/// The facade fixture-copy guard (LABS-1414); runs beside the dependency
-/// checks.
-fn check_fixture_sync() -> Outcome {
-    report_guard("fixture copy guard", fixture_sync::check(&workspace_root()))
 }
 
 /// `cargo xtask check-package` (see `package_check`): package the facade
