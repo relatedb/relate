@@ -303,7 +303,7 @@ impl<'a> Element<'a> {
     ) -> Result<CompiledElement<'a>, OntologyError> {
         let names = self.resolved_names()?;
         let required = self.required_ids(&names)?;
-        let (declarations, mut property_skips) = self.properties_and_skips(&names, &required)?;
+        let (declarations, mut property_skips) = self.properties_and_skips(&required)?;
         skips.append(&mut property_skips);
         decorations.skips(self.key, skips);
         Ok(CompiledElement {
@@ -320,28 +320,20 @@ impl<'a> Element<'a> {
     /// per carried property decoration.
     fn properties_and_skips(
         &self,
-        names: &HashMap<&'a str, String>,
         required: &HashSet<&str>,
     ) -> Result<(Vec<GraphTypePropertyType>, Vec<String>), OntologyError> {
         let mut declarations = Vec::with_capacity(self.properties.len());
         let mut skips = Vec::new();
         for property in self.properties {
-            // The caller passes `resolved_names`'s table, built from
-            // this same property list, so every id is present — the
-            // invariant stated where the index would otherwise panic
-            // unexplained.
-            let name = names
-                .get(property.id.as_str())
-                .expect("the resolved-name table covers every property")
-                .clone();
-            let (declaration, unrepresentable) = self.declaration(property, &name, required)?;
+            let name = property.resolved_name();
+            let (declaration, unrepresentable) = self.declaration(property, name, required)?;
             if let Some(what) = unrepresentable {
                 skips.push(format!("{what} {}.{name} (not representable)", self.key));
             }
             if let Some(declaration) = declaration {
                 declarations.push(declaration);
             }
-            self.property_skips(property, &name, &mut skips);
+            self.property_skips(property, name, &mut skips);
         }
         Ok((declarations, skips))
     }
@@ -526,20 +518,13 @@ impl<'a> Element<'a> {
     ) -> Result<Vec<GraphTypeConstraintSpec>, OntologyError> {
         let mut out = Vec::new();
         for property in self.properties {
-            // The caller passes `resolved_names`'s table, built from
-            // this same property list, so every id is present — the
-            // invariant stated where the index would otherwise panic
-            // unexplained.
-            let name = names
-                .get(property.id.as_str())
-                .expect("the resolved-name table covers every property")
-                .clone();
+            let name = property.resolved_name();
             // The flag definitions come from the one naming-policy home
             // (key wins over unique, ADR-0667) — the same home the
             // canonical form's flag-derived entries consult. Bound once
             // above the emptiness check: the guard refuses a flagged
             // empty name off the same derivation the body consumes.
-            let flag = flagged_constraint(&name, self.key, property.key, property.unique);
+            let flag = flagged_constraint(name, self.key, property.key, property.unique);
             if name.is_empty() {
                 if flag.is_some() {
                     return Err(self.empty_name("is asserted by a shorthand flag"));
@@ -553,7 +538,7 @@ impl<'a> Element<'a> {
                 out.push(constraint_spec(
                     Some(generated),
                     self.is_edge,
-                    vec![name],
+                    vec![name.to_owned()],
                     // A flag-derived constraint is key or unique — both
                     // carry verbs; exists never reaches here (an
                     // existence requirement compiles into the
