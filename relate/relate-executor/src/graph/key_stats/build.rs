@@ -153,6 +153,9 @@ impl Graph {
         // map. The ledger alone records which keys are published, so an
         // eviction needs no other label's state.
         let mut ledger = state.ledger.lock().expect("ledger lock");
+        // Whether a consult can now answer differently: an admitted key is
+        // published (evicting another label's keys to make room, if need be).
+        let mut changed = false;
         for (key, class, stats) in finished {
             let bytes = super::approx_bytes(&stats);
             if let Some(evicted) = ledger.admit((label, key), bytes, class) {
@@ -160,10 +163,16 @@ impl Graph {
                     state.published.remove(&victim);
                 }
                 state.published.insert((label, key), Arc::new(stats));
+                changed = true;
             }
         }
         drop(ledger);
         label_state.stale_after = stale_after;
         label_state.phase = Phase::Built;
+        // After the published map changed (the epoch's contract); a label
+        // that published nothing leaves every answer as it was.
+        if changed {
+            state.bump_epoch();
+        }
     }
 }

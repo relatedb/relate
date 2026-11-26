@@ -40,7 +40,7 @@
 //! structured keys outrank text keys and evict their entries when the
 //! budget is full. A key that was evicted or never admitted answers `None`.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use relate_core::Value;
@@ -140,9 +140,27 @@ pub(super) struct KeyStatsState {
     /// statement calls, to one load.
     requested: AtomicUsize,
     ledger: Mutex<Ledger>,
+    /// Monotonic count of changes to what a consult can answer: a label's
+    /// statistics published, aged out (a label turning stale) or cleared,
+    /// bumped AFTER the published map changed. A reader that stamps the
+    /// epoch before it consults can therefore never hold a stamp that
+    /// postdates a change it did not see (a plan cached against the
+    /// statistics of epoch `e` is stale once the epoch moves past `e`).
+    epoch: AtomicU64,
 }
 
 impl KeyStatsState {
+    /// The statistics epoch (see the field): one acquire load.
+    pub(super) fn epoch(&self) -> u64 {
+        self.epoch.load(Ordering::Acquire)
+    }
+
+    /// Record that what a consult answers has changed; called after the
+    /// change is visible.
+    fn bump_epoch(&self) {
+        self.epoch.fetch_add(1, Ordering::Release);
+    }
+
     /// The consult: one lookup on a hit; on a miss, record a request when
     /// the label has never been asked for, or went stale.
     fn get(&self, label: u32, key: u32) -> Option<Arc<KeyStats>> {
@@ -188,8 +206,13 @@ impl KeyStatsState {
             Phase::Built => {
                 state.writes += 1;
                 if state.writes > state.stale_after {
-                    self.evict_label(label);
+                    let dropped = self.evict_label(label);
                     state.phase = Phase::Stale;
+                    // Once per transition, not per write, and only when
+                    // published statistics actually went away.
+                    if dropped {
+                        self.bump_epoch();
+                    }
                 }
             }
             Phase::Building => state.writes += 1,
@@ -197,13 +220,16 @@ impl KeyStatsState {
         }
     }
 
-    /// Drop a label's published entries. The caller holds the label's state
-    /// (lock order: labels, then the ledger, then published).
-    fn evict_label(&self, label: u32) {
+    /// Drop a label's published entries, whether any were published. The
+    /// caller holds the label's state (lock order: labels, then the
+    /// ledger, then published).
+    fn evict_label(&self, label: u32) -> bool {
         let mut ledger = self.ledger.lock().expect("ledger lock");
-        for key in ledger.release_label(label) {
-            self.published.remove(&key);
+        let released = ledger.release_label(label);
+        for key in &released {
+            self.published.remove(key);
         }
+        !released.is_empty()
     }
 
     /// Whether any label waits for the pump: the one load the pump's fast
@@ -262,8 +288,12 @@ impl KeyStatsState {
         });
         self.active.fetch_sub(removed, Ordering::Relaxed);
         self.requested.fetch_sub(requested, Ordering::Relaxed);
+        let had_published = !self.published.is_empty();
         self.published.clear();
         *self.ledger.lock().expect("ledger lock") = Ledger::default();
+        if had_published {
+            self.bump_epoch();
+        }
     }
 
     /// Whether the counters agree with the label table: only meaningful
@@ -281,6 +311,16 @@ impl KeyStatsState {
 }
 
 impl Graph {
+    /// The statistics epoch: a monotonic count of changes to what
+    /// [`Graph::key_stats`] can answer (a label's statistics published,
+    /// aged out by writes, or cleared), one atomic load. A consumer that
+    /// reads it BEFORE it consults and stores it beside the result can tell
+    /// later that the result is out of date (the plan cache replans a plan
+    /// that consulted the statistics once the epoch moves).
+    pub fn key_stats_epoch(&self) -> u64 {
+        self.indexes.key_stats.epoch()
+    }
+
     /// The statistics of `property` on `label`'s nodes by interned id, or
     /// `None` while the label is unbuilt, stale, being built, or the key was
     /// declined or evicted. A hit is one map lookup; a miss never blocks

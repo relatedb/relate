@@ -160,6 +160,22 @@ impl Connection {
         query: Query,
         params: &BTreeMap<String, Value>,
     ) -> Result<LogicalPlan> {
+        self.plan_stamped_under_guard(query, params)
+            .map(|(plan, _)| plan)
+    }
+
+    /// [`Self::plan_under_guard`] plus the plan cache's second freshness
+    /// stamp: the per-key statistics epoch the plan was priced at, or
+    /// `None` when planning never consulted the statistics (such a plan
+    /// has nothing to go stale there, so the cache never compares it). The
+    /// epoch is read BEFORE planning, under the same publication read
+    /// guard: a publication that lands while the plan is built moves the
+    /// epoch past the stamp, so the entry replans once, never the reverse.
+    pub(crate) fn plan_stamped_under_guard(
+        &self,
+        query: Query,
+        params: &BTreeMap<String, Value>,
+    ) -> Result<(LogicalPlan, Option<u64>)> {
         let mut is_write_proc = |name: &str| call_is_write(&self.inner.graph, name);
         let stats = crate::stats::GraphPatternStats::new(&self.inner.graph, params);
         // Same bound-literal window the parameterized parse uses, so a
@@ -167,7 +183,24 @@ impl Connection {
         let _auto = relate_core::AutoLiteralGuard::install(params);
         // Deref-coerced down to the store's `Graph`, the token resolver.
         let graph: &relate_executor::Graph = &self.inner.graph;
-        plan_with_tokens(query, &mut is_write_proc, &stats, graph)
+        let epoch = graph.key_stats_epoch();
+        #[cfg(test)]
+        self.consult_key_stats_for_test(&stats);
+        let plan = plan_with_tokens(query, &mut is_write_proc, &stats, graph)?;
+        Ok((plan, stats.consulted_key_stats().then_some(epoch)))
+    }
+
+    /// Tests only: consult the statistics of the store's configured
+    /// `(label, property)` pair, the way a planner rung will.
+    #[cfg(test)]
+    fn consult_key_stats_for_test(&self, stats: &crate::stats::GraphPatternStats<'_>) {
+        use relate_planner::PatternStats;
+        let pair = self.inner.test_plan_consult.lock().unwrap().clone();
+        if let Some((label, property)) = pair {
+            let named =
+                |name: &str| relate_names::unresolved(relate_names::SmallName::from_name(name));
+            let _ = stats.key_stats(&named(&label), &named(&property));
+        }
     }
 
     /// The gate-and-classification half of [`Self::plan_gate_classify`],

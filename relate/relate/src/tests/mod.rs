@@ -15,6 +15,7 @@ mod open_peak;
 mod persist;
 mod persisted_sentinel;
 mod plan_cache;
+mod plan_cache_stats_epoch;
 mod point;
 mod preview;
 mod processing_limits;

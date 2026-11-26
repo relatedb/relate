@@ -1,6 +1,7 @@
 //! Planner cardinality hints read from the connection's graph.
 
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use relate_executor::Graph;
 use relate_ir::{BinaryOp, Expr};
@@ -66,6 +67,11 @@ pub(crate) trait PlanStats: PatternStats {
 pub(crate) struct GraphPatternStats<'a> {
     graph: &'a Graph,
     params: &'a BTreeMap<String, Value>,
+    /// Whether planning consulted the per-key value statistics
+    /// (`key_stats` or `equality_estimate`), whatever the answer: a plan
+    /// that did is priced from a store state the plan cache must watch
+    /// (ADR-0503's stats generation, plus the key-statistics epoch).
+    key_stats_consulted: AtomicBool,
 }
 
 impl<'a> GraphPatternStats<'a> {
@@ -76,7 +82,19 @@ impl<'a> GraphPatternStats<'a> {
         graph: &'a relate_executor::Graph,
         params: &'a std::collections::BTreeMap<String, Value>,
     ) -> GraphPatternStats<'a> {
-        GraphPatternStats { graph, params }
+        GraphPatternStats {
+            graph,
+            params,
+            key_stats_consulted: AtomicBool::new(false),
+        }
+    }
+
+    /// Whether any consult of the per-key value statistics went through
+    /// this adapter: the one fact the plan cache stamps a plan with (the
+    /// statistics epoch it was planned at) so that only plans that read the
+    /// statistics replan when the statistics change.
+    pub(crate) fn consulted_key_stats(&self) -> bool {
+        self.key_stats_consulted.load(Ordering::Relaxed)
     }
 }
 
@@ -185,6 +203,7 @@ impl PatternStats for GraphPatternStats<'_> {
         label: &NamedToken,
         property: &NamedToken,
     ) -> Option<std::sync::Arc<relate_planner::KeyStats>> {
+        self.key_stats_consulted.store(true, Ordering::Relaxed);
         relate_executor::GraphStats::new(self.graph, self.params).key_stats(label, property)
     }
 
@@ -195,6 +214,7 @@ impl PatternStats for GraphPatternStats<'_> {
         property: &NamedToken,
         value: &Expr,
     ) -> Option<relate_planner::RowEstimate> {
+        self.key_stats_consulted.store(true, Ordering::Relaxed);
         relate_executor::GraphStats::new(self.graph, self.params)
             .equality_estimate(label, property, value)
     }
