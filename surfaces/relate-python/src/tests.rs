@@ -17,8 +17,8 @@ fn with_py<F, R>(f: F) -> R
 where
     F: for<'py> FnOnce(Python<'py>) -> R,
 {
-    pyo3::prepare_freethreaded_python();
-    Python::with_gil(f)
+    Python::initialize();
+    Python::attach(f)
 }
 
 fn new_database(path: &str) -> Database {
@@ -133,12 +133,13 @@ fn temporal_result<'py>(py: Python<'py>, expr: &str) -> (Bound<'py, PyAny>, Stri
 /// duration_tests).
 fn temporal_attr<T>(value: &Bound<'_, PyAny>, name: &str) -> T
 where
-    T: for<'py> FromPyObject<'py>,
+    T: for<'py> FromPyObjectOwned<'py>,
 {
     value
         .getattr(name)
         .unwrap_or_else(|e| panic!("Temporal.{name} missing: {e}"))
-        .extract()
+        .extract::<T>()
+        .map_err(Into::<PyErr>::into)
         .unwrap_or_else(|e| panic!("Temporal.{name} has an unexpected type: {e}"))
 }
 

@@ -120,7 +120,7 @@ impl Temporal {
     /// — reduced to its fixed UTC offset. This is exactly the lossy projection
     /// [`Temporal`] exists to avoid; it is here so the value still interoperates
     /// with code that expects stdlib temporals.
-    fn to_native(&self, py: Python<'_>) -> PyResult<PyObject> {
+    fn to_native(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         match &self.parts {
             TemporalParts::DateTime { local, .. } => crate::convert::datetime_to_py(py, local),
             TemporalParts::LocalDateTime(dt) => crate::convert::localdatetime_to_py(py, dt),
@@ -141,7 +141,7 @@ impl Temporal {
     /// these kinds (a named zone never equals the offset it denotes, while
     /// `Z` equals `+00:00` — both render `Z`).
     fn __eq__(&self, other: &Bound<'_, PyAny>) -> bool {
-        match other.downcast::<Temporal>() {
+        match other.cast::<Temporal>() {
             Ok(o) => o.borrow().text == self.text,
             Err(_) => false,
         }
@@ -259,7 +259,7 @@ impl Duration {
     /// sub-microsecond nanoseconds, or lies outside `timedelta`'s range;
     /// note that `timedelta` normalizes seconds into days, so two different
     /// durations (`PT36H`, `P1DT12H`) can project to equal `timedelta`s.
-    fn to_timedelta(&self, py: Python<'_>) -> PyResult<PyObject> {
+    fn to_timedelta(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let (days, seconds, micros) = self.timedelta_parts().ok_or_else(|| {
             PyValueError::new_err(format!(
                 "duration {} has no lossless datetime.timedelta: it has months, \
@@ -285,7 +285,7 @@ impl Duration {
     }
 
     fn __eq__(&self, other: &Bound<'_, PyAny>) -> bool {
-        match other.downcast::<Duration>() {
+        match other.cast::<Duration>() {
             Ok(o) => o.get().identity() == self.identity(),
             Err(_) => false,
         }

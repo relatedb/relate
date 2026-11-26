@@ -56,7 +56,7 @@ impl Walk {
                 self.context
             )));
         }
-        // `visiting` holds the `PyObject*` of every container on the current
+        // `visiting` holds the `Py<PyAny>*` of every container on the current
         // recursion path, so a list/dict that (transitively) contains itself is
         // rejected instead of recursing forever. A repeated container is never
         // inserted, so the matching remove below is reached only on success.

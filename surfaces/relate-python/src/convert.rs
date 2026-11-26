@@ -139,7 +139,7 @@ pub(super) fn py_fixed_tz<'py>(
     dtmod.call_method1("timezone", (td,))
 }
 
-pub(super) fn date_to_py(py: Python<'_>, d: &NaiveDate) -> PyResult<PyObject> {
+pub(super) fn date_to_py(py: Python<'_>, d: &NaiveDate) -> PyResult<Py<PyAny>> {
     let dtmod = py.import("datetime")?;
     Ok(dtmod
         .call_method1("date", (d.year(), d.month(), d.day()))?
@@ -150,10 +150,10 @@ pub(super) fn time_to_py(
     py: Python<'_>,
     t: &NaiveTime,
     off: &Option<FixedOffset>,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     let dtmod = py.import("datetime")?;
     let micro = (t.nanosecond() / 1000).min(999_999);
-    let tzinfo: PyObject = match off {
+    let tzinfo: Py<PyAny> = match off {
         Some(o) => py_fixed_tz(&dtmod, o.local_minus_utc())?.unbind(),
         None => py.None(),
     };
@@ -162,7 +162,7 @@ pub(super) fn time_to_py(
         .unbind())
 }
 
-pub(super) fn datetime_to_py(py: Python<'_>, dt: &DateTime<FixedOffset>) -> PyResult<PyObject> {
+pub(super) fn datetime_to_py(py: Python<'_>, dt: &DateTime<FixedOffset>) -> PyResult<Py<PyAny>> {
     let dtmod = py.import("datetime")?;
     let tz = py_fixed_tz(&dtmod, dt.offset().local_minus_utc())?.unbind();
     let micro = (dt.nanosecond() / 1000).min(999_999);
@@ -186,7 +186,7 @@ pub(super) fn datetime_to_py(py: Python<'_>, dt: &DateTime<FixedOffset>) -> PyRe
 pub(super) fn localdatetime_to_py(
     py: Python<'_>,
     ndt: &chrono::NaiveDateTime,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     let dtmod = py.import("datetime")?;
     let micro = (ndt.nanosecond() / 1000).min(999_999);
     Ok(dtmod
@@ -227,14 +227,14 @@ fn temporal_render(val: &CypherValue) -> PyResult<(String, &'static str)> {
 }
 
 /// Build the rich [`Temporal`] that carries the full fidelity of `val`.
-fn rich_temporal(py: Python<'_>, parts: TemporalParts, val: &CypherValue) -> PyResult<PyObject> {
+fn rich_temporal(py: Python<'_>, parts: TemporalParts, val: &CypherValue) -> PyResult<Py<PyAny>> {
     let (text, kind) = temporal_render(val)?;
     Ok(Py::new(py, Temporal::new(parts, kind, text))?.into_any())
 }
 
 /// Convert a temporal [`CypherValue`]: its stdlib counterpart when that is
 /// lossless, [`Temporal`] when it is not.
-fn temporal_to_py(py: Python<'_>, val: &CypherValue) -> PyResult<PyObject> {
+fn temporal_to_py(py: Python<'_>, val: &CypherValue) -> PyResult<Py<PyAny>> {
     match val {
         CypherValue::Date(d) => date_to_py(py, d),
         CypherValue::Time(t, off) => {
@@ -289,7 +289,7 @@ fn temporal_to_py(py: Python<'_>, val: &CypherValue) -> PyResult<PyObject> {
 /// A duration result: always the lossless [`Duration`] (ADR-0502 §1) —
 /// never a `timedelta`, which would merge `PT36H` into `P1DT12H`, drop
 /// months and floor nanoseconds.
-pub(super) fn duration_to_py(py: Python<'_>, dur: &IsoDuration) -> PyResult<PyObject> {
+pub(super) fn duration_to_py(py: Python<'_>, dur: &IsoDuration) -> PyResult<Py<PyAny>> {
     Ok(Py::new(py, Duration { value: dur.clone() })?.into_any())
 }
 
@@ -310,7 +310,7 @@ pub(super) fn notifications_to_py(
 /// Convert a `serde_json::Value` (from the canonical wire encoder) to a Python
 /// object. Used for geometries, whose self-describing wire shape is the Python
 /// representation, and for the notification and plan documents.
-pub(super) fn json_to_py(py: Python<'_>, v: &serde_json::Value) -> PyResult<PyObject> {
+pub(super) fn json_to_py(py: Python<'_>, v: &serde_json::Value) -> PyResult<Py<PyAny>> {
     use serde_json::Value as J;
     match v {
         J::Null => Ok(py.None()),
@@ -353,7 +353,7 @@ pub(super) fn cypher_value_to_py(
     py: Python<'_>,
     val: &CypherValue,
     ns: Namespace,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     match val {
         CypherValue::Null => Ok(py.None()),
         CypherValue::Bool(b) => Ok(b.into_pyobject(py).unwrap().to_owned().into_any().unbind()),
@@ -434,7 +434,7 @@ pub(super) fn py_type_name(obj: &Bound<'_, PyAny>) -> String {
 pub(super) fn py_params_to_cypher(
     obj: &Bound<'_, PyAny>,
 ) -> PyResult<HashMap<String, CypherValue>> {
-    let dict = obj.downcast::<PyDict>().map_err(|_| {
+    let dict = obj.cast::<PyDict>().map_err(|_| {
         PyTypeError::new_err(format!(
             "query parameters must be a dict mapping string keys to values, got '{}'",
             py_type_name(obj)
@@ -501,7 +501,7 @@ pub(super) fn try_temporal(obj: &Bound<'_, PyAny>) -> PyResult<Option<CypherValu
 /// pyo3's own out-of-range message names the C width instead of the parameter.
 fn timedelta_component(obj: &Bound<'_, PyAny>, field: &str) -> PyResult<i64> {
     let value = obj.getattr(field)?;
-    let int = value.downcast::<PyInt>().map_err(|_| {
+    let int = value.cast::<PyInt>().map_err(|_| {
         PyTypeError::new_err(format!(
             "timedelta parameter field '{field}' must be an integer, got '{}'",
             py_type_name(&value)
@@ -621,7 +621,7 @@ fn bytes_to_int_list(bytes: &[u8]) -> CypherValue {
 }
 
 /// The shared list/tuple arm: convert each element of a Python sequence
-/// (already downcast by the caller) into a `LIST`, tracking the container
+/// (already cast by the caller) into a `LIST`, tracking the container
 /// for cycle detection.
 fn py_seq_to_list<'py>(
     obj: &Bound<'py, PyAny>,
@@ -648,10 +648,10 @@ fn py_to_cypher_value_at(obj: &Bound<'_, PyAny>, walk: &mut Walk) -> PyResult<Cy
     if obj.is_none() {
         return Ok(CypherValue::Null);
     }
-    if let Ok(b) = obj.downcast::<PyBool>() {
+    if let Ok(b) = obj.cast::<PyBool>() {
         return Ok(CypherValue::Bool(b.is_true()));
     }
-    if let Ok(i) = obj.downcast::<PyInt>() {
+    if let Ok(i) = obj.cast::<PyInt>() {
         let v = i.extract::<i64>().map_err(|_| {
             PyOverflowError::new_err(
                 "integer parameter is out of range for a 64-bit Relate integer",
@@ -659,22 +659,22 @@ fn py_to_cypher_value_at(obj: &Bound<'_, PyAny>, walk: &mut Walk) -> PyResult<Cy
         })?;
         return Ok(CypherValue::Int(v));
     }
-    if let Ok(f) = obj.downcast::<PyFloat>() {
+    if let Ok(f) = obj.cast::<PyFloat>() {
         return Ok(CypherValue::Float(f.extract::<f64>()?));
     }
-    if let Ok(s) = obj.downcast::<PyString>() {
+    if let Ok(s) = obj.cast::<PyString>() {
         return Ok(CypherValue::Str(s.to_string()));
     }
     if let Some(temporal) = try_temporal(obj)? {
         return Ok(temporal);
     }
-    if let Ok(dur) = obj.downcast::<Duration>() {
+    if let Ok(dur) = obj.cast::<Duration>() {
         return Ok(CypherValue::Duration(dur.get().value.clone()));
     }
-    if let Ok(vector) = obj.downcast::<Vector>() {
+    if let Ok(vector) = obj.cast::<Vector>() {
         return Ok(vector.get().to_cypher());
     }
-    if let Ok(pt) = obj.downcast::<Point>() {
+    if let Ok(pt) = obj.cast::<Point>() {
         let p = pt.borrow();
         return Ok(CypherValue::Point(PointValue {
             srid: p.srid,
@@ -686,21 +686,21 @@ fn py_to_cypher_value_at(obj: &Bound<'_, PyAny>, walk: &mut Walk) -> PyResult<Cy
     if let Some(uuid) = try_uuid(obj)? {
         return Ok(uuid);
     }
-    if let Ok(b) = obj.downcast::<PyBytes>() {
+    if let Ok(b) = obj.cast::<PyBytes>() {
         return Ok(bytes_to_int_list(b.as_bytes()));
     }
-    if let Ok(ba) = obj.downcast::<PyByteArray>() {
+    if let Ok(ba) = obj.cast::<PyByteArray>() {
         // SAFETY: no Python code runs while the bytes are read.
         return Ok(bytes_to_int_list(unsafe { ba.as_bytes() }));
     }
-    if let Ok(list) = obj.downcast::<PyList>() {
+    if let Ok(list) = obj.cast::<PyList>() {
         return py_seq_to_list(obj, list.iter(), walk);
     }
     // Tuples convert exactly like lists (ADR-0219).
-    if let Ok(tuple) = obj.downcast::<PyTuple>() {
+    if let Ok(tuple) = obj.cast::<PyTuple>() {
         return py_seq_to_list(obj, tuple.iter(), walk);
     }
-    if let Ok(dict) = obj.downcast::<PyDict>() {
+    if let Ok(dict) = obj.cast::<PyDict>() {
         // Dicts are always maps (ADR-0219): points are made only from an
         // explicit `relate.Point` (above) or in Cypher via `point()`.
         return walk.enter(obj, |walk| {

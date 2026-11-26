@@ -142,7 +142,7 @@ rustyline = "14"
 crossterm = "0.28"
 
 # Python bindings
-pyo3 = { version = "0.23", features = ["extension-module"] }
+pyo3 = { version = "0.30", features = ["extension-module"] }
 
 # Arrow (Relate). Arrow 60, matching the chrono clients implementing
 # embedded Relate already use.
@@ -199,7 +199,7 @@ rustc-hash = "2"
 xxhash-rust = { version = "0.8", default-features = false, features = ["xxh3"] }
 # R*-tree POINT index backend (ADR-0549): pure Rust, three new transitive
 # packages (heapless, hash32, stable_deref_trait), MSRV 1.63.
-rstar = "0.12"
+rstar = "0.13"
 # Advisory file locks: relate-storage's bundle locks and the
 # query-latency per-dataset ensure lock (single pin for both consumers).
 fs4 = "=1.1.0"

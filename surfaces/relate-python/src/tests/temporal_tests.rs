@@ -102,7 +102,7 @@ fn test_named_zone_datetime_keeps_zone_name_across_dst() {
             assert_eq!(temporal_attr::<u32>(&value, "nanosecond"), 0, "{expr}");
             // The stdlib projection keeps the offset but drops the name.
             let native = value.call_method0("to_native").unwrap();
-            assert!(temporal_attr::<Option<PyObject>>(&native, "tzinfo").is_some());
+            assert!(temporal_attr::<Option<Py<PyAny>>>(&native, "tzinfo").is_some());
         }
     });
 }

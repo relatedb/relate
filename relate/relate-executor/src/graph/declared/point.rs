@@ -152,7 +152,7 @@ pub(crate) fn spatial_ids(st: &PointIndex, seek: &SpatialSeek) -> HashSet<NodeId
         return st.pts.keys().copied().collect();
     }
     let mut out = HashSet::new();
-    for envelope in &envelopes {
+    for envelope in envelopes {
         out.extend(
             st.tree
                 .locate_in_envelope_intersecting(envelope)

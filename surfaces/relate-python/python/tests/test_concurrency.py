@@ -5,7 +5,7 @@ Two concerns (GH #352 / LABS-700):
 - GIL release: ``execute`` / ``execute_arrow`` release the GIL around the
   Rust engine call, so other threads make progress while a query runs; the
   first tests assert many threads running queries concurrently all complete
-  without deadlock -- exercising the ``py.allow_threads`` path end to end.
+  without deadlock -- exercising the ``py.detach`` path end to end.
 - Connection affinity: a ``Connection`` is usable only on the thread that
   opened it (``threadsafety == 1``). Cross-thread use is a typed
   ``ProgrammingError`` (never a pyo3 ``PanicException``), and releasing the
