@@ -103,7 +103,11 @@ pub(crate) enum Consumer {
     /// output-sensitively after the BFS, the path variable and group
     /// lists consumed through them. BFS-discovery order replaces DFS
     /// order (ADR-0478 Decision 4 — LIMIT without ORDER BY has no order
-    /// contract).
+    /// contract). An emission that ends short of `want` is not a prefix
+    /// of the answer — the pair-level witnesses drop every further path
+    /// to a reached pair, and the cap admitted them — so it declines
+    /// (`FrontierRunDecline::ShortCap`) and the walker answers (REL8-2076
+    /// finding 29).
     Capped { want: usize },
 }
 

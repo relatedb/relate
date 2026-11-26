@@ -150,6 +150,7 @@ pub const FRONTIER_DECLINE_REASON: &str = "FrontierDeclineReason";
 /// vocabulary macros and by the table below.
 pub const DECLINE_REARRIVAL_BUDGET: &str = "rearrival-budget";
 pub const DECLINE_TABLE_BUDGET: &str = "table-budget";
+pub const DECLINE_SHORT_CAP: &str = "short-cap";
 pub const DECLINE_MULTIPLE_PATTERNS: &str = "multiple-patterns";
 pub const DECLINE_CARRYING_ROW: &str = "carrying-row";
 pub const DECLINE_MODE: &str = "mode";
@@ -165,9 +166,10 @@ pub const DECLINE_PATH_COUNT: &str = "path-count";
 pub const DECLINE_PATH_CONSUMER: &str = "path-consumer";
 pub const DECLINE_COST: &str = "cost";
 /// The decline names, in the vocabulary's own order.
-pub const DECLINE_REASONS: [&str; 16] = [
+pub const DECLINE_REASONS: [&str; 17] = [
     DECLINE_REARRIVAL_BUDGET,
     DECLINE_TABLE_BUDGET,
+    DECLINE_SHORT_CAP,
     DECLINE_MULTIPLE_PATTERNS,
     DECLINE_CARRYING_ROW,
     DECLINE_MODE,

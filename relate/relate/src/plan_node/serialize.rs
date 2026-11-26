@@ -593,7 +593,9 @@ mod tests {
         // Exhaustive matches tie the iterated lists below to the enums:
         // a new variant fails to compile here until it is listed.
         let _ = |reason: FrontierRunDecline| match reason {
-            FrontierRunDecline::RearrivalBudget | FrontierRunDecline::TableBudget => (),
+            FrontierRunDecline::RearrivalBudget
+            | FrontierRunDecline::TableBudget
+            | FrontierRunDecline::ShortCap => (),
         };
         let _ = |reason: FrontierDecline| match reason {
             FrontierDecline::MultiplePatterns

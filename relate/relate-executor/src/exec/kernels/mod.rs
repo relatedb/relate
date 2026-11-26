@@ -132,6 +132,12 @@ mod frontier_differential_tests;
 #[cfg(test)]
 mod frontier_pair_tests;
 
+// The capped emission's unfilled-cap fall-through (REL8-2076 finding 29):
+// a `LIMIT` whose cap exceeds the reached (seed, endpoint) pairs declines
+// (`short-cap`) so the walker's cap rider emits `min(want, paths)` rows.
+#[cfg(test)]
+mod frontier_short_cap_tests;
+
 // The PROFILE record's plan-time decline reason (LABS-1437).
 #[cfg(test)]
 mod frontier_decline_tests;

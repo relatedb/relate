@@ -526,7 +526,8 @@ plan.
   constant), zeros when the clause walks no frontier), `frontier_decline`
   (why the frontier rung did not serve the clause (ADR-0582), as a stable name —
   `null` when it served it or never considered it; a run-time decline,
-  `rearrival-budget` (ADR-0516) or `table-budget` (ADR-0521), or the
+  `rearrival-budget` (ADR-0516), `table-budget` (ADR-0521), or
+  `short-cap` (a capped run that ended before its cap filled), or the
   plan-time gate that kept the clause off the rung: `conjunct`,
   `nfa-shape`, `cost`, `full-enumeration`, `path-count`, `ordered-cap`,
   `path-consumer`, `mode`, `carrying-row`, `pinned-binding`,

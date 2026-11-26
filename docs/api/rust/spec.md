@@ -1425,9 +1425,12 @@ The plan representation is the `PlanNode` tree:
   rung did not serve the clause (`FrontierDeclineReason`, re-exported by this crate
   beside `FrontierCounters` and `PhaseTimes`; `as_str` names the reason):
   either `Run(FrontierRunDecline)` (ADR-0516) — the rung ran and fell
-  through: `RearrivalBudget`, the re-arrival budget's exhaustion, or
-  `TableBudget`, the sparse tables' allocation ceiling, ADR-0521; the
-  counters above stay recorded beside it — or `Plan(FrontierDecline)`
+  through: `RearrivalBudget`, the re-arrival budget's exhaustion,
+  `TableBudget`, the sparse tables' allocation ceiling (ADR-0521), or
+  `ShortCap`, a capped run that ended before its cap filled (its
+  pair-level witnesses cannot answer the full-enumeration question the
+  cap admitted); the counters above stay recorded beside it — or
+  `Plan(FrontierDecline)`
   (also re-exported) — a plan-time gate kept the clause off the rung, the
   counters zero: `Conjunct` (a `WHERE` conjunct outside the boundary
   vocabulary), `NfaShape` (the pattern does not compile to the NFA, e.g.
