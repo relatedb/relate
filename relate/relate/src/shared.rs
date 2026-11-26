@@ -338,6 +338,12 @@ pub(crate) struct Shared {
     pub(crate) follow_test: Mutex<follow::FollowTest>,
     #[cfg(test)]
     pub(crate) follow_test_cv: Condvar,
+    /// Tests only: a `(label, property)` pair every plan-time adapter of
+    /// this store consults the per-key statistics for before planning. No
+    /// production planner rung consults them yet, so the plan cache's
+    /// statistics epoch is driven through this seam.
+    #[cfg(test)]
+    pub(crate) test_plan_consult: Mutex<Option<(String, String)>>,
 }
 
 /// The loaded graph's next node/relationship ids as the store's `u64`
@@ -473,6 +479,8 @@ impl Shared {
             follow_test: Mutex::new(follow::FollowTest::default()),
             #[cfg(test)]
             follow_test_cv: Condvar::new(),
+            #[cfg(test)]
+            test_plan_consult: Mutex::new(None),
         })
     }
 

@@ -60,6 +60,81 @@ fn an_abandoned_scan_is_not_counted_as_built_and_stays_requested() {
     assert!(g.key_stats_named("P", "k").is_some());
 }
 
+/// Create `n` more `:P` nodes in one committed write.
+fn add_p_nodes(g: &Graph, n: i64) {
+    g.begin_write().unwrap();
+    for i in 0..n {
+        g.create_node(vec!["P".into()], props(&[("k", Value::Int(10_000 + i))]))
+            .unwrap();
+    }
+    g.commit_write();
+}
+
+/// The statistics epoch moves exactly when what a consult answers changes:
+/// a label's statistics publish, age out once the writes pass the stale
+/// threshold (once per transition, not per write), or are cleared; a bare
+/// request, writes below the threshold and writes to an already stale
+/// label move nothing. It never goes backwards.
+#[test]
+fn the_epoch_moves_when_statistics_publish_age_out_or_clear_and_only_then() {
+    let g = graph(10, |i| props(&[("k", Value::Int(i))]));
+    let seen = std::cell::Cell::new(g.key_stats_epoch());
+    // The epoch moved by `by` since the last check.
+    let moved = |g: &Graph, by: u64, why: &str| {
+        let now = g.key_stats_epoch();
+        assert_eq!(now, seen.get() + by, "{why}");
+        seen.set(now);
+    };
+
+    assert!(g.key_stats_named("P", "k").is_none());
+    moved(&g, 0, "a request changes no answer");
+
+    assert_eq!(pump(&g), 1);
+    moved(&g, 1, "the label's statistics published");
+    assert!(g.key_stats_named("P", "k").is_some());
+
+    add_p_nodes(&g, 3);
+    moved(&g, 0, "writes below the stale threshold");
+
+    // 100 writes in several commits: one transition to stale, one bump.
+    for _ in 0..10 {
+        add_p_nodes(&g, 10);
+    }
+    moved(&g, 1, "the label turned stale, once, not once per write");
+    assert!(g.key_stats_named("P", "k").is_none(), "stale answers None");
+    add_p_nodes(&g, 10);
+    moved(&g, 0, "writes to an already stale label");
+
+    assert_eq!(pump(&g), 1);
+    moved(&g, 1, "the rebuild published again");
+
+    g.indexes.key_stats.clear();
+    moved(&g, 1, "clearing dropped the published statistics");
+    g.indexes.key_stats.clear();
+    moved(&g, 0, "clearing nothing changes nothing");
+}
+
+/// A publication that leaves every answer as it was (every key of the
+/// label declined, so nothing is published) does not move the epoch: a
+/// plan that read the unmeasured label stays valid.
+#[test]
+fn publishing_nothing_leaves_the_epoch_alone() {
+    let long = Value::String("x".repeat(MAX_TEXT_BYTES + 1).into());
+    let g = graph(50, |_| props(&[("doc", long.clone())]));
+    let before = g.key_stats_epoch();
+    assert!(g.key_stats_named("P", "doc").is_none());
+    assert_eq!(pump(&g), 1, "the label was scanned and published");
+    assert!(
+        g.key_stats_named("P", "doc").is_none(),
+        "the key is declined"
+    );
+    assert_eq!(
+        g.key_stats_epoch(),
+        before,
+        "nothing a consult sees changed"
+    );
+}
+
 #[test]
 fn the_pending_flag_tracks_requests_for_the_seams_fast_path() {
     let g = graph(10, |i| props(&[("k", Value::Int(i))]));

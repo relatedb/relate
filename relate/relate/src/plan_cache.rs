@@ -140,6 +140,22 @@ pub(crate) struct EntryHandles {
     pub(crate) query: Arc<Query>,
     pub(crate) plan: Arc<LogicalPlan>,
     pub(crate) generation: u64,
+    /// The per-key statistics epoch the plan was priced at, `None` when
+    /// planning never consulted the statistics (such an entry is never
+    /// compared: another label's statistics publishing is no reason to
+    /// replan it).
+    pub(crate) key_stats_epoch: Option<u64>,
+}
+
+impl EntryHandles {
+    /// Whether the plan is still the one planning would produce now: no
+    /// commit since it was compiled (the stats generation), and, when it
+    /// read the per-key statistics, none of them published, aged out or
+    /// cleared since (the statistics epoch). The one freshness rule; both
+    /// current values are read under the publication read guard.
+    pub(crate) fn is_fresh(&self, generation: u64, key_stats_epoch: u64) -> bool {
+        self.generation == generation && self.key_stats_epoch.is_none_or(|e| e == key_stats_epoch)
+    }
 }
 
 impl PlanCacheEntry {
@@ -181,9 +197,11 @@ pub enum PlanCacheOutcome {
     /// Stage 1 served the cached plan: the raw statement text matched an
     /// entry's last raw hit, no normalizer pass.
     HitRawFastPath,
-    /// A hit whose entry's stats generation no longer matched — the store
-    /// committed since the plan was compiled — so the carried AST
-    /// re-planned under the fresh generation.
+    /// A hit whose entry's stats no longer matched — the store committed
+    /// since the plan was compiled (the stats generation), or the per-key
+    /// value statistics the plan read changed (the statistics epoch, only
+    /// compared for a plan that read them) — so the carried AST re-planned
+    /// under the fresh stats.
     ReplanGenerationMismatch,
     /// No entry matched — or a hit whose cached plan was rejected for
     /// literal-shape safety, so the statement ran an original compile:
@@ -275,10 +293,17 @@ impl PlanCache {
         Some(handles)
     }
 
-    /// Record the replan a generation mismatch produced: the fresh plan
-    /// and the generation it was planned at. A no-op when the template
-    /// was evicted in between (the next miss re-inserts it).
-    pub(crate) fn update_plan(&mut self, template: &str, plan: Arc<LogicalPlan>, generation: u64) {
+    /// Record the replan a freshness mismatch produced: the fresh plan, the
+    /// generation it was planned at and its statistics epoch stamp. A
+    /// no-op when the template was evicted in between (the next miss
+    /// re-inserts it).
+    pub(crate) fn update_plan(
+        &mut self,
+        template: &str,
+        plan: Arc<LogicalPlan>,
+        generation: u64,
+        key_stats_epoch: Option<u64>,
+    ) {
         if let Some(index) = self.position_of(template) {
             let entry = &mut self.entries[index];
             let logical = entry_bytes(
@@ -296,6 +321,7 @@ impl PlanCache {
             }
             entry.handles.plan = plan;
             entry.handles.generation = generation;
+            entry.handles.key_stats_epoch = key_stats_epoch;
         }
     }
 
@@ -475,6 +501,7 @@ mod tests {
                 query: Arc::new(query),
                 plan: Arc::new(plan),
                 generation,
+                key_stats_epoch: None,
             },
             raw: RawStatement {
                 text: raw.into(),
@@ -519,10 +546,33 @@ mod tests {
         let query = (*handles.query).clone();
         assert_eq!(query.parts.len(), 1);
         let fresh = Arc::new(relate_planner::plan(query, &mut |_| false).unwrap());
-        cache.update_plan("t", Arc::clone(&fresh), 8);
+        cache.update_plan("t", Arc::clone(&fresh), 8, Some(3));
         let replanned = cache.find_template("t").expect("present");
         assert_eq!(replanned.generation, 8);
+        assert_eq!(replanned.key_stats_epoch, Some(3));
         assert!(Arc::ptr_eq(&replanned.plan, &fresh));
+    }
+
+    /// Freshness is the commit generation AND, only for a plan that read
+    /// the per-key statistics, their epoch; a plan that never read them
+    /// ignores the epoch entirely.
+    #[test]
+    fn freshness_compares_the_epoch_only_for_a_plan_that_read_the_statistics() {
+        let mut cache = PlanCache::default();
+        cache.insert(entry("t", 7, "RETURN 1 AS one"));
+        let unstamped = cache.find_template("t").expect("present");
+        assert!(
+            unstamped.is_fresh(7, 0) && unstamped.is_fresh(7, 99),
+            "no stamp: any epoch"
+        );
+        assert!(!unstamped.is_fresh(8, 0), "the generation still decides");
+        let stamped = EntryHandles {
+            key_stats_epoch: Some(5),
+            ..unstamped
+        };
+        assert!(stamped.is_fresh(7, 5));
+        assert!(!stamped.is_fresh(7, 6), "the epoch moved past the stamp");
+        assert!(!stamped.is_fresh(8, 5), "the generation moved");
     }
 
     /// At most `PLAN_CACHE_CAPACITY` entries: the least recently used

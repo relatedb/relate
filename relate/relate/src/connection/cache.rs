@@ -115,6 +115,7 @@ pub(super) struct PendingCache {
     pub(super) query: Arc<Query>,
     pub(super) plan: Arc<LogicalPlan>,
     pub(super) generation: u64,
+    pub(super) key_stats_epoch: Option<u64>,
     pub(super) text: String,
     pub(super) values: Vec<(String, Value)>,
     pub(super) bytes: u64,
@@ -232,27 +233,35 @@ impl Connection {
         // parameterized statement would.
         let effective = effective_params(params, values);
         let current = self.inner.stats_generation.current();
+        let graph: &relate_executor::Graph = &self.inner.graph;
+        let current_epoch = graph.key_stats_epoch();
+        let fresh = handles.is_fresh(current, current_epoch);
         let EntryHandles {
             template,
             query,
             mut plan,
-            generation,
+            ..
         } = handles;
         // LABS-1120: the outcome starts as the lookup's hit flavor (the
         // payload's own typed value) and is overwritten only by the
         // generation check below — the two facts that made this hit what
         // it is, derived once, here.
         let mut outcome = stage;
-        if generation != current {
-            // The store committed since this plan was compiled: the
-            // carried AST re-plans against fresh stats, and the entry
-            // updates itself only if it is still present — outside every
-            // lock.
-            let replanned = Arc::new(self.plan_under_guard((*query).clone(), &effective)?);
+        if !fresh {
+            // The store committed since this plan was compiled, or the
+            // per-key statistics it read changed: the carried AST re-plans
+            // against fresh stats, and the entry updates itself only if it
+            // is still present — outside every lock. The replan's own
+            // epoch stamp rides into the entry (a replan that read no
+            // statistics clears it).
+            let (replanned, key_stats_epoch) =
+                self.plan_stamped_under_guard((*query).clone(), &effective)?;
+            let replanned = Arc::new(replanned);
             crate::plan_cache::lock(&self.inner).update_plan(
                 &template,
                 Arc::clone(&replanned),
                 current,
+                key_stats_epoch,
             );
             plan = replanned;
             outcome = crate::PlanCacheOutcome::ReplanGenerationMismatch;
@@ -302,7 +311,9 @@ impl Connection {
         let plan_started = Instant::now();
         let _read = self.inner.read_guard()?;
         let generation = self.inner.stats_generation.current();
-        let Ok(plan) = self.plan_under_guard(parsed.query.clone(), &effective) else {
+        let Ok((plan, key_stats_epoch)) =
+            self.plan_stamped_under_guard(parsed.query.clone(), &effective)
+        else {
             return Ok(None);
         };
         let Ok(stamp) = self.gates_classify_under_guard(&plan, &effective) else {
@@ -325,6 +336,7 @@ impl Connection {
                 query,
                 plan,
                 generation,
+                key_stats_epoch,
                 text: cypher.to_owned(),
                 values,
                 bytes,
@@ -340,6 +352,7 @@ impl Connection {
             query,
             plan,
             generation,
+            key_stats_epoch,
             text,
             values,
             bytes: _,
@@ -351,6 +364,7 @@ impl Connection {
                 query,
                 plan,
                 generation,
+                key_stats_epoch,
             },
             raw: crate::plan_cache::RawStatement {
                 text: text.into(),
