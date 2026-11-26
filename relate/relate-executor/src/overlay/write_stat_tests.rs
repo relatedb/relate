@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 use std::sync::atomic::AtomicUsize;
 
 use super::test_support::run_write;
+use super::ExecGraph;
 use crate::exec::test_support::{
     exec_write_batched, exec_write_uncommitted, write_scratch, ApplySink,
 };
@@ -156,4 +157,13 @@ fn batched_delete_of_node_committed_by_earlier_batch_counts_both() {
     assert_eq!(result.stats.nodes_created, 2);
     assert_eq!(result.stats.nodes_deleted, 1);
     assert_eq!(g.live_node_count(), 1);
+}
+
+#[test]
+fn add_labels_to_a_missing_node_counts_no_label() {
+    let g = Graph::default();
+    let scratch = write_scratch(&g);
+    let view = ExecGraph::write(&g, &scratch);
+    view.add_labels(999, &["Ghost".into()]);
+    assert_eq!(view.stats().labels_added, 0);
 }

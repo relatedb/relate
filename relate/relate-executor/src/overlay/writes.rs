@@ -161,7 +161,6 @@ impl ExecGraph<'_> {
             .map(str::to_string)
             .collect();
         let mut s = self.scratch_mut();
-        let (labels_added, labels_removed) = self.label_deltas(&s, &fresh, LabelChange::Gain);
         let created = s.batch.created_nodes.contains(&id);
         let shift = CreatedShift::begin(&s, created, node_label_bytes(id));
         let mut added = Vec::new();
@@ -170,6 +169,9 @@ impl ExecGraph<'_> {
             added = fresh;
         }
         shift.finish(&mut s);
+        // Accounted from the applied set (`added`), like remove_labels: a
+        // missing or scratch-deleted node applies nothing and counts nothing.
+        let (labels_added, labels_removed) = self.label_deltas(&s, &added, LabelChange::Gain);
         s.net_label_stats(labels_added, labels_removed);
         if !added.is_empty() {
             s.batch.bump_live_labels(&added, 1);
