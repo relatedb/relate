@@ -7,8 +7,14 @@
 //! per-statement consult memo (ADR-0508) wrapping every implementor lives
 //! in [`memo`].
 
+use std::sync::Arc;
+
 use relate_ir::{BinaryOp, Expr};
 use relate_names::{NamedToken, SmallName};
+
+mod key_stats;
+
+pub use key_stats::{HeavyValue, KeyStats, Provenance, RowEstimate};
 
 /// Provenance of a plan-time `CONTAINS` candidate count (LABS-643): the
 /// TEXT index stays the one exact measurement, and without one the count
@@ -118,6 +124,31 @@ pub trait PatternStats {
 
     /// Relationships of `rel_type`.
     fn rel_type_rows(&self, rel_type: &NamedToken) -> Option<u64>;
+
+    /// The value statistics of `property` over `label`'s nodes (the
+    /// per-key statistics ADR): count, distinct, minimum, maximum, sum and
+    /// the heavy values, with their [`Provenance`]. `None` means
+    /// unmeasured: the label's statistics are not built yet, the key was
+    /// declined or evicted, or the pair is unresolved — never zero rows.
+    fn key_stats(&self, _label: &NamedToken, _property: &NamedToken) -> Option<Arc<KeyStats>> {
+        None
+    }
+
+    /// Rows an equality of `property` on `label` against `value` selects,
+    /// from the key's statistics (or an index or built pair that answers
+    /// exactly), with the provenance of the answer. `value` is the raw
+    /// predicate expression; implementors resolve literals and parameters
+    /// with [`Expr::seek_value`] and return `None` for anything else.
+    /// Unlike [`PatternStats::equality_rows`], which needs an index, this
+    /// prices an unindexed key too; `None` means unmeasured.
+    fn equality_estimate(
+        &self,
+        _label: &NamedToken,
+        _property: &NamedToken,
+        _value: &Expr,
+    ) -> Option<RowEstimate> {
+        None
+    }
 
     /// LABS-351: the tail of a (label, rel-type) out-degree distribution —
     /// the conservative floor of the highest observed degree (a log2-bucket

@@ -266,7 +266,7 @@ impl DrainState for RangeIndex {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub(super) enum OrderKey {
+pub(in crate::graph) enum OrderKey {
     Bool(bool),
     Int(i64),
     Float(u64),
@@ -337,7 +337,7 @@ pub(super) fn dt_nanos(dt: NaiveDateTime) -> Option<i64> {
 /// one. Declining the key instead makes its presence mark the node
 /// `unbounded`, and a comparison seek scans rather than answering the Date
 /// variant alone.
-pub(super) fn order_key(v: &Value) -> Option<OrderKey> {
+pub(in crate::graph) fn order_key(v: &Value) -> Option<OrderKey> {
     match v {
         Value::Bool(b) => Some(OrderKey::Bool(*b)),
         Value::Int(i) => Some(OrderKey::Int(*i)),

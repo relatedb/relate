@@ -20,6 +20,7 @@ mod seek;
 mod text;
 
 pub(super) use order::RangeIndex;
+pub(in crate::graph) use order::{order_key, OrderKey};
 pub(crate) use order::{Extremum, RangeSeek, SpatialSeek};
 pub(crate) use point::spatial_holds;
 pub(super) use point::PointIndex;

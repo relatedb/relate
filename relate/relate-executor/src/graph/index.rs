@@ -63,6 +63,8 @@ pub(super) struct Indexes {
     /// snapshot at or after the horizon can see and requeues the rest
     /// while a pin still can. Bounded by one apply's removals.
     pub(super) label_suspects: CoreMap<u32, HashSet<NodeId>>,
+    /// Per-key value statistics, lazy per label (`graph/key_stats`).
+    pub(super) key_stats: super::key_stats::KeyStatsState,
     /// Committed [`crate::memory::IndexCharge`]. Rebuilt when `index_details`
     /// changes so each node write clones an `Arc` instead of rescanning the
     /// catalog.
@@ -94,6 +96,7 @@ impl Indexes {
             star_label_id: interner.intern("*"),
             empty_label_id: interner.intern(""),
             label_suspects: CoreMap::default(),
+            key_stats: super::key_stats::KeyStatsState::default(),
             charge_cache: Mutex::new(Arc::new(crate::memory::IndexCharge::default())),
         }
     }
@@ -112,6 +115,7 @@ impl Indexes {
         self.gram_pairs.clear();
         self.range_pairs.clear();
         self.point_pairs.clear();
+        self.key_stats.clear();
     }
 }
 
@@ -172,6 +176,7 @@ impl Graph {
     /// released inside this call; the caller takes it with no `nodes` or
     /// `label_index` guard held, and this call takes neither.
     pub(super) fn suspect_postings(&self, id: NodeId, dying: &[u32]) {
+        self.key_stats_note_write(dying);
         for &lid in self.label_buckets(dying) {
             self.indexes
                 .label_suspects
@@ -281,6 +286,7 @@ impl Graph {
         };
         let live = &v.live;
         self.label_index_insert(id, &live.labels);
+        self.key_stats_note_write(&live.labels);
         // Equality postings are lazy (ADR-0063 contract): dirty-mark only the
         // `(label, key)` pairs already materialized by a seek. A pair nobody
         // seeks costs nothing on the write path.

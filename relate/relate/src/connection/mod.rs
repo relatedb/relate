@@ -19,6 +19,7 @@ mod columns;
 mod outcome;
 mod render;
 mod staged;
+mod stats_pump;
 mod stream;
 mod txn;
 mod worker;

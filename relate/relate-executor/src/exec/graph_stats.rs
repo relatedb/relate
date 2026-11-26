@@ -4,15 +4,17 @@
 //! one implementation answers both consumers.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use relate_core::Value;
 use relate_ir::{BinaryOp, Expr, NodePattern, RelPattern};
 use relate_names::{NamedToken, SmallName, Token, TokenResolver};
 use relate_planner::{
-    endpoint_estimate, seed_on_rel_start, walk_cost, Bound, ContainsCount, DegreeMoments,
+    endpoint_estimate, seed_on_rel_start, walk_cost, Bound, ContainsCount, DegreeMoments, KeyStats,
+    Provenance, RowEstimate,
 };
 
-use crate::graph::Graph;
+use crate::graph::{key_heavy_count, key_value_admitted, Graph};
 
 /// Construction goes through [`GraphStats::new`] (the ADR-0218 one-
 /// construction idiom the sibling plan-time stats impls use), so an
@@ -76,6 +78,45 @@ impl GraphStats<'_> {
     /// carries the name.
     fn id_of(&self, name: &SmallName, token: Token) -> Option<u32> {
         token.id_or_else(|| name.with_str(|text| self.graph.resolve(text).id()))
+    }
+
+    /// The interned `(label, property)` ids of a value-keyed consult; `None`
+    /// when either side was never interned.
+    fn pair_ids(&self, label: &NamedToken, property: &NamedToken) -> Option<(u32, u32)> {
+        Some((
+            self.id_of(&label.0, label.1)?,
+            self.id_of(&property.0, property.1)?,
+        ))
+    }
+
+    /// A declared index's posting length for the equality: its postings
+    /// are a superset of the live values (ADR-0018: superseded versions
+    /// stay until the next prune), so an upper bound.
+    fn index_estimate(&self, lid: u32, kid: u32, value: &Value) -> Option<RowEstimate> {
+        let rows = self.graph.pattern_equality_rows_by_id(lid, kid, value)?;
+        Some(RowEstimate {
+            rows,
+            provenance: Provenance::UpperBound,
+        })
+    }
+
+    /// The key's sketches: a heavy value answers with its own count and any
+    /// other with the admitted values spread over the distinct count. A
+    /// value the type gate declines (a null, a NaN, long text, a list) is
+    /// unmeasured: the sketches never saw such a value.
+    fn sketch_estimate(&self, lid: u32, kid: u32, value: &Value) -> Option<RowEstimate> {
+        if !key_value_admitted(value) {
+            return None;
+        }
+        let stats = self.graph.key_stats(lid, kid)?;
+        let rows = stats.equality_rows(
+            key_heavy_count(&stats, value),
+            self.graph.label_count_by_id(lid),
+        );
+        Some(RowEstimate {
+            rows,
+            provenance: stats.provenance,
+        })
     }
 
     /// The one by-name read of a (label, property) pair: the pair as text
@@ -209,6 +250,30 @@ impl relate_planner::PatternStats for GraphStats<'_> {
             })
             .unwrap_or(ContainsCount::SampleScan { rows: 0, scan: 0 }),
         )
+    }
+
+    /// The per-key statistics of the `(label, property)` pair, shared with
+    /// the graph's published entry; `None` while the label's statistics are
+    /// unbuilt (a consult records the build request, the pump serves it).
+    fn key_stats(&self, label: &NamedToken, property: &NamedToken) -> Option<Arc<KeyStats>> {
+        let (lid, kid) = self.pair_ids(label, property)?;
+        self.graph.key_stats(lid, kid)
+    }
+
+    /// An equality's row estimate with provenance, resolved the
+    /// `equality_rows` way (literals and parameters only). The sources
+    /// are ordered here and nowhere else: a declared index's postings
+    /// first, then the key's sketches.
+    fn equality_estimate(
+        &self,
+        label: &NamedToken,
+        property: &NamedToken,
+        value: &Expr,
+    ) -> Option<RowEstimate> {
+        let value = value.seek_value(self.params)?;
+        let (lid, kid) = self.pair_ids(label, property)?;
+        self.index_estimate(lid, kid, &value)
+            .or_else(|| self.sketch_estimate(lid, kid, &value))
     }
 
     fn rel_type_rows(&self, (name, token): &NamedToken) -> Option<u64> {

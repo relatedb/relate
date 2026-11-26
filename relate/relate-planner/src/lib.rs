@@ -81,7 +81,10 @@ pub use crate::plan::{
     LogicalPlan,
 };
 pub use crate::query_type::{query_type, QueryType};
-pub use crate::stats::{ContainsCount, DegreeMoments, NoPatternStats, PatternStats};
+pub use crate::stats::{
+    ContainsCount, DegreeMoments, HeavyValue, KeyStats, NoPatternStats, PatternStats, Provenance,
+    RowEstimate,
+};
 pub use crate::validate::check_union_joiners;
 
 /// Test helper: parse `cypher` and plan it with no write procedures
