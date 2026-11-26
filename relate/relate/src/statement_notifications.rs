@@ -397,11 +397,7 @@ impl Facts {
                     }
                 }
             }
-            Expr::PatternPred { path } | Expr::PatternComp { path, .. }
-                if role == ExprRole::Read =>
-            {
-                self.observe_pattern(path)
-            }
+            Expr::PatternPred { path } if role == ExprRole::Read => self.observe_pattern(path),
             // `shortestPath(...)` used as an expression has no operator to
             // carry the unbounded-pattern warning the MATCH-pattern form
             // gets, so it is raised here.

@@ -221,7 +221,6 @@ fn expr_payload(expr: &Expr) -> u64 {
         | Expr::ChronoCompare { .. }
         | Expr::DistanceMetric(_)
         | Expr::PatternPred { .. }
-        | Expr::PatternComp { .. }
         | Expr::ShortestPath { .. }
         | Expr::ExistsSubquery { .. }
         | Expr::CountSubquery { .. }

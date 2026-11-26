@@ -144,11 +144,6 @@ pub enum Expr {
     PatternPred {
         path: PathPattern,
     },
-    PatternComp {
-        path: PathPattern,
-        predicate: Option<Box<Expr>>,
-        projection: Box<Expr>,
-    },
     ShortestPath {
         all: bool,
         path: PathPattern,
@@ -161,6 +156,14 @@ pub enum Expr {
     },
     CollectSubquery {
         query: Query,
+        /// The body's own path-variable binding, when the front
+        /// synthesized the body from a pattern comprehension (ADR-0685):
+        /// a comprehension's path variable shadows any outer name of the
+        /// same spelling for the body's whole scope, so the nested seed
+        /// must not import it — the one difference from a user-written
+        /// `collect { … }`, whose rebinding of an outer name is the
+        /// `VariableAlreadyBound` error.
+        path_shadow: Option<SmallName>,
     },
 }
 
@@ -222,6 +225,18 @@ impl VectorMetric {
             .map(|(keyword, _)| keyword)
             .expect("every VectorMetric is listed in ALL")
     }
+}
+
+/// One scope-bearing payload: the subquery body or the pattern payload
+/// a scope-bearing variant carries — the two halves
+/// [`Expr::bearing`](Expr::bearing) unifies for the payload-bearing
+/// walkers.
+// `Eq` stays off: the payloads it borrows (`Query`, `PathPattern`)
+// implement `PartialEq` only.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Bearing<'a> {
+    Subquery(&'a Query),
+    Pattern(&'a PathPattern),
 }
 
 impl Expr {
@@ -292,6 +307,31 @@ impl Expr {
         )
     }
 
+    /// The one scope-bearing payload classification: the subquery body
+    /// or the pattern payload a scope-bearing variant carries, so a
+    /// payload-bearing walker's prologue is one exhaustive match on
+    /// [`bearing`](Self::bearing) instead of one accessor probe per half.
+    pub fn bearing(&self) -> Option<Bearing<'_>> {
+        if let Some(path) = self.pattern_path() {
+            Some(Bearing::Pattern(path))
+        } else {
+            self.subquery_body().map(Bearing::Subquery)
+        }
+    }
+
+    /// The pattern payload this expression carries, if it is a
+    /// pattern-carrying variant (a pattern predicate, or the
+    /// expression-form `shortestPath`), else `None` — the pattern half's
+    /// twin of [`subquery_body`](Self::subquery_body), so a fold needing
+    /// the path consults one accessor instead of re-listing the variants
+    /// in every consumer's match.
+    pub fn pattern_path(&self) -> Option<&PathPattern> {
+        match self {
+            Expr::PatternPred { path } | Expr::ShortestPath { path, .. } => Some(path),
+            _ => None,
+        }
+    }
+
     /// The subquery body this expression opens, if it is an
     /// expression-subquery variant (`EXISTS`/`COUNT`/`COLLECT`), else
     /// `None` — the one published answer to "which expressions open a
@@ -302,7 +342,7 @@ impl Expr {
         match self {
             Expr::ExistsSubquery { query }
             | Expr::CountSubquery { query }
-            | Expr::CollectSubquery { query } => Some(query),
+            | Expr::CollectSubquery { query, .. } => Some(query),
             _ => None,
         }
     }

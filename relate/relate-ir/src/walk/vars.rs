@@ -15,7 +15,7 @@ use crate::walk_query::{
     clause_patterns, path_pattern_mentions, pattern_anchor_variables, walk_query_with_roles,
     ExprRole,
 };
-use crate::{CallScope, Clause, Expr, LabelExpr, MapProjectionItem, PathPattern, Query};
+use crate::{Bearing, CallScope, Clause, Expr, LabelExpr, MapProjectionItem, PathPattern, Query};
 
 /// The names a map projection's shorthand items read (`{n, .name, k: v}` reads
 /// `n`; `k: v` reads only what `v` reads). One policy both free-variable
@@ -149,13 +149,23 @@ fn each_read(expr: &Expr, bound: &mut Vec<SmallName>, sink: &mut impl FnMut(&str
     fn feed(names: HashSet<String>, sink: &mut impl FnMut(&str) -> bool) -> bool {
         names.iter().all(|name| sink(name))
     }
-    // A subquery body contributes every name it mentions (the
-    // documented over-approximation) instead of the generic child
-    // descent — the one accessor decides which expressions open one.
-    if let Some(query) = expr.subquery_body() {
-        let mut names = HashSet::new();
-        exists_outer_vars(query, &mut names);
-        return feed(names, sink);
+    // A payload-bearing variant's names come from its payload — a
+    // subquery body contributes every name it mentions (the documented
+    // over-approximation), a pattern's are mentions — through the one
+    // classification every payload-bearing walker reads, instead of a
+    // per-walker variant list.
+    match expr.bearing() {
+        Some(Bearing::Subquery(query)) => {
+            let mut names = HashSet::new();
+            exists_outer_vars(query, &mut names);
+            return feed(names, sink);
+        }
+        Some(Bearing::Pattern(path)) => {
+            let mut names = HashSet::new();
+            path_pattern_mentions(path, &mut names);
+            return feed(names, sink);
+        }
+        None => {}
     }
     // A map projection's shorthand items are reads the children walk cannot
     // see, tested through the same unbound-read predicate as the
@@ -169,24 +179,6 @@ fn each_read(expr: &Expr, bound: &mut Vec<SmallName>, sink: &mut impl FnMut(&str
     }
     match expr {
         Expr::Variable(v) => feed_read(v, bound, sink),
-        Expr::PatternPred { path } | Expr::ShortestPath { path, .. } => {
-            let mut names = HashSet::new();
-            path_pattern_mentions(path, &mut names);
-            feed(names, sink)
-        }
-        Expr::PatternComp {
-            path,
-            predicate,
-            projection,
-        } => {
-            let mut names = HashSet::new();
-            path_pattern_mentions(path, &mut names);
-            feed(names, sink)
-                && predicate
-                    .as_ref()
-                    .is_none_or(|predicate| each_read(predicate, bound, sink))
-                && each_read(projection, bound, sink)
-        }
         other => {
             let mut going = true;
             walk_scope_children(other, &mut |child, scope| {

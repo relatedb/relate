@@ -305,7 +305,7 @@ pub fn plan_contains_dynamic_operands(plan: &LogicalPlan) -> bool {
     // predicate over the canonical clause walk. The expression half: the
     // canonical expression walk — `DynamicProperty`, label predicates,
     // and the pattern-carrying expression positions (`PatternPred`,
-    // `PatternComp`, `ShortestPath`) whose inner paths are pattern
+    // `ShortestPath`) whose inner paths are pattern
     // payloads too.
     plan_any_clause(plan, &mut |clause| {
         matches!(
@@ -316,10 +316,12 @@ pub fn plan_contains_dynamic_operands(plan: &LogicalPlan) -> bool {
     }) || plan_any_expr(plan, &mut |expr| match expr {
         Expr::DynamicProperty { .. } => true,
         Expr::LabelPredicate { label_expr, .. } => label_expr_contains_dynamic(label_expr),
-        Expr::PatternPred { path }
-        | Expr::PatternComp { path, .. }
-        | Expr::ShortestPath { path, .. } => pattern_contains_dynamic_operands(path),
-        _ => false,
+        // A pattern payload is a dynamic-operand surface the same way a
+        // MATCH pattern is; the variant set lives in the accessor, which
+        // answers once here — no payload, no dynamic operands.
+        other => other
+            .pattern_path()
+            .is_some_and(pattern_contains_dynamic_operands),
     })
 }
 

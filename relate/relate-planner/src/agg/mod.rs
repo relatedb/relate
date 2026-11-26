@@ -7,7 +7,8 @@
 
 use relate_core::{Error, Result};
 use relate_ir::{
-    is_agg_call, is_agg_expr, walk_scope_children, ChildScope, Expr, MapProjectionItem, Projection,
+    is_agg_call, is_agg_expr, walk_scope_children, Bearing, ChildScope, Expr, MapProjectionItem,
+    Projection,
 };
 use relate_names::SmallName;
 
@@ -351,49 +352,27 @@ fn nested_scope_leaves(
     // the caller's `outer_names` filter drops the body's own; the
     // row-scope walk leaves the body uncollected entirely (its entry's
     // doc).
-    if let Some(query) = expr.subquery_body() {
-        if matches!(bodies, SubqueryBodies::Merged) {
-            let mut names = std::collections::HashSet::new();
-            relate_ir::exists_outer_vars(query, &mut names);
-            for name in &names {
-                read(&SmallName::from(name.as_str()), bound, out);
-            }
-        }
-        return;
-    }
-    match expr {
-        // A pattern predicate correlates the pattern against already-bound
-        // names; its element variables are reads, never bindings here.
-        Expr::PatternPred { path } | Expr::ShortestPath { path, .. } => {
-            for name in pattern_names(path) {
-                read(name, bound, out);
+    match expr.bearing() {
+        Some(Bearing::Subquery(query)) => {
+            if matches!(bodies, SubqueryBodies::Merged) {
+                let mut names = std::collections::HashSet::new();
+                relate_ir::exists_outer_vars(query, &mut names);
+                for name in &names {
+                    read(&SmallName::from(name.as_str()), bound, out);
+                }
             }
             return;
         }
-        // A pattern comprehension's pattern variables are reads when the
-        // enclosing scope already binds them (`size([(a)-->() | 1])` reads
-        // the grouped `a`), and fresh element bindings otherwise; the
-        // caller's `outer_names` filter drops the fresh ones. The predicate
-        // and projection evaluate with every pattern name bound.
-        Expr::PatternComp {
-            path,
-            predicate,
-            projection,
-        } => {
-            let names: Vec<&SmallName> = pattern_names(path).collect();
-            for name in names.iter().copied() {
-                read(name, bound, out);
+        // A pattern predicate correlates the pattern against
+        // already-bound names; its element variables are reads, never
+        // bindings here.
+        Some(Bearing::Pattern(path)) => {
+            for name in relate_ir::pattern_anchor_variables(path) {
+                read(&name, bound, out);
             }
-            let mark = bound.len();
-            bound.extend(names.into_iter().cloned());
-            if let Some(predicate) = predicate {
-                nested_scope_leaves(predicate, bound, bodies, out);
-            }
-            nested_scope_leaves(projection, bound, bodies, out);
-            bound.truncate(mark);
             return;
         }
-        _ => {}
+        None => {}
     }
     // Per-element bodies scope the identifiers their variant binds, so the
     // shared walk pushes them for the body's descent and drops them after.
@@ -406,12 +385,6 @@ fn nested_scope_leaves(
             bound.truncate(mark);
         }
     });
-}
-
-/// Every name a pattern mentions as a row value: the path variable(s),
-/// then the node and relationship variables.
-fn pattern_names(path: &relate_ir::PathPattern) -> impl Iterator<Item = &SmallName> {
-    path.path_names().chain(relate_ir::path_pattern_vars(path))
 }
 
 /// The atomic-leaf classification the grouping walks share: a bare

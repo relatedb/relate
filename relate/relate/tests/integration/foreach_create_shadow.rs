@@ -8,7 +8,7 @@
 
 use crate::common;
 
-use common::connection;
+use common::{connection, run};
 
 /// The label sets of every node, sorted, as one string per node.
 fn label_sets(c: &mut relate::Connection) -> Vec<String> {
@@ -45,4 +45,26 @@ fn a_bare_node_beside_a_relationship_references_the_outer_binding() {
         .expect("reference CREATE in a FOREACH body");
     // Only `m` is new: the bare `n` is the outer node.
     assert_eq!(label_sets(&mut c).len(), 2);
+}
+
+/// The other half of the FOREACH shadowing policy: the body's **MERGE**
+/// never shadows an outer *entity*. The scope hands over every enclosing
+/// name (the CREATE policy's input), so `effectively_bound`'s kind gate is
+/// what keeps an entity binding a join — pinned because dropping that gate
+/// would silently re-bind `a` to a fresh node, and the second `A` node
+/// would grow the same relationship.
+#[test]
+fn a_merge_in_a_foreach_body_joins_an_outer_entity_instead_of_shadowing() {
+    let mut c = connection();
+    run(
+        &mut c,
+        "CREATE (a1:A {id: 1})-[:R]->(:B {id: 1}), (a2:A {id: 2})-[:R]->(:B {id: 2})",
+    );
+    run(
+        &mut c,
+        "MATCH (a:A {id: 1}) FOREACH (x IN [1] | MERGE (a)-[:S]->(:C))",
+    );
+    // Only the outer `a` (id 1) grew the relationship.
+    let owners = common::first_column(&run(&mut c, "MATCH (a:A)-[:S]->() RETURN a.id"));
+    assert_eq!(owners, vec![relate::Value::Int(1)], "the outer a joined");
 }

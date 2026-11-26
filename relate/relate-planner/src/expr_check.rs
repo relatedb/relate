@@ -13,7 +13,7 @@ use relate_front::agg::is_aggregate_name as is_agg_fn;
 use relate_ir::{BinaryOp, Clause, Expr, MapProjectionItem, UnaryOp};
 use relate_names::SmallName;
 
-use crate::binding::{pattern_local_bindings, require_bound, Binding, Env, EnvBridge};
+use crate::binding::{require_bound, Binding, Env, EnvBridge};
 use crate::expr_text::graph_call_text;
 use crate::names::query_output_names_with_seed;
 use crate::names::query_with_persistent_imports;
@@ -162,17 +162,7 @@ pub(crate) fn check_nonneg_int_arg(expr: &Expr) -> Result<()> {
 /// comprehension under a subscript) can smuggle a variable past the check.
 pub(crate) fn expr_non_static(expr: &Expr) -> bool {
     expr.any(&mut |e| {
-        matches!(
-            e,
-            Expr::Variable(_)
-                | Expr::MapProjection { .. }
-                | Expr::PatternPred { .. }
-                | Expr::PatternComp { .. }
-                | Expr::ShortestPath { .. }
-                | Expr::ExistsSubquery { .. }
-                | Expr::CountSubquery { .. }
-                | Expr::CollectSubquery { .. }
-        )
+        matches!(e, Expr::Variable(_) | Expr::MapProjection { .. }) || e.is_scope_bearing()
     })
 }
 
@@ -200,10 +190,11 @@ fn is_known_function(name: &str) -> bool {
 /// single-column requirement — lives in its own `check_expr_ctx` arm, at the
 /// site that owns that difference.
 fn check_subquery_expression(
-    env: &Env,
+    scope: crate::validate::Scope,
     is_write_procedure: &mut impl FnMut(&str) -> bool,
     query: &relate_ir::Query,
 ) -> Result<Vec<String>> {
+    let env = &scope.env;
     let imported: Vec<String> = env.keys().cloned().collect();
     reject_projection_shadowing(query, &imported)?;
     // The shadowing test reads the ORIGINAL body: `scoped_query` below
@@ -240,11 +231,7 @@ fn check_subquery_expression(
     // name — per-row constants the body may reference without grouping by
     // them, ADR-0453) and the shadowable non-entity subset from `env`.
     for part in &scoped_query.parts {
-        validate_nested_body(
-            &part.clauses,
-            crate::validate::Scope::expression_body(env.clone()),
-            is_write_procedure,
-        )?;
+        validate_nested_body(&part.clauses, scope.clone(), is_write_procedure)?;
     }
     query_output_names_with_seed(&scoped_query, imported, &std::collections::HashSet::new())
 }
@@ -382,10 +369,11 @@ fn check_expr_ctx(
                     "InvalidArgumentType: a node pattern is not a valid predicate",
                 ));
             }
-            // The same expression checks a pattern comprehension's path gets
-            // (the arm above): a pattern expression's element predicates are
-            // Boolean-typed like every other WHERE-bearing pattern position
-            // (CIP-190 `(where {…})` in a clause WHERE is this arm).
+            // A pattern expression's element predicates are Boolean-typed
+            // like every other WHERE-bearing pattern position (a
+            // `(where {…})` in a clause WHERE is this arm); a pattern
+            // comprehension's path gets the same rule through its lowered
+            // `collect { … }` body's own clause check.
             check_path_exprs(env, is_write_procedure, path)?;
         }
         Expr::ShortestPath { path, .. } => {
@@ -394,30 +382,6 @@ fn check_expr_ctx(
             // `shortestPath()` pattern's element predicates are
             // Boolean-typed like every other WHERE-bearing pattern position.
             check_path_exprs(env, is_write_procedure, path)?;
-        }
-        Expr::PatternComp {
-            path,
-            predicate,
-            projection,
-        } => {
-            // A pattern comprehension introduces its own pattern variables;
-            // an inline element predicate may reference any of them, whether
-            // declared earlier or later in the same pattern (CIP-17/CIP-18
-            // 5.2.1), so check the pattern's expressions against the
-            // comprehension's own scope. The scope reads the one pattern
-            // binding classification (`pattern_local_bindings`, the table
-            // `bind_path` also reads), so a var-length relationship
-            // variable or a quantified-path variable binds the same way
-            // here as in a MATCH.
-            let mut inner = env.clone();
-            for (name, binding) in pattern_local_bindings(path) {
-                inner.insert_name(name.clone(), binding);
-            }
-            check_path_exprs(&inner, is_write_procedure, path)?;
-            if let Some(p) = predicate {
-                check_pred(&inner, is_write_procedure, p)?;
-            }
-            check_expr(&inner, is_write_procedure, projection)?;
         }
         Expr::MapProjection {
             expr: target,
@@ -444,10 +408,18 @@ fn check_expr_ctx(
             }
         }
         Expr::ExistsSubquery { query } | Expr::CountSubquery { query } => {
-            check_subquery_expression(env, is_write_procedure, query)?;
+            check_subquery_expression(
+                crate::validate::Scope::expression_body(env.clone()),
+                is_write_procedure,
+                query,
+            )?;
         }
-        Expr::CollectSubquery { query } => {
-            let names = check_subquery_expression(env, is_write_procedure, query)?;
+        Expr::CollectSubquery { query, path_shadow } => {
+            let names = check_subquery_expression(
+                crate::validate::Scope::comprehension_body(env.clone(), path_shadow.as_ref()),
+                is_write_procedure,
+                query,
+            )?;
             if names.len() != 1 {
                 return Err(Error::syntax(
                     "CollectExpressionMustReturnSingleColumn: COLLECT { } requires one column",

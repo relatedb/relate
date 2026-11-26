@@ -89,9 +89,12 @@ pub(crate) fn require_bound(env: &Env, name: &SmallName) -> Result<()> {
 }
 
 /// Whether a NEW pattern binding of `name` collides with the scope. A
-/// shadowable non-entity import is *fresh* for a pattern binding (the
-/// pattern rebinds it), so it does not count as already bound — the binder's
-/// own answer, shared with the 42N66 rule so the two cannot disagree.
+/// shadowable *non-entity* import is *fresh* for a pattern binding (the
+/// pattern rebinds it), so it does not count as already bound — the
+/// binder's own answer, shared with the 42N66 rule so the two cannot
+/// disagree. The kind gate stays here: callers hand over name sets that
+/// are wider than the policy (the FOREACH scope hands over every outer
+/// name), so the predicate is what keeps an entity binding unshadowable.
 pub(crate) fn effectively_bound(
     env: &Env,
     shadowable: &std::collections::HashSet<String>,
@@ -110,19 +113,27 @@ pub(crate) type Env = HashMap<String, Binding>;
 /// The Env's IR-name accessors: the binding environment stays String-keyed
 /// (its `next_stage_scope` feeds come from the String-rendered output-name
 /// computation), so IR names — `SmallName`, ADR-0509 stage 3 — reach it
-/// through these three bridges. Reads are allocation-free (the inline arm
-/// decodes on the stack); the one insert bridge renders text per bound
-/// name, exactly the allocation the pre-SmallName clone paid.
-/// The three Env bridges, as a trait so the methods live beside the type
+/// through these four bridges. Reads are allocation-free (the inline arm
+/// decodes on the stack); the insert bridge renders text per bound name,
+/// exactly the allocation the pre-SmallName clone paid, and the one
+/// remove bridge is the comprehension body's shadowed path variable.
+/// The Env bridges, as a trait so the methods live beside the type
 /// alias they serve without a wrapper struct.
 pub(crate) trait EnvBridge {
     fn get_name(&self, name: &SmallName) -> Option<&Binding>;
     fn contains_name(&self, name: &SmallName) -> bool;
     /// Like [`HashMap::insert`]: the binding the name replaced, if any.
     fn insert_name(&mut self, name: SmallName, binding: Binding) -> Option<Binding>;
+    /// Like [`HashMap::remove`]: the binding the name held, if any. The
+    /// comprehension body's shadowed path variable is the one caller.
+    fn remove_name(&mut self, name: &SmallName) -> Option<Binding>;
 }
 
 impl EnvBridge for HashMap<String, Binding> {
+    fn remove_name(&mut self, name: &SmallName) -> Option<Binding> {
+        name.with_str(|text| self.remove(text))
+    }
+
     fn get_name(&self, name: &SmallName) -> Option<&Binding> {
         name.with_str(|text| self.get(text))
     }
@@ -245,8 +256,7 @@ pub(crate) fn bind_path(
 
 /// The local variable bindings one pattern introduces, in declaration
 /// order — the single classification table behind [`bind_path`]
-/// (MATCH/CREATE patterns) and the expression checker's
-/// pattern-comprehension scope: a path name is a path, a node variable a
+/// (MATCH/CREATE patterns): a path name is a path, a node variable a
 /// node, and a relationship variable a relationship — or a list when it is
 /// var-length or inside a quantified path, whose subpath variable is a
 /// list too. GPM `elements` are classified only for the pure element form

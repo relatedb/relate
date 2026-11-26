@@ -33,12 +33,13 @@ pub(super) fn comparison_expr(op: mdb::BinaryOp, left: mdb::Expr, right: mdb::Ex
 enum Counted<'a> {
     /// `COUNT { q }`, its body borrowed (cloned only on an accepted rewrite).
     Count(&'a mdb::Query),
-    /// `size()` of a pattern comprehension whose projection is a literal
-    /// (checked when the shape is classified).
-    Comprehension {
-        path: &'a mdb::PathPattern,
-        predicate: Option<&'a mdb::Expr>,
-    },
+    /// `size()` of a pattern comprehension — lowered to the
+    /// `collect { … }` that is its meaning (ADR-0685) — whose body is one
+    /// flat MATCH + RETURN-of-a-literal (checked when the shape is
+    /// classified). The MATCH clause is carried whole and cloned only on
+    /// an accepted rewrite, so no field the recognizer tolerates — hints,
+    /// a search clause — is re-spelled or lost in the EXISTS body.
+    Comprehension(&'a mdb::Clause),
 }
 
 /// The two shapes an emptiness comparison can probe.
@@ -53,24 +54,67 @@ fn counting_expr(expr: &mdb::Expr) -> Option<Counted<'_>> {
             distinct: false,
             args,
         } if args.len() == 1 && name.with_str(|n| n.eq_ignore_ascii_case("size")) => {
-            let mdb::Expr::PatternComp {
-                path,
-                predicate,
-                projection,
+            let mdb::Expr::CollectSubquery {
+                query,
+                // A shadowed body (a comprehension's path variable)
+                // declines: the EXISTS body would need the same shadow,
+                // and the unrewritten collect path already answers.
+                path_shadow: None,
             } = &args[0]
             else {
                 return None;
             };
-            // A non-literal projection is evaluated per match; dropping it
-            // could drop an error, so only a literal qualifies.
-            literal_value(projection)?;
-            Some(Counted::Comprehension {
-                path,
-                predicate: predicate.as_deref(),
-            })
+            comprehension_shape(query)
         }
         _ => None,
     }
+}
+
+/// The pattern-comprehension half of [`Counted::Comprehension`]: the body
+/// ADR-0685's lowering synthesizes — one part, `MATCH` then `RETURN` of a
+/// single literal, under the default match mode — recognized through the
+/// `collect { … }` the comprehension now is. A non-literal projection is
+/// evaluated per match; dropping it could drop an error, so only a
+/// literal qualifies.
+fn comprehension_shape(query: &mdb::Query) -> Option<Counted<'_>> {
+    if !query.is_single_flat_part() {
+        return None;
+    }
+    let part = &query.parts[0];
+    let [matched @ mdb::Clause::Match {
+        optional: false,
+        match_mode,
+        ..
+    }, mdb::Clause::Return {
+        distinct: false,
+        group_by: None,
+        items,
+        order,
+        skip,
+        limit,
+        ..
+    }] = &part.clauses[..]
+    else {
+        return None;
+    };
+    // The match mode is the one the synthesizer writes
+    // (`lower/clause.rs` maps that spelling to this variant): named on
+    // both ends, so a rename of the variant fails this compile, not the
+    // rewrite.
+    if *match_mode != mdb::MatchMode::DifferentRelationships {
+        return None;
+    }
+    // Only the bare projection qualifies: a RETURN with any modifier —
+    // SKIP/LIMIT can answer a one-row body as empty — declines to the
+    // unrewritten count path, which evaluates the body as written.
+    if !order.is_empty() || skip.is_some() || limit.is_some() {
+        return None;
+    }
+    let [item] = &items[..] else {
+        return None;
+    };
+    literal_value(&item.expr)?;
+    Some(Counted::Comprehension(matched))
 }
 
 /// `Some(existence test)` when `op` against the literal `other` is one of
@@ -104,17 +148,9 @@ fn existence_test(op: mdb::BinaryOp, other: &mdb::Expr, counted: Counted<'_>) ->
 fn exists_body(counted: Counted<'_>) -> mdb::Query {
     match counted {
         Counted::Count(query) => query.clone(),
-        Counted::Comprehension { path, predicate } => mdb::Query {
+        Counted::Comprehension(match_clause) => mdb::Query {
             parts: vec![mdb::SingleQuery {
-                clauses: vec![mdb::Clause::Match {
-                    optional: false,
-                    match_mode: mdb::MatchMode::DifferentRelationships,
-                    patterns: vec![path.clone()],
-                    where_clause: predicate.cloned(),
-                    using_index: Vec::new(),
-                    using_join: Vec::new(),
-                    search: None,
-                }],
+                clauses: vec![match_clause.clone()],
             }],
             union_all: Vec::new(),
             next: None,

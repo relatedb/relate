@@ -28,15 +28,13 @@ fn scope_bearing_variants_match_children_skip_set() {
     };
     let bearing: Vec<Expr> = vec![
         Expr::PatternPred { path: path.clone() },
-        Expr::PatternComp {
-            path: path.clone(),
-            predicate: None,
-            projection: Box::new(var("n")),
-        },
         Expr::ShortestPath { all: false, path },
         Expr::ExistsSubquery { query: query() },
         Expr::CountSubquery { query: query() },
-        Expr::CollectSubquery { query: query() },
+        Expr::CollectSubquery {
+            query: query(),
+            path_shadow: None,
+        },
     ];
     for expr in &bearing {
         assert!(expr.is_scope_bearing(), "{expr:?} must be scope-bearing");

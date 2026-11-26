@@ -8,7 +8,7 @@ use relate_ir::{Expr, MapProjectionItem};
 use relate_names::SmallName;
 
 use crate::ctx::EvalCtx;
-// The pattern-expression arms (PatternPred, PatternComp, ShortestPath)
+// The pattern-expression arms (PatternPred, ShortestPath)
 // and the subquery arms below them delegate UP to engines: the walk
 // engine at `crate::eval_walk` (a pattern-walk client like the exec
 // walkers, hoisted out of this tree so `eval` stays the expression core
@@ -27,7 +27,7 @@ mod arithmetic;
 mod collection;
 mod comprehension;
 mod expr;
-use comprehension::{eval_list_comp, eval_map_comp, eval_pattern_comp};
+use comprehension::{eval_list_comp, eval_map_comp};
 mod fold;
 mod function;
 mod items;
@@ -521,18 +521,13 @@ pub fn eval(
             // a limit-1 walk; never a full match collection.
             Ok(Value::Bool(pattern_exists(graph, row, path, params)?))
         }
-        Expr::PatternComp {
-            path,
-            predicate,
-            projection,
-        } => eval_pattern_comp(ctx, path, predicate.as_deref(), projection),
         Expr::ShortestPath { all, path } => {
             eval_shortest(graph, row, params, *all, path, ShortestWant::Path)
         }
         Expr::ExistsSubquery { query } => crate::exec::eval_exists_query(graph, row, params, query),
         Expr::CountSubquery { query } => crate::exec::eval_count_query(graph, row, params, query),
-        Expr::CollectSubquery { query } => {
-            crate::exec::eval_collect_query(graph, row, params, query)
+        Expr::CollectSubquery { query, path_shadow } => {
+            crate::exec::eval_collect_query(graph, row, params, query, path_shadow.as_ref())
         }
     }
 }
