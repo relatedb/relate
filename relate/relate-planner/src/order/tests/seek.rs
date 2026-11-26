@@ -13,13 +13,8 @@ use std::cell::Cell;
 use relate_names::NamedToken;
 
 use super::*;
+use crate::order::estimate::range_seek_wins;
 use crate::stats::{ContainsCount, PatternStats};
-
-/// The seek/endpoint tests' one "nothing is bound" fact — the `Bound`
-/// every endpoint estimate is called with.
-fn unbound(_: &str) -> bool {
-    false
-}
 
 /// The stats stub behind the equality-parameter test: records whether
 /// the `$city` parameter reached `equality_rows` unresolved.
@@ -258,29 +253,6 @@ fn range_seek_wins_below_a_quarter_and_under_the_floor() {
     // anchored point reads and small IN windows stay on the index.
     assert!(range_seek_wins(200, 400));
     assert!(range_seek_wins(1, 2));
-}
-
-/// One endpoint estimate over the parsed pieces — the single
-/// `endpoint_estimate` spelling every consumer rides (with the
-/// `unbound` fact every endpoint test uses).
-fn endpoint_of(
-    pattern: &PathPattern,
-    where_clause: Option<&Expr>,
-    stats: &dyn PatternStats,
-) -> Estimate {
-    endpoint_estimate(
-        &pattern.nodes[0],
-        &unbound,
-        where_conjuncts_of(where_clause).iter().copied(),
-        stats,
-    )
-}
-
-/// One parse → leading MATCH → endpoint estimate.
-fn estimate_of(cypher: &str, stats: &dyn PatternStats) -> Estimate {
-    with_leading_match(cypher, |pattern, where_clause| {
-        endpoint_of(pattern, where_clause, stats)
-    })
 }
 
 /// ADR-0493's ladder gate: a majority window's level declines, so the
