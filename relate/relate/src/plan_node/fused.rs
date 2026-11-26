@@ -209,7 +209,7 @@ mod tests {
         assert_eq!(seek_child.details, "RANGE INDEX n:User(age) WHERE age > 5");
         assert_eq!(seek_child.estimated_rows, Some(5));
         assert_eq!(
-            seek_child.fused,
+            seek_child.fused(),
             Some(FusedChild {
                 parent: 1,
                 metrics: None
@@ -221,7 +221,7 @@ mod tests {
         assert_eq!(hop0.details, "(n:User)-[:LINKS]->(m:User)");
         assert_eq!(hop0.estimated_rows, Some(5), "the ladder's carry-through");
         assert_eq!(
-            hop0.fused,
+            hop0.fused(),
             Some(FusedChild {
                 parent: 1,
                 metrics: None
@@ -258,22 +258,15 @@ mod tests {
                 neighbor_walks: 9,
                 node_reads: 3,
             },
-            start: None,
-            kernel: None,
             phases: relate_executor::PhaseTimes {
                 seek_ns: 40,
                 walk_ns: 9,
             },
-            batched: false,
-            zone_skips: 0,
-            frontier: Default::default(),
-            frontier_decline: None,
-            memo: Default::default(),
-            memo_kinds: Default::default(),
+            ..Default::default()
         };
         let children = build_children(breakdown, &mut cursor_at(2), 1, Some(metrics));
         assert_eq!(
-            children[0].fused.and_then(|fused| fused.metrics),
+            children[0].fused().and_then(|fused| fused.metrics),
             Some(FusedChildMetrics {
                 seek_ns: 40,
                 node_reads: 3

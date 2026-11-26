@@ -11,8 +11,8 @@
 use std::io::Write;
 
 use relate_model::wire::{
-    estimation_miss, metric_u64, profiled_facts, ratio_defined, time_ns_ms, KernelRungWire,
-    PlanMemoWire, PlanMetricsWire, PlanProfiledFacts, PlanWarning, PLAN_UNAVAILABLE,
+    estimation_miss, metric_u64, profiled_facts, ratio_defined, time_ns_ms, PlanMemoWire,
+    PlanMetricsWire, PlanProfiledFacts, PlanWarning, PLAN_UNAVAILABLE,
 };
 use relate_model::CypherValue;
 
@@ -301,49 +301,77 @@ fn details_cell(details: &str, metrics: Option<&PlanMetricsWire>) -> String {
     cell
 }
 
-/// The PROFILE marks one operator's metrics carry, in render order.
-/// LABS-369: the walk's chosen start — the fact an opaque `Expand` hid,
-/// right beside the pattern it walked. ADR-0468 (LABS-359): the batch
-/// chain's mark, the scan/filter/project interior the clause ran; LABS-645
-/// its zone-skip count, the conjunct-batch evaluations the chunk's derived
-/// min/max zone metadata provably replaced with the correct empty
-/// survivor set. ADR-0478: the frontier family's mark, the BFS operator
-/// the clause ran with its run counters; ADR-0516 the NFA rung's own facts
-/// (the re-arrival rule's budget fraction, memo, and admission verdicts)
-/// beside it, both only when the family ran (`levels > 0`), and the
-/// run-time decline's typed reason — the gate that kept the DFS, named on
-/// the row it declined.
+/// The `Details` cell's marks: one projection per metric family, in the
+/// order they render — the walk start, the traversal rung, the batch
+/// chain, the frontier family and the `IN TRANSACTIONS` batch facts.
+/// Each family's presence rule and provenance live on its own helper.
 fn details_marks(metrics: &PlanMetricsWire) -> Vec<String> {
+    let mut marks = start_marks(metrics);
+    marks.extend(kernel_mark(metrics));
+    marks.extend(batch_marks(metrics));
+    marks.extend(frontier_marks(metrics));
+    marks.extend(in_tx_marks(metrics));
+    marks
+}
+
+/// LABS-369: the walk's chosen start — present only when the operator
+/// walked a pattern.
+fn start_marks(metrics: &PlanMetricsWire) -> Vec<String> {
+    let Some(start) = &metrics.start else {
+        return Vec::new();
+    };
+    let direction = if start.backward {
+        "backward"
+    } else {
+        "forward"
+    };
+    vec![format!(
+        "start #{}, {direction}, {}",
+        start.element, start.reason
+    )]
+}
+
+/// LABS-1117: the traversal rung that served the clause's MATCH — the
+/// chain (with its hop count), the hub-star, the frontier-NFA rung, or
+/// the per-row walker. The typed value carries the pairing, so no string
+/// comparison can silently drop the hop count. `None` when no rung
+/// served the clause (an empty mark list when none did, the siblings'
+/// shape).
+fn kernel_mark(metrics: &PlanMetricsWire) -> Vec<String> {
+    metrics
+        .kernel
+        .map(|rung| {
+            let name = rung.as_str();
+            match rung.hops() {
+                Some(hops) => format!("kernel {name} hops={hops}"),
+                None => format!("kernel {name}"),
+            }
+        })
+        .into_iter()
+        .collect()
+}
+
+/// ADR-0468 (LABS-359) and LABS-645: the batch scan/filter/project
+/// chain's engagement and the zone skips its filter's min/max metadata
+/// provably replaced.
+fn batch_marks(metrics: &PlanMetricsWire) -> Vec<String> {
     let mut marks = Vec::new();
-    if let Some(start) = &metrics.start {
-        let direction = if start.backward {
-            "backward"
-        } else {
-            "forward"
-        };
-        marks.push(format!(
-            "start #{}, {direction}, {}",
-            start.element, start.reason
-        ));
-    }
-    // LABS-1117: the traversal rung that served the clause's MATCH —
-    // the chain (with its hop count), the hub-star, the frontier-NFA
-    // rung, or the per-row walker. The typed value carries the pairing,
-    // so no string comparison can silently drop the hop count.
-    if let Some(rung) = metrics.kernel {
-        let name = rung.as_str();
-        marks.push(match rung {
-            KernelRungWire::Chain { hops } => format!("kernel {name} hops={hops}"),
-            _ => format!("kernel {name}"),
-        });
-    }
     if metrics.batched {
         marks.push("batched".to_string());
     }
     if metrics.zone_skips > 0 {
         marks.push(format!("zone-skips {}", metrics.zone_skips));
     }
+    marks
+}
+
+/// ADR-0478's frontier family: the run counters and the NFA rung's own
+/// facts, emitted only when the family ran the clause (`levels > 0`),
+/// and ADR-0516's typed run-time decline reason, emitted precisely when
+/// the rung fell through — two presence rules, one per mark.
+fn frontier_marks(metrics: &PlanMetricsWire) -> Vec<String> {
     let frontier = &metrics.frontier;
+    let mut marks = Vec::new();
     if frontier.levels > 0 {
         marks.push(format!(
             "frontier edges={} levels={} endpoints={} cells={}",
@@ -366,6 +394,29 @@ fn details_marks(metrics: &PlanMetricsWire) -> Vec<String> {
         marks.push(format!("frontier-declined {reason}"));
     }
     marks
+}
+
+/// REL8-2047: the `CALL { … } IN TRANSACTIONS` batch facts — the
+/// counters on one mark, the per-batch maxima on the one beside it, both
+/// only when the arm ran batches.
+fn in_tx_marks(metrics: &PlanMetricsWire) -> Vec<String> {
+    let intx = &metrics.intx;
+    if !intx.ran() {
+        return Vec::new();
+    }
+    vec![
+        format!(
+            "in-tx batches={} committed={} rolled-back={}",
+            intx.batches, intx.committed, intx.rolled_back
+        ),
+        format!(
+            "in-tx-peak input-rows={} output-rows={} scratch={} wal={}",
+            intx.peak_input_rows_bytes,
+            intx.peak_output_rows_bytes,
+            intx.peak_scratch_bytes,
+            intx.peak_wal_bytes
+        ),
+    ]
 }
 
 /// One metric-state column's cell triad — the one match over the three

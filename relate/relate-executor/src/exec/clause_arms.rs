@@ -11,7 +11,7 @@ use relate_ir::{Expr, MatchMode};
 
 use crate::ctx::ExecCtx;
 use crate::eval::eval;
-use crate::metrics::PlanMetricsSite;
+use crate::metrics::ParkedRecord;
 use crate::overlay::ExecGraph;
 use crate::row::Row;
 
@@ -38,7 +38,7 @@ pub(super) fn create_from_stream<'a, 'b>(
     mut stream: RowStream<'a>,
     patterns: &'b [relate_ir::PathPattern],
     params: &'b BTreeMap<String, Value>,
-    record: Option<(PlanMetricsSite<'a>, usize)>,
+    record: Option<ParkedRecord<'a>>,
 ) -> Result<RowStream<'b>>
 where
     'a: 'b,

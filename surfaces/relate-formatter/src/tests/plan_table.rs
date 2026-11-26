@@ -8,7 +8,7 @@ use super::super::plan_table::{
     MetricKinds, PlanColumnFlags, PlanRow,
 };
 use relate_model::wire::{
-    PlanMemoWire, PlanMetricsWire, PlanPhasesWire, PlanProfiledFacts, PlanReadsWire,
+    PlanInTxWire, PlanMemoWire, PlanMetricsWire, PlanPhasesWire, PlanProfiledFacts, PlanReadsWire,
 };
 
 /// One hand-built row facts bundle: a profiled node's metrics and
@@ -25,7 +25,6 @@ fn facts() -> PlanRow {
                 time_ns: 1_000,
                 db_hits: 51,
                 memory_bytes: 40,
-                expression_built_bytes: 0,
                 reads: PlanReadsWire {
                     hops: 51,
                     neighbor_walks: 3,
@@ -35,13 +34,7 @@ fn facts() -> PlanRow {
                     seek_ns: 1,
                     walk_ns: 2,
                 },
-                start: None,
-                kernel: None,
-                batched: false,
-                zone_skips: 0,
-                frontier: Default::default(),
-                frontier_decline: None,
-                memo: None,
+                ..Default::default()
             },
             total_time_ns: 2_000,
         }),
@@ -237,5 +230,41 @@ fn warnings_footer_line_joins_ids_and_messages() {
         ]),
         "Warnings: Id 1: estimated rows 10x or more above the actual rows; \
      Id 3: the scan matches every node; add a label to narrow it"
+    );
+}
+
+/// REL8-2047: the `CALL { … } IN TRANSACTIONS` batch facts' two `Details`
+/// marks — the counters, then the per-batch maxima — render only when the
+/// arm ran batches; a zeroed group renders neither.
+#[test]
+fn in_tx_marks_render_behind_the_details() {
+    let flags = {
+        let mut flags = PlanColumnFlags::default();
+        flags.fold_row(&facts());
+        flags
+    };
+    let mut with = facts();
+    with.metrics.as_mut().unwrap().metrics.intx = PlanInTxWire {
+        batches: 4,
+        committed: 3,
+        rolled_back: 1,
+        peak_input_rows_bytes: 900,
+        peak_output_rows_bytes: 800,
+        peak_scratch_bytes: 700,
+        peak_wal_bytes: 600,
+    };
+    let details = &plan_row_cells(&with, flags)[2];
+    assert!(
+        details.contains("in-tx batches=4 committed=3 rolled-back=1"),
+        "the counters mark the cell: {details}"
+    );
+    assert!(
+        details.contains("in-tx-peak input-rows=900 output-rows=800 scratch=700 wal=600"),
+        "the maxima mark the cell: {details}"
+    );
+    let plain = &plan_row_cells(&facts(), flags)[2];
+    assert!(
+        !plain.contains("in-tx"),
+        "a zeroed group marks nothing: {plain}"
     );
 }

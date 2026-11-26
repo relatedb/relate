@@ -10,6 +10,10 @@
 //! nested invocation per row) has its own end-to-end file now:
 //! `call_in_transactions_batch_pass.rs` (split from here as this file
 //! approached the 1000-line bar).
+//!
+//! ADR-0681's observability — the body's operators as the `CallSubquery`
+//! node's plan children and PROFILE's batch facts on the operator — is
+//! covered in the sibling `call_in_transactions_profile.rs`.
 
 mod common;
 

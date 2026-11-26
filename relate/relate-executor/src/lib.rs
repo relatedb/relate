@@ -119,8 +119,8 @@ pub use graph::{
     SnapshotPin,
 };
 pub use metrics::{
-    BatchFacts, ClauseMetricsRecord, FrontierCounters, KernelRung, MemoCounters, PhaseTimes,
-    PlanMetricsSink, StartReason, StatementMemoRecord, StoreReads, WalkStart,
+    BatchFacts, ClauseMetricsRecord, FrontierCounters, InTxBatches, KernelRung, MemoCounters,
+    PhaseTimes, PlanMetricsSink, StartReason, StatementMemoRecord, StoreReads, WalkStart,
 };
 // One public path (the graph module stays private): the whole-graph
 // index-rebuild count the facade's reopen tests read to pin the
@@ -205,4 +205,4 @@ pub use workspace::{result_rows_bytes, ResultRowsMeter};
 /// one clause-engine pass per batch instead of one nested invocation
 /// per row. Plan-time over the body's IR, so the plan node renders the
 /// execution strategy in its details.
-pub use exec::call::in_transactions::batch_pass_admission;
+pub use exec::call::in_tx_strategy::batch_pass_admission;

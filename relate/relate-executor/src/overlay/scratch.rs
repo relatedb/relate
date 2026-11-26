@@ -51,6 +51,27 @@ pub(super) struct PerBatchState {
 }
 
 impl PerBatchState {
+    /// The batch's created bytes (REL8-2047): the entities, adjacency and
+    /// property state the current batch created — the one listing both the
+    /// PROFILE scratch peak ([`WriteScratch::scratch_created_bytes`], redo
+    /// excluded there) and the workspace charge
+    /// ([`WriteScratch::sync_workspace`], redo added back there) read, so
+    /// the two figures never drift apart. A read under the borrow, never a
+    /// mutation.
+    pub(super) fn created_bytes(&self) -> u64 {
+        crate::workspace::scratch_created_bytes(
+            &self.nodes,
+            &self.rels,
+            &self.created_nodes,
+            &self.created_rels,
+            &self.out_adj,
+            &self.in_adj,
+            // The redo log is the WAL figure, kept out of the listing —
+            // each reader adds it back only where its own figure wants it.
+            0,
+        )
+    }
+
     /// Undo one created node (ADR-0642's per-statement rollback): the inverse
     /// of the batch entries the create path makes, stated on the state that
     /// owns them — so the rollback vocabulary lives once, and a field added
@@ -227,28 +248,39 @@ impl WriteScratch {
         }
     }
 
+    /// The batch's created bytes for PROFILE (REL8-2047): the entities,
+    /// adjacency and property state the current batch created — the redo
+    /// log's bytes excluded, [`Self::redo_reserved_bytes`] reporting them
+    /// as the WAL payload, so the two PROFILE peaks stay disjoint. The
+    /// one listing is [`PerBatchState::created_bytes`]; a read under the
+    /// borrow, never a mutation.
+    pub(crate) fn scratch_created_bytes(&self) -> u64 {
+        self.batch.created_bytes()
+    }
+
+    /// The redo log's reserved bytes — the WAL payload the current
+    /// batch's commit writes (REL8-2047's PROFILE peak).
+    pub(crate) fn redo_reserved_bytes(&self) -> u64 {
+        self.redo.reserved_bytes()
+    }
+
     /// Move the workspace reservation onto the created entities currently
     /// in this scratch. A refusal leaves the previous reservation and sets
     /// the ledger's sticky error.
     fn sync_workspace(&mut self) -> Result<()> {
-        let nodes = &self.batch.nodes;
-        let rels = &self.batch.rels;
-        let created_nodes = &self.batch.created_nodes;
-        let created_rels = &self.batch.created_rels;
-        let out_adj = &self.batch.out_adj;
-        let in_adj = &self.batch.in_adj;
-        let redo_bytes = self.redo.reserved_bytes();
-        self.workspace.resize_with(|| {
-            crate::workspace::scratch_created_bytes(
-                nodes,
-                rels,
-                created_nodes,
-                created_rels,
-                out_adj,
-                in_adj,
-                redo_bytes,
-            )
-        })?;
+        // The one canonical listing ([`PerBatchState::created_bytes`]) with
+        // the redo log's bytes added back for the charge, read lazily
+        // inside the resize: `resize_with`'s own early exit is the
+        // admission-off gate, so a run with no ledger installed never pays
+        // the created-state walk (the Clone impl's "one walk, and only
+        // while a ledger is installed").
+        let Self {
+            batch,
+            redo,
+            workspace,
+            ..
+        } = self;
+        workspace.resize_with(|| batch.created_bytes() + redo.reserved_bytes())?;
         relate_core::tokens::peak_hold("create");
         Ok(())
     }

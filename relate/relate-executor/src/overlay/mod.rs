@@ -466,6 +466,25 @@ impl<'a> ExecGraph<'a> {
         self.scratch.map(|scratch| scratch.borrow().checkpoint())
     }
 
+    /// The current batch's created bytes for PROFILE (REL8-2047): the
+    /// `IN TRANSACTIONS` arm's per-batch scratch figure, read before the
+    /// batch commits or rolls back. A read view reads zero — the same
+    /// fold every sibling read on this graph makes.
+    pub(crate) fn scratch_created_bytes(&self) -> u64 {
+        self.scratch
+            .map(|scratch| scratch.borrow().scratch_created_bytes())
+            .unwrap_or(0)
+    }
+
+    /// The current batch's redo-log bytes for PROFILE (REL8-2047) — the
+    /// WAL payload its commit writes, the arm's per-batch WAL figure. A
+    /// read view reads zero.
+    pub(crate) fn redo_reserved_bytes(&self) -> u64 {
+        self.scratch
+            .map(|scratch| scratch.borrow().redo_reserved_bytes())
+            .unwrap_or(0)
+    }
+
     /// Roll the scratch back to a captured [`Self::scratch_snapshot`]:
     /// symmetric with the capture — a read view (no scratch) or a `None`
     /// snapshot (a failed batch on a read view) is the same no-op, handled

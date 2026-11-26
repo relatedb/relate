@@ -250,7 +250,11 @@ are stamped at the end of execution):
   `{rows, time_ms, total_time_ms, db_hits, memory_bytes, expression_built_bytes,
   hops, neighbor_walks, node_reads, seek_ms, walk_ms, loops, batched,
   zone_skips, start}` — plus `memo` only when a memo was probed on the
-  operator (ADR-0654; see below)
+  operator (ADR-0654; see below), and `in_tx` only when the operator is a
+  `CALL { … } IN TRANSACTIONS` whose arm ran batches (REL8-2047:
+  `{batches, committed, rolled_back, peak_input_rows_bytes,
+  peak_output_rows_bytes, peak_scratch_bytes, peak_wal_bytes}` — the batch
+  counters and per-batch peaks)
   (`batched` says whether the operator ran the ADR-0468 batch
   scan/filter/project chain — `False` on every operator the chain
   declined; `zone_skips` counts that chain's filter's zone skips —

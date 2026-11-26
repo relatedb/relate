@@ -511,7 +511,7 @@ plan.
   (or `null`), `actual` (or `null`), `children`, and `warnings` — the
   remedy-bearing notifications raised for that operator, matched by
   operator id, each `{code, gql_status, severity, category, title,
-  description, remedy}`; `[]` when the operator raised none. `fused_into` is the fused parent operator's id on a display-only fused child (an index-seek MATCH's seek and hop steps), `null` on a real operator; `fused_metrics` is `{seek_ms, node_reads}` on a PROFILE seek step, else `null`. `actual` carries `rows`, `time_ms` (a float), `total_time_ms` (a
+  description, remedy}`; `[]` when the operator raised none. `body_of` is the `CallSubquery` parent operator's id on the root of a batched `CALL { … } IN TRANSACTIONS` body subtree (REL8-2047), `null` on every node of the statement's own pipeline. `fused_into` is the fused parent operator's id on a display-only fused child (an index-seek MATCH's seek and hop steps), `null` on a real operator; `fused_metrics` is `{seek_ms, node_reads}` on a PROFILE seek step, else `null`. `actual` carries `rows`, `time_ms` (a float), `total_time_ms` (a
   float, the operator's own time plus every descendant's — the cumulative
   form of `time_ms`), `seek_ms`/`walk_ms` (floats, the phase times: the
   candidate resolution and the relationship traversal each spent,
@@ -546,7 +546,10 @@ plan.
   `memo` also carries `kinds`, the memo type names `node-label` and
   `datetime`, since the datetime constructor memo serves any expression and
   reports there), and `start` (`{element, backward, reason}`) when the
-  operator walked a pattern.
+  operator walked a pattern; `in_tx` (`{batches, committed, rolled_back,
+  peak_input_rows_bytes, peak_output_rows_bytes, peak_scratch_bytes,
+  peak_wal_bytes}`) when the operator is a `CALL { … } IN TRANSACTIONS`
+  whose arm ran batches (REL8-2047), absent otherwise.
 - Field names are `snake_case` and numbers are numbers; there is no nested
   `args` map and no rendered text to parse. A breaking change bumps the
   `schema` version and ships its own ADR.

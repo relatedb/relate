@@ -9,6 +9,7 @@ exec/call/conditional.rs::exec_conditional # projection/filter stage materialize
 exec/call/mod.rs::call_subquery_row # projection/filter stage materializes its rows; to be replaced by streaming
 exec/call/mod.rs::row_product # one outer row's product: the allowlisted call_subquery_row plus the OPTIONAL empty-body pad — per-row bounded, the one tail both per-row consumers share (ADR-0669)
 exec/call/feed.rs::exec_call_subquery # the CALL product's materializing form for a consumer it cannot be parked for: the feed spine's `materialize` charges the staged rows, mirroring `exec_load_csv`
+exec/call/in_transactions.rs::take_rows # the batch pass's seed copy for its one crossing: moves rows the batch already holds (bounded by the batch, ADR-0660's declared state), and the charge that bounds them stays in the owner the caller keeps alive
 exec/load_csv.rs::exec_load_csv # projection/filter stage materializes its rows; to be replaced by streaming
 exec/catalog.rs::compose_catalog_rows # projection/filter stage materializes its rows; to be replaced by streaming
 exec/catalog.rs::execute_catalog # projection/filter stage materializes its rows; to be replaced by streaming

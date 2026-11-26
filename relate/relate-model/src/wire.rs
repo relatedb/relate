@@ -716,6 +716,14 @@ mod plan_args;
 #[path = "plan_wire.rs"]
 mod plan_wire;
 
+// The PROFILE metric-wire family (ADR-0344 phase 2 + metric fields): the
+// metric set and every shape it composes — its own module beside the node
+// wire form that reads it, mirroring the fused-child and memo shapes'
+// placement; `wire::PlanMetricsWire` stays the one public path.
+
+#[path = "plan_metrics_wire.rs"]
+mod plan_metrics_wire;
+
 // The fused virtual child's wire shape (virtual plan operators) — its
 // own module beside the node accessor that reads it, mirroring the key
 // vocabulary's placement.
@@ -734,10 +742,12 @@ pub mod plan_keys;
 
 pub use plan_fused::{FusedChildWire, PlanFusedMetricsWire};
 pub use plan_memo::{MemoKindWire, MemoKindsWire, PlanMemoWire};
+pub use plan_metrics_wire::{
+    KernelRungWire, PlanInTxWire, PlanMetricsWire, PlanPhasesWire, PlanProfiledFacts, PlanReadsWire,
+};
 pub use plan_wire::{
     metric_i64, metric_u64, plan_node_wire, plan_subtree_totals, profiled_facts, time_ns_ms,
-    KernelRungWire, PlanMetricsWire, PlanNodeWire, PlanPhasesWire, PlanProfiledFacts,
-    PlanReadsWire, CYPHER_VERSION, NEO4J_PLANNER_IMPL, PLAN_UNAVAILABLE,
+    PlanNodeWire, CYPHER_VERSION, NEO4J_PLANNER_IMPL, PLAN_UNAVAILABLE,
 };
 
 // The typed plan-warning vocabulary (LABS-461: one warning type) — its

@@ -13,7 +13,7 @@ use std::cell::{Cell, OnceCell};
 
 use relate_core::Result;
 
-use crate::metrics::{BatchFacts, ClauseMetricsRecord, PlanMetricsSite, WalkStart};
+use crate::metrics::{BatchFacts, ClauseMetricsRecord, InTxBatches, PlanMetricsSite, WalkStart};
 use crate::overlay::ExecGraph;
 
 use super::match_clause::{LadderFacts, MatchOperator};
@@ -69,6 +69,11 @@ pub(crate) fn clause_record(
         frontier: own.frontier,
         frontier_decline,
         memo: own.memo,
+        // REL8-2047: the `IN TRANSACTIONS` batch facts are arm-local, not
+        // counter-snapshot deltas — the shared record zeroed here, and the
+        // arm's parked facts stamp its accumulated cell onto the record at
+        // the one reporting site that runs for that arm.
+        intx: InTxBatches::default(),
     }
 }
 
@@ -99,12 +104,6 @@ impl StageStats {
             facts: OnceCell::new(),
             start: OnceCell::new(),
         }
-    }
-
-    /// The accumulated window totals — the run's work the arm subtracts
-    /// from its own delta (the head stage's are the landing's `work`).
-    pub(crate) fn totals(&self) -> StageDelta {
-        self.totals.get()
     }
 
     /// The stage's first ladder facts, when a ladder ran.

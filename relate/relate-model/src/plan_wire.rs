@@ -10,6 +10,10 @@ use super::plan_args::{
     metric_group_ints, metric_set_ints, optional_bool, optional_fraction, optional_int,
 };
 use super::plan_keys;
+use super::plan_metrics_wire::{
+    KernelRungWire, PlanFrontierWire, PlanInTxWire, PlanMetricsWire, PlanPhasesWire,
+    PlanProfiledFacts, PlanReadsWire, PlanStartWire,
+};
 use super::plan_warning::PlanWarning;
 use crate::CypherValue;
 
@@ -22,204 +26,12 @@ use crate::CypherValue;
 /// table layout) so "column not produced" renders identically everywhere.
 pub const PLAN_UNAVAILABLE: &str = "-";
 
-/// The traversal rung a PROFILE node reports (LABS-1117), typed from the
-/// wire vocabulary: the chain carries its hop count, so a chain without
-/// one — the half-state the parser rejects — is unrepresentable. [`Self::as_str`]
-/// is the vocabulary's one spelling; `plan_keys::KERNEL_RUNGS` is derived
-/// from it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum KernelRungWire {
-    /// The unrolled fixed-k chain kernel, `hops` hops.
-    Chain { hops: i64 },
-    /// The hub-star candidate-intersection kernel.
-    HubStar,
-    /// The frontier-NFA rung over the BFS.
-    FrontierNfa,
-    /// The per-row walker — every gate's decline.
-    Walker,
-}
-
-impl KernelRungWire {
-    /// The chain rung's wire name — a name, never a variant value, so no
-    /// hop count is fabricated to reach it.
-    pub const CHAIN: &'static str = "chain";
-    /// The hub-star rung's wire name.
-    pub const HUB_STAR: &'static str = "hub-star";
-    /// The frontier-NFA rung's wire name.
-    pub const FRONTIER_NFA: &'static str = "frontier-nfa";
-    /// The per-row walker's wire name.
-    pub const WALKER: &'static str = "walker";
-    /// Every rung name, in vocabulary order — the wire table's one
-    /// spelling. `plan_keys::KERNEL_RUNGS` is this list; the executor's
-    /// `KernelRung::as_str` reads the same constants.
-    pub const NAMES: [&'static str; 4] = [
-        Self::CHAIN,
-        Self::HUB_STAR,
-        Self::FRONTIER_NFA,
-        Self::WALKER,
-    ];
-
-    /// The rung's wire name (`const` so the table derives from this match
-    /// instead of repeating it).
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            KernelRungWire::Chain { .. } => Self::CHAIN,
-            KernelRungWire::HubStar => Self::HUB_STAR,
-            KernelRungWire::FrontierNfa => Self::FRONTIER_NFA,
-            KernelRungWire::Walker => Self::WALKER,
-        }
-    }
-
-    /// The chain rung's hop count — `None` for every other rung.
-    pub const fn hops(self) -> Option<i64> {
-        match self {
-            KernelRungWire::Chain { hops } => Some(hops),
-            KernelRungWire::HubStar | KernelRungWire::FrontierNfa | KernelRungWire::Walker => None,
-        }
-    }
-}
-
-// The typed warning vocabulary lives in its own module beside this one
-// (LABS-461: one warning type — the enum, its estimate policy, and its
-// wire-shape serializer in `plan_warning.rs`, re-exported through
-// `wire`); the node wire form below reads it here.
-
-/// The PROFILE metric set (ADR-0344 phase 2 + metric fields) as named
-/// fields: which number is rows, nanoseconds, store accesses, or
-/// row-materialization bytes is stated by the names, not by a position
-/// convention.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct PlanMetricsWire {
-    pub rows: i64,
-    pub time_ns: i64,
-    pub db_hits: i64,
-    pub memory_bytes: i64,
-    /// Expression allocation bytes charged by the operator's clause
-    /// (ADR-0463), beside the row-materialization `memory_bytes`.
-    pub expression_built_bytes: i64,
-    /// The store-read mix behind `db_hits` (LABS-369).
-    pub reads: PlanReadsWire,
-    /// The phase times behind the read kinds (LABS-448): the seek's and
-    /// the walk's elapsed nanoseconds — emitted with the metric block,
-    /// like the kinds, so a half-present pair is a wire-contract break.
-    pub phases: PlanPhasesWire,
-    /// The walk's chosen start, when the clause walked one (LABS-369).
-    pub start: Option<PlanStartWire>,
-    /// Which rung served the clause's `MATCH` walk (LABS-1117), typed: the
-    /// chain carries its hop count, so the half-state the wire rejects (a
-    /// chain rung without one) is unrepresentable here. `None` when the
-    /// producer emitted no key (a non-`MATCH` clause, a folded or `SEARCH`
-    /// `MATCH`, or a batch-chain `MATCH`).
-    pub kernel: Option<KernelRungWire>,
-    /// Whether the clause ran ADR-0468's batch scan/filter/project chain
-    /// (LABS-359) — `false` on the wire means absent, the producer emits
-    /// the key only when true.
-    pub batched: bool,
-    /// The batch filter's zone skips (LABS-645): conjunct-batch
-    /// evaluations the chunk's derived min/max zone metadata provably
-    /// replaced with the correct empty survivor set — `0` on the wire
-    /// means absent, the producer emits the key only when nonzero.
-    pub zone_skips: i64,
-    /// The frontier family's run counters (ADR-0478), `Default` = the
-    /// family declined the clause: the producer emits the whole set —
-    /// the run counters, the NFA rung's facts, and the budget fraction —
-    /// only when it ran (`levels > 0`), all together like the start
-    /// trio.
-    pub frontier: PlanFrontierWire,
-    /// Why the frontier rung did not serve the clause: a run-time decline
-    /// (ADR-0516) or a plan-time gate (ADR-0478), one of the
-    /// `plan_keys::DECLINE_REASONS` vocabulary — `None` on every clause
-    /// the rung served or never considered, present only on a PROFILE node.
-    pub frontier_decline: Option<&'static str>,
-    /// The expression-memo counters (ADR-0654): `None` = no memo was
-    /// probed on this node, the producer emitting the group only when one
-    /// was (the `batched` / `zone_skips` / `frontier` presence rule).
-    pub memo: Option<super::plan_memo::PlanMemoWire>,
-}
-
-/// The frontier family's run counters a PROFILE node reports (ADR-0478):
-/// the BFS's edge visits (the work its walk budget caps), its completed
-/// levels, and its accepted endpoints — the `[frontier …]` operator
-/// marker's own trio — beside the NFA rung's own facts: the
-/// (node, state) cells the runs created, the re-arrival rule memo's
-/// hits and misses, the admission asks by verdict, and the budget
-/// fraction the rule's work spent.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct PlanFrontierWire {
-    pub edge_visits: i64,
-    pub levels: i64,
-    pub endpoints: i64,
-    /// (node, state) cells the runs created — the pairs that occupied
-    /// the span×states tables.
-    pub cells: i64,
-    /// Re-arrival rule memo hits: asks the verdict table answered
-    /// without a search.
-    pub memo_hits: i64,
-    /// Re-arrival rule memo misses: asks that ran the bounded search.
-    pub memo_misses: i64,
-    /// Admission asks the representative-chain proof settled.
-    pub representative_proofs: i64,
-    /// Admission asks the bounded search proved.
-    pub search_proven: i64,
-    /// Admission asks the bounded search disproved within its bounds.
-    pub search_disproven: i64,
-    /// Admission asks the shared work budget cut (ADR-0516).
-    pub declined_exhausted: i64,
-    /// The re-arrival work fraction the runs spent — one run's budget as
-    /// the denominator, so `1.0` is a drained (declined) run and a
-    /// multi-seed clause reads as run-equivalents.
-    pub budget_fraction: f64,
-}
-
-/// A metrics-carrying node's presentation bundle (cumulative vs self):
-/// the PROFILE metric set and its subtree total — the derived total
-/// travels with the metrics it sums, present together or not at all, so
-/// no presentation can render a total beside unavailable metrics or a
-/// metric set without one.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct PlanProfiledFacts {
-    /// The node's PROFILE metric set.
-    pub metrics: PlanMetricsWire,
-    /// The subtree total of the node's elapsed time: its own `time_ns`
-    /// plus every descendant's — the one fact the `Total (ms)` cell and
-    /// the document's `total_time_ms` render.
-    pub total_time_ns: i64,
-}
-
-/// The store-read mix a PROFILE node reports (LABS-369): the kinds the
-/// one `Db Hits` total blends — relationship hops, neighbor walks, and
-/// node-store reads.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct PlanReadsWire {
-    pub hops: i64,
-    pub neighbor_walks: i64,
-    pub node_reads: i64,
-}
-
-/// The phase times a PROFILE node reports (LABS-448): the elapsed time
-/// the read kinds' store work spent — the seek (candidate resolution and
-/// admission, the `Nodes` kind's work) and the walk (relationship
-/// traversal, the `Rels`/`Degree` kinds' work), inclusive of a
-/// multi-element pattern's nested phases.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct PlanPhasesWire {
-    /// The seek phase's nanoseconds.
-    pub seek_ns: i64,
-    /// The walk phase's nanoseconds.
-    pub walk_ns: i64,
-}
-
-/// How a PROFILE node's walk chose its start (LABS-369): the pattern
-/// element index, the direction, and the reason class the executor
-/// recorded (`bound-pivot`, `cheapest`, `seek-anchored`, `index-0`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct PlanStartWire {
-    pub element: i64,
-    pub backward: bool,
-    /// The reason class, one of the `plan_keys::REASONS` vocabulary — a
-    /// borrowed static, like the warning names.
-    pub reason: &'static str,
-}
+// The PROFILE metric-wire family — the rung enum, the metric set, the
+// read-kind/phase/start/frontier/IN-TRANSACTIONS shapes it composes, and
+// the profiled-facts presentation bundle — lives in its own module
+// beside this one (`plan_metrics_wire.rs`, REL8-2047's split), like the
+// fused-child, memo and warning shapes; the node wire form below reads
+// it here.
 
 /// The typed view of one structured-plan wire node (ADR-0344/0345): the
 /// producer (`relate`'s `PlanNode::to_value`) emits exactly this
@@ -265,6 +77,12 @@ pub struct PlanNodeWire<'a> {
     /// together, so the half-states are unrepresentable. Never the
     /// parent's rows, time or memory.
     pub fused: Option<super::plan_fused::FusedChildWire>,
+    /// The batched `CALL { … } IN TRANSACTIONS` body role marker
+    /// (REL8-2047): the `CallSubquery` parent's id on the root of a body
+    /// subtree, `None` on every node of the statement's own pipeline —
+    /// the role fact [`Self::input_rows`] and [`Self::executed_children`]
+    /// read so a body operator is never taken for the data-flow child.
+    pub body_of: Option<i64>,
 }
 
 impl PlanNodeWire<'_> {
@@ -332,6 +150,26 @@ pub fn plan_node_wire(value: &CypherValue) -> PlanNodeWire<'_> {
     // ride-along groups (the phase times, the read kinds) stay the fused
     // parent's and never parse here.
     let fused = super::plan_fused::fused_child(args);
+    // REL8-2047: the body role marker, the fused fact's optional-int
+    // shape — its presence is the whole "this node is a batched body's
+    // operator" fact. Like a fused child, a body operator runs inside its
+    // parent's batch, so it never carries the PROFILE metric block
+    // (ADR-0681): a half-state here is rejected loudly, never silently
+    // summed into the parent's subtree total.
+    let body_of = optional_int(args, plan_keys::BODY_OF);
+    if body_of.is_some() {
+        for key in plan_keys::METRIC_BLOCK_KEYS.iter() {
+            if args.contains_key(*key) {
+                panic!(
+                    "plan wire node carries {} beside {} (REL8-2047): a batched \
+                     body operator's work is its CallSubquery parent's batch \
+                     record, so it never carries the metric block",
+                    key,
+                    plan_keys::BODY_OF
+                );
+            }
+        }
+    }
     // The metric block's five scalar keys ride the module's one all-or-none
     // group policy ([`plan_keys::METRIC_BLOCK_KEYS`]); their presence *is*
     // the metric-set fact. A fused child's parser already rejected them.
@@ -501,21 +339,7 @@ pub fn plan_node_wire(value: &CypherValue) -> PlanNodeWire<'_> {
     // on a PROFILE node — anything else is a wire-contract break, kept
     // loud like the batched flag's and the start trio's half-states.
     let frontier = {
-        let ints = metric_group_ints(
-            args,
-            [
-                plan_keys::FRONTIER_EDGES,
-                plan_keys::FRONTIER_LEVELS,
-                plan_keys::FRONTIER_ENDPOINTS,
-                plan_keys::FRONTIER_CELLS,
-                plan_keys::FRONTIER_MEMO_HITS,
-                plan_keys::FRONTIER_MEMO_MISSES,
-                plan_keys::FRONTIER_REPRESENTATIVE_PROOFS,
-                plan_keys::FRONTIER_SEARCH_PROVEN,
-                plan_keys::FRONTIER_SEARCH_DISPROVEN,
-                plan_keys::FRONTIER_DECLINED_EXHAUSTED,
-            ],
-        );
+        let ints = metric_group_ints(args, plan_keys::FRONTIER_GROUP_KEYS);
         let fraction = optional_fraction(args, plan_keys::FRONTIER_BUDGET_FRACTION);
         match (has_metrics, ints, fraction) {
             (_, None, None) => PlanFrontierWire::default(),
@@ -577,6 +401,37 @@ pub fn plan_node_wire(value: &CypherValue) -> PlanNodeWire<'_> {
     // The expression-memo group (ADR-0654), read and validated by its
     // own module.
     let memo = super::plan_memo::memo_group(args, has_metrics);
+    // The `IN TRANSACTIONS` batch facts (REL8-2047): the producer emits
+    // the seven integers together, only when the arm ran batches and only
+    // on a PROFILE node — the all-or-none group read, kept loud like the
+    // frontier family's.
+    let intx = {
+        let ints = metric_group_ints(args, plan_keys::IN_TX_GROUP_KEYS);
+        match (has_metrics, ints) {
+            (_, None) => PlanInTxWire::default(),
+            (
+                true,
+                Some(
+                    [batches, committed, rolled_back, peak_input_rows_bytes, peak_output_rows_bytes, peak_scratch_bytes, peak_wal_bytes],
+                ),
+            ) => PlanInTxWire {
+                batches,
+                committed,
+                rolled_back,
+                peak_input_rows_bytes,
+                peak_output_rows_bytes,
+                peak_scratch_bytes,
+                peak_wal_bytes,
+            },
+            (has_metrics, ints) => panic!(
+                "plan wire {}..{} are non-negative integers emitted \
+                 together, only on a PROFILE node (REL8-2047), got \
+                 metrics={has_metrics} ints={ints:?}",
+                plan_keys::IN_TX_BATCHES,
+                plan_keys::IN_TX_PEAK_WAL_BYTES
+            ),
+        }
+    };
     // The scalar group already enforced all-or-none and non-negative; the
     // wire form has one shape here, derived from the group read above.
     let metrics = scalars.map(
@@ -595,6 +450,7 @@ pub fn plan_node_wire(value: &CypherValue) -> PlanNodeWire<'_> {
             frontier,
             frontier_decline,
             memo,
+            intx,
         },
     );
     let children = match node.get(plan_keys::CHILDREN) {
@@ -683,6 +539,7 @@ pub fn plan_node_wire(value: &CypherValue) -> PlanNodeWire<'_> {
         children,
         warnings,
         fused,
+        body_of,
     }
 }
 
@@ -766,22 +623,35 @@ impl<'a> PlanNodeWire<'a> {
     /// child (the statement's one seed row). The one spelling, read by
     /// the plan walk and the flag fold alike.
     pub fn input_rows(&self) -> Option<u64> {
-        self.children
-            .first()
-            .and_then(|first| plan_node_wire(first).metrics.map(|m| metric_u64(m.rows)))
+        // The data-flow child is the first executed child
+        // ([`Self::is_executed_child`]): a `CALL { … } IN TRANSACTIONS`
+        // as the clause with no preceding clause carries only a body
+        // child, whose rows are not this operator's input.
+        self.executed_children()
+            .next()
+            .and_then(|child| child.metrics.map(|m| metric_u64(m.rows)))
     }
 
-    /// The node's executed children: every child except a display-only
-    /// fused breakdown step (ADR-0622). A fused step's measured pair
-    /// (`fused.metrics`, never the `metrics` block) is a phase of the
-    /// fused parent's clause totals, so a walk reading executed operators
-    /// or their PROFILE metrics must not count or lay it out a second
-    /// time — the one skip policy.
+    /// Whether this node is an executed child of its parent — the one
+    /// child-role rule both walks read. Two child roles are skipped: a
+    /// display-only fused breakdown step (ADR-0622), whose measured pair
+    /// is a phase of the fused parent's clause totals, and a batched
+    /// `CALL { … } IN TRANSACTIONS` body's operator root (REL8-2047),
+    /// whose work is the `CallSubquery` operator's batch record.
+    pub fn is_executed_child(&self) -> bool {
+        self.fused.is_none() && self.body_of.is_none()
+    }
+
+    /// The node's executed children: every child
+    /// [`Self::is_executed_child`] admits — the one skip policy, so a
+    /// walk reading executed operators or their PROFILE metrics never
+    /// counts a display-only fused step or a batched body's operators a
+    /// second time.
     pub fn executed_children(&self) -> impl Iterator<Item = PlanNodeWire<'a>> + 'a {
         self.children
             .iter()
             .map(plan_node_wire)
-            .filter(|child| child.fused.is_none())
+            .filter(|child| child.is_executed_child())
     }
 }
 

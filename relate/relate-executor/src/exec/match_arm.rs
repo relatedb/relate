@@ -9,7 +9,7 @@ use relate_core::Result;
 use relate_ir::Clause;
 
 use crate::ctx::ExecCtx;
-use crate::metrics::PlanMetricsSite;
+use crate::metrics::{ParkedRecord, PlanMetricsSite};
 use crate::row::Row;
 
 use super::aggregate::Aggregation;
@@ -109,7 +109,7 @@ pub(super) fn exec_match_arm<'a>(
                 fold_class,
                 sink_class,
                 scope,
-                profile.map(|site| (site, i)),
+                profile.map(|site| ParkedRecord::at(site, i)),
             )?
         };
         rows = search_match_clause(
@@ -207,7 +207,7 @@ pub(super) fn exec_match_arm<'a>(
                         fold_class,
                         sink_class,
                         scope,
-                        profile.map(|site| (site, i)),
+                        profile.map(|site| ParkedRecord::at(site, i)),
                     )?
                 } else {
                     None

@@ -9,15 +9,9 @@ use std::collections::BTreeMap;
 use relate_model::wire;
 use relate_model::wire::plan_keys;
 
-use super::{ClauseMetrics, PlanNode, PlanWarning};
+use super::metric_args::{put_metric, put_metrics, put_optional_metric};
+use super::{PlanNode, PlanWarning};
 use crate::Value;
-
-/// One metric arg, through the wire's one width policy (`metric_i64`):
-/// saturate at the i64 boundary, never an unchecked cast — the insert
-/// idiom every metric field shares.
-fn put_metric(args: &mut BTreeMap<String, Value>, key: &str, value: u128) {
-    args.insert(key.to_string(), Value::Int(wire::metric_i64(value)));
-}
 
 impl PlanNode {
     /// The Neo4j-facing plan value (ADR-0357) — the one boundary every
@@ -70,7 +64,7 @@ impl PlanNode {
         if let Some(metrics) = self.metrics {
             args.insert(
                 plan_keys::MEMORY.to_string(),
-                Value::Int(wire::metric_i64(metrics.memory_bytes as u128)),
+                Value::Int(wire::metric_i64(u128::from(metrics.memory_bytes))),
             );
         }
         let planner = wire::NEO4J_PLANNER_IMPL;
@@ -166,33 +160,27 @@ impl PlanNode {
     /// construction the undecorated and the Neo4j-facing forms both build
     /// from, so they cannot drift.
     fn base_args(&self) -> BTreeMap<String, Value> {
-        let mut args: BTreeMap<String, Value> = [
-            // One width policy for every plan integer (wire's
-            // `metric_i64`): saturate at the i64 boundary, never an
-            // unchecked cast.
-            (
-                plan_keys::ID.to_string(),
-                Value::Int(wire::metric_i64(self.id as u128)),
-            ),
-            (
-                plan_keys::DETAILS.to_string(),
-                Value::String(self.details.as_str().into()),
-            ),
-        ]
+        let mut args: BTreeMap<String, Value> = [(
+            plan_keys::DETAILS.to_string(),
+            Value::String(self.details.as_str().into()),
+        )]
         .into_iter()
         .collect();
-        if let Some(estimate) = self.estimated_rows {
-            args.insert(
-                plan_keys::ESTIMATED_ROWS.to_string(),
-                Value::Int(wire::metric_i64(estimate as u128)),
-            );
-        }
-        if let Some(peak) = self.token_estimate {
-            args.insert(
-                "PeakLogicalBytes".to_string(),
-                Value::Int(wire::metric_i64(peak.peak_logical_bytes as u128)),
-            );
-        }
+        // Every plan integer goes through the one width policy
+        // (`put_metric`'s `metric_i64`: saturate at the i64 boundary,
+        // never an unchecked cast).
+        put_metric(&mut args, plan_keys::ID, self.id as u128);
+        put_optional_metric(
+            &mut args,
+            plan_keys::ESTIMATED_ROWS,
+            self.estimated_rows.map(u128::from),
+        );
+        put_optional_metric(
+            &mut args,
+            plan_keys::PEAK_LOGICAL_BYTES,
+            self.token_estimate
+                .map(|peak| u128::from(peak.peak_logical_bytes)),
+        );
         // LABS-1117: the store's static pattern-engine rung on a MATCH
         // operator — the one engagement fact EXPLAIN can state.
         if let Some(engine) = self.pattern_engine {
@@ -209,7 +197,7 @@ impl PlanNode {
         // never-blocks half is enforced here, at the production
         // boundary: a node the engine cannot write is one its own
         // parser can never reject.
-        if let Some(fused) = &self.fused {
+        if let Some(fused) = self.fused() {
             assert!(
                 self.metrics.is_none(),
                 "a fused virtual child never carries the operator metric block"
@@ -217,189 +205,35 @@ impl PlanNode {
             put_metric(&mut args, plan_keys::FUSED_INTO, fused.parent as u128);
             if let Some(metrics) = fused.metrics {
                 put_metric(&mut args, plan_keys::SEEK_TIME_NS, metrics.seek_ns);
-                put_metric(&mut args, plan_keys::NODE_READS, metrics.node_reads as u128);
+                put_metric(
+                    &mut args,
+                    plan_keys::NODE_READS,
+                    u128::from(metrics.node_reads),
+                );
             }
+        }
+        // REL8-2047: a batched body subtree's root names its
+        // `CallSubquery` parent — the presence of `BodyOf` IS the body
+        // role, so a walk tells it from the data-flow child.
+        if let Some(parent) = self.body_of() {
+            // ADR-0681: a batched body's operators run inside the
+            // `CallSubquery` operator's batch, so their work is that
+            // operator's record — the body role carries no metric block
+            // of its own, the fused role's rule, enforced here at the
+            // production boundary.
+            assert!(
+                self.metrics.is_none(),
+                "a batched body operator never carries the operator metric block"
+            );
+            put_metric(&mut args, plan_keys::BODY_OF, parent as u128);
         }
         // PROFILE metrics (ADR-0344 phase 2 + metric fields): present
         // only on PROFILE trees, emitted together — through the one
         // emission helper every metrics feature extends.
         if let Some(metrics) = self.metrics {
-            Self::put_metrics(&mut args, &metrics);
+            put_metrics(&mut args, &metrics);
         }
         args
-    }
-
-    /// The frontier family's integer counters by wire key, one table for
-    /// the cluster (the budget fraction, the one float, rides beside it).
-    fn frontier_counters(
-        frontier: &relate_executor::FrontierCounters,
-    ) -> [(&'static str, u128); 10] {
-        [
-            (plan_keys::FRONTIER_EDGES, frontier.edge_visits as u128),
-            (plan_keys::FRONTIER_LEVELS, frontier.levels as u128),
-            (plan_keys::FRONTIER_ENDPOINTS, frontier.endpoints as u128),
-            (plan_keys::FRONTIER_CELLS, frontier.cells as u128),
-            (plan_keys::FRONTIER_MEMO_HITS, frontier.memo_hits as u128),
-            (
-                plan_keys::FRONTIER_MEMO_MISSES,
-                frontier.memo_misses as u128,
-            ),
-            (
-                plan_keys::FRONTIER_REPRESENTATIVE_PROOFS,
-                frontier.representative_proofs as u128,
-            ),
-            (
-                plan_keys::FRONTIER_SEARCH_PROVEN,
-                frontier.search_proven as u128,
-            ),
-            (
-                plan_keys::FRONTIER_SEARCH_DISPROVEN,
-                frontier.search_disproven as u128,
-            ),
-            (
-                plan_keys::FRONTIER_DECLINED_EXHAUSTED,
-                frontier.declined_exhausted as u128,
-            ),
-        ]
-    }
-
-    /// The PROFILE metrics' arg emission (ADR-0344 phase 2 + metric
-    /// fields, LABS-369's kinds and start, LABS-448's phase times): one
-    /// helper every metrics feature extends, so base_args reads as base
-    /// fields + row estimate + peak workspace + metrics.
-    fn put_metrics(args: &mut BTreeMap<String, Value>, metrics: &ClauseMetrics) {
-        // One width policy for every metric field (wire's
-        // `metric_i64`): saturate, never an unchecked cast on one
-        // field and a clamp on the other.
-        put_metric(args, plan_keys::ROWS, metrics.rows as u128);
-        put_metric(args, plan_keys::TIME_NS, metrics.time_ns);
-        put_metric(args, plan_keys::DB_HITS, metrics.db_hits as u128);
-        // LABS-369: the read-kind mix behind the one `DbHits` total,
-        // and the walk's chosen start (element, direction, reason) —
-        // the facts an opaque `Expand` hid. Emitted together with the
-        // metric block, so a PROFILE tree carries them or none.
-        args.insert(
-            plan_keys::HOPS.to_string(),
-            Value::Int(wire::metric_i64(metrics.reads.hops as u128)),
-        );
-        args.insert(
-            plan_keys::NEIGHBOR_WALKS.to_string(),
-            Value::Int(wire::metric_i64(metrics.reads.neighbor_walks as u128)),
-        );
-        args.insert(
-            plan_keys::NODE_READS.to_string(),
-            Value::Int(wire::metric_i64(metrics.reads.node_reads as u128)),
-        );
-        // LABS-448: the phase times the read kinds' store work spent —
-        // the seek (candidate resolution and admission) and the walk
-        // (relationship traversal), inclusive of a multi-element
-        // pattern's nested phases. Emitted with the metric block like
-        // the kinds.
-        put_metric(args, plan_keys::SEEK_TIME_NS, metrics.phases.seek_ns);
-        put_metric(args, plan_keys::WALK_TIME_NS, metrics.phases.walk_ns);
-        if let Some(start) = metrics.start {
-            put_metric(args, plan_keys::START_ELEMENT, start.element as u128);
-            args.insert(
-                plan_keys::START_BACKWARD.to_string(),
-                Value::Bool(start.backward),
-            );
-            args.insert(
-                plan_keys::START_REASON.to_string(),
-                Value::String(start.reason.as_str().into()),
-            );
-        }
-        // LABS-1117: which rung served the clause's MATCH walk — the
-        // chain, the hub-star, the frontier-NFA rung, or the per-row
-        // walker. Emitted only when a rung served the clause, with the
-        // metric set; the chain's hop count rides beside it.
-        if let Some(kernel) = metrics.kernel {
-            args.insert(
-                plan_keys::KERNEL_RUNG.to_string(),
-                Value::String(kernel.as_str().into()),
-            );
-            if let relate_executor::KernelRung::Chain { hops } = kernel {
-                put_metric(args, plan_keys::KERNEL_HOPS, hops as u128);
-            }
-        }
-        // ADR-0468 (LABS-359): the batch scan/filter/project chain ran
-        // this clause — emitted only when true, never a `false` beside
-        // the absent fact, like the start trio's presence-only shape.
-        if metrics.batched {
-            args.insert(plan_keys::BATCHED.to_string(), Value::Bool(true));
-        }
-        // LABS-645: the batch filter's zone skips — emitted only when
-        // nonzero (a count's presence-only shape, `Batched`'s when-true
-        // rule), with the metric set.
-        if metrics.zone_skips > 0 {
-            put_metric(args, plan_keys::ZONE_SKIPS, metrics.zone_skips as u128);
-        }
-        // ADR-0478: the frontier family's run counters — the operator
-        // marker (the plan table's `[frontier …]`) and its own set —
-        // emitted only when the family ran the clause (`levels > 0`: a
-        // run always completes its level 0, a declined clause is all
-        // zeros), the integers together like the start trio. The NFA
-        // rung's own facts ride the same presence (ADR-0516): the cells,
-        // the rule memo's hits and misses, the admission asks by
-        // verdict, and the budget fraction — the one float metric, the
-        // counter's own derivation, never a re-spelled division.
-        if metrics.frontier.levels > 0 {
-            let frontier = &metrics.frontier;
-            for (key, count) in Self::frontier_counters(frontier) {
-                put_metric(args, key, count);
-            }
-            args.insert(
-                plan_keys::FRONTIER_BUDGET_FRACTION.to_string(),
-                Value::Float(frontier.budget_fraction()),
-            );
-        }
-        // ADR-0516: the frontier rung's run-time decline — the typed
-        // reason's stable wire name, emitted only when the rung fell
-        // through, like the start trio's presence-only shape.
-        if let Some(reason) = metrics.frontier_decline {
-            args.insert(
-                plan_keys::FRONTIER_DECLINE_REASON.to_string(),
-                Value::String(reason.as_str().into()),
-            );
-        }
-        // ADR-0654: the expression-memo group — emitted only when a memo
-        // was probed on the operator (the `frontier` group's presence
-        // rule), the six integers together; the root's memo types ride
-        // beside it. `MemoBytes` is its own field, never `MemoryBytes`.
-        if metrics.memo.probes > 0 {
-            let memo = &metrics.memo;
-            let counts = [
-                memo.probes,
-                memo.hits,
-                memo.inserts,
-                memo.refused,
-                memo.bytes,
-                memo.disabled_count,
-            ];
-            for (key, count) in plan_keys::MEMO_GROUP_KEYS.into_iter().zip(counts) {
-                put_metric(args, key, u128::from(count));
-            }
-            if !metrics.memo_kinds.is_empty() {
-                args.insert(
-                    plan_keys::MEMO_KINDS.to_string(),
-                    Value::List(
-                        metrics
-                            .memo_kinds
-                            .names()
-                            .map(|name| Value::String(name.into()))
-                            .collect::<Vec<_>>()
-                            .into(),
-                    ),
-                );
-            }
-        }
-        put_metric(args, plan_keys::MEMORY_BYTES, metrics.memory_bytes as u128);
-        // ADR-0463: the expression allocation charged by the operator's
-        // clause, beside the row-materialization bytes it already reports.
-        put_metric(
-            args,
-            plan_keys::EXPRESSION_BUILT_BYTES,
-            metrics.expression_built_bytes as u128,
-        );
     }
 
     /// The node's map (ADR-0345) around `args`: `operatorType`, `args`,
@@ -485,7 +319,7 @@ fn warning_value(warning: &PlanWarning) -> Value {
 
 #[cfg(test)]
 mod tests {
-    use super::super::PlanWarning;
+    use super::super::{ClauseMetrics, PlanWarning};
     use super::*;
 
     /// The wire warnings on a node carrying one: the typed vocabulary's
@@ -526,6 +360,88 @@ mod tests {
             panic!("the wire node is a map");
         };
         assert!(clean.get(plan_keys::WARNINGS).is_none());
+    }
+
+    /// REL8-2047: the batched body role survives the wire round trip —
+    /// `BodyOf` carries the `CallSubquery` parent's id, and the node is
+    /// not an executed child on either side of the crossing.
+    #[test]
+    fn to_value_round_trips_the_batched_body_role() {
+        let call = PlanNode::new("CallSubquery", String::new(), Vec::new(), Vec::new());
+        let body = PlanNode::new("Create", "(:BC)".to_string(), Vec::new(), Vec::new());
+        let mut root = call;
+        root.children.push(body.with_body(root.id));
+        let wire_value = relate_core::value_to_cypher(&root.to_value());
+        let parsed = wire::plan_node_wire(&wire_value);
+        let body = wire::plan_node_wire(&parsed.children[0]);
+        assert_eq!(
+            body.body_of,
+            Some(parsed.id),
+            "the body role survives the round trip"
+        );
+        assert!(
+            parsed.executed_children().next().is_none(),
+            "a batched body's operators are not executed children"
+        );
+    }
+
+    /// REL8-2047: the `IN TRANSACTIONS` batch facts survive the wire round
+    /// trip — the seven integers emitted together, present only when the
+    /// arm ran batches (a zeroed-facts operator emits no key).
+    #[test]
+    fn to_value_round_trips_the_in_tx_batch_facts() {
+        let intx = relate_executor::InTxBatches {
+            batches: 4,
+            committed: 3,
+            rolled_back: 1,
+            peak_input_rows_bytes: 900,
+            peak_output_rows_bytes: 800,
+            peak_scratch_bytes: 700,
+            peak_wal_bytes: 600,
+        };
+        let base = zeroed_metrics();
+        let mut node = PlanNode::new("CallSubquery", String::new(), Vec::new(), Vec::new());
+        node.metrics = Some(ClauseMetrics { intx, ..base });
+        let wire_value = relate_core::value_to_cypher(&node.to_value());
+        let parsed = wire::plan_node_wire(&wire_value);
+        assert_eq!(
+            parsed.metrics.expect("the node carries metrics").intx,
+            wire::PlanInTxWire {
+                batches: 4,
+                committed: 3,
+                rolled_back: 1,
+                peak_input_rows_bytes: 900,
+                peak_output_rows_bytes: 800,
+                peak_scratch_bytes: 700,
+                peak_wal_bytes: 600,
+            },
+            "the batch facts survive the round trip"
+        );
+        // An arm that ran no batch emits no key: the zeroed facts never
+        // appear as a group of zeros on the wire.
+        node.metrics = Some(base);
+        let args = match node.to_value() {
+            Value::Map(node) => match node.get(plan_keys::ARGS) {
+                Some(Value::Map(args)) => args.as_ref().clone(),
+                other => panic!("the node carries args: {other:?}"),
+            },
+            other => panic!("the wire node is a map: {other:?}"),
+        };
+        for key in plan_keys::IN_TX_GROUP_KEYS {
+            assert!(
+                !args.contains_key(key),
+                "no {key} without a batch: {args:?}"
+            );
+        }
+    }
+
+    /// The metrics fixture the batch-facts round trip's two arms share.
+    fn zeroed_metrics() -> ClauseMetrics {
+        ClauseMetrics {
+            rows: 9,
+            time_ns: 1,
+            ..Default::default()
+        }
     }
 
     /// The Neo4j-facing entry is root-shaped (ADR-0357): the root carries

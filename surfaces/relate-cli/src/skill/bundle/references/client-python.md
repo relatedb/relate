@@ -39,7 +39,10 @@ and `graph()`.
 
 A `plan` tree for a seek-started `MATCH` nests display-only fused children
 (ADR-0622): ordinary `children` entries, never executed operators, with no
-rows/time/memory of their own (the parent's totals stand).
+rows/time/memory of their own (the parent's totals stand). A batched
+`CALL { … } IN TRANSACTIONS` nests its body's operators the same way
+(REL8-2047), marked by `body_of`: they run inside the operator's batch, so
+they are not executed operators either and carry no metrics of their own.
 
 A PROFILE operator's `actual` carries a `memo` dict — `probes`, `hits`,
 `inserts`, `refused`, `bytes`, `disabled_count` (and `kinds` on the root) —

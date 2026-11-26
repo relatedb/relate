@@ -7,28 +7,29 @@
 //! the statement's output is never accumulated (see [`InTransactionsRows`]
 //! and [`land_batch`]).
 //!
-//! The file also owns a body's **row-production strategy** (ADR-0669): the
-//! statement-level admission [`batch_pass_admission`] classifies a body once
-//! per statement, and each batch dispatches to one of two entries — the
-//! batch pass ([`pass_batch_rows`], one clause-engine crossing over the whole
-//! batch) or the per-row path ([`per_row_batch_rows`]).
+//! The file also owns the arm's PROFILE batch facts (ADR-0681): the
+//! counters and per-batch maxima the loop notes into the shared cell the
+//! clause's record reads, and the per-batch byte accounting over the
+//! opening marks. Both live in their own module beside this one
+//! (`in_tx_profile.rs`), as does the body's **row-production strategy**
+//! (ADR-0669, `in_tx_strategy.rs`) — the admission and the two producers
+//! each batch dispatches to.
 
 use std::collections::BTreeMap;
 
 use relate_core::integer_args::{range_text, TX_BATCH_SIZE, TX_CONCURRENCY};
 use relate_core::tokens::WorkspaceCharge;
 use relate_core::{Error, ErrorKind, Result, Value};
-use relate_ir::{Clause, Query};
+use relate_ir::Query;
 
-use super::{
-    execute_query_seeded, null_pad_call_row, row_product, scope_seed, stage_projects_rows,
-    SubquerySpec,
-};
+use super::in_tx_profile::BatchProfile;
+use super::in_tx_strategy::{batch_pass_admission, pass_batch_rows, per_row_batch_rows};
+use super::{null_pad_call_row, scope_seed, SubquerySpec};
 use crate::ctx::QueryCtx;
 use crate::eval::eval;
 use crate::exec::feed::RowStream;
 use crate::exec::scope::star_scope_names;
-use crate::metrics::PlanMetricsSite;
+use crate::metrics::{InTxStats, ParkedRecord};
 use crate::overlay::ExecGraph;
 use crate::row::Row;
 
@@ -39,7 +40,7 @@ pub(crate) fn exec_call_in_transactions<'a>(
     tx: &'a relate_ir::InTransactions,
     params: &'a BTreeMap<String, Value>,
     qctx: QueryCtx<'a>,
-    record: Option<(PlanMetricsSite<'a>, usize)>,
+    record: Option<ParkedRecord<'a>>,
 ) -> Result<RowStream<'a>> {
     // The `REPORT STATUS AS <name>` column, resolved once: every status
     // value below is written through `BatchOutcome::stamp`, so "the call
@@ -47,6 +48,22 @@ pub(crate) fn exec_call_in_transactions<'a>(
     // Text render: the status column feeds the String-keyed stamp.
     let status_name = tx.report_status.as_ref().map(|name| name.to_string());
     let batch_pass = batch_pass_admission(spec.query);
+    // The arm's PROFILE batch facts (REL8-2047): one cell shared between
+    // the batch loop below (the writer) and the parked record (the
+    // reader) — the pair derived together from the record's presence, the
+    // one "this arm is profiled" decision, at the one attaching site —
+    // and built only when a PROFILE record is attached, so an unprofiled
+    // arm never notes a batch.
+    let (record, profile) = match record {
+        Some(record) => {
+            let cell = std::rc::Rc::new(InTxStats::new());
+            (
+                Some(record.with_intx(std::rc::Rc::clone(&cell))),
+                Some(cell),
+            )
+        }
+        None => (None, None),
+    };
     Ok(RowStream::emitting_to_completion(
         InTransactionsRows {
             graph,
@@ -65,6 +82,7 @@ pub(crate) fn exec_call_in_transactions<'a>(
             batch_size: None,
             batch_index: 0,
             status_name,
+            profile,
             pending: None,
             breaking: false,
             done: false,
@@ -101,6 +119,12 @@ struct InTransactionsRows<'a> {
     batch_index: usize,
     /// The `REPORT STATUS AS <name>` column.
     status_name: Option<String>,
+    /// The arm's PROFILE batch facts (REL8-2047), `Some` exactly when a
+    /// PROFILE position was attached — the batch loop's counters and
+    /// per-batch maxima, noted once per finished batch and read by the
+    /// stream's parked record when the consumer is done. `None` keeps an
+    /// unprofiled run at zero cost per batch.
+    profile: Option<std::rc::Rc<InTxStats>>,
     /// The batch in hand, or `None` once it is spent.
     pending: Option<InstalledBatch>,
     /// `ON ERROR BREAK`: the remaining input rows never started a
@@ -207,109 +231,150 @@ impl InTransactionsRows<'_> {
         let snapshot = self.graph.scratch_snapshot();
         let tx_id = format!("relate-inner-{}", self.batch_index + 1);
         self.batch_index += 1;
-        let mut batch_out = ChargedRows::new();
-        let attempt = (|| -> Result<()> {
-            if self.batch_pass {
-                pass_batch_rows(
-                    self.graph,
-                    &batch.rows,
-                    &self.spec,
-                    self.params,
-                    self.qctx,
-                    &mut batch_out,
-                )?;
-            } else {
-                per_row_batch_rows(
-                    self.graph,
-                    &batch.rows,
-                    &self.spec,
-                    self.params,
-                    self.qctx,
-                    &mut batch_out,
-                )?;
-            }
-            // The success status is batch-invariant, so one stamping pass
-            // after the row production covers every produced row.
-            batch_out.stamp(
-                &BatchOutcome::Committed { id: tx_id.clone() },
-                self.status_name.as_deref(),
-            )?;
-            // Each `CALL { ... } IN TRANSACTIONS` batch is its
-            // own transaction boundary, so the property default values
-            // land here -- after the batch's writes, before the batch's
-            // constraint validation.
-            // The write boundary of this batch — the same stage the
-            // statement boundary closes with, named once in `exec/`.
-            crate::exec::close_write_boundary(self.graph)?;
-            // The output-size check runs inside the attempt, before the
-            // commit: a capacity refusal must take the same per-batch
-            // failure path as a body or constraint error — the batch is
-            // rolled back and reported — never fire on a batch already
-            // durably committed.
-            land_batch(self.graph, &batch_out.rows)?;
-            // ADR-0210: with a facade-injected sink (auto-commit write
-            // path), each batch commits durably before the next starts
-            // and the scratch rebase keeps live state bounded by one
-            // batch. The commit is folded into the attempt so a failed
-            // batch commit (a conflict race, a capacity rejection, a WAL
-            // error) takes the same per-batch failure path as body and
-            // constraint errors: `ON ERROR CONTINUE`/`BREAK`/`RETRY` apply
-            // and `REPORT STATUS` rows are produced. The redo is drained
-            // only on commit success, so the `Err` arm's
-            // `restore_scratch` rolls a failed batch back cleanly.
-            // Without a sink (explicit transactions, nested execution)
-            // the scratch accumulates to statement end, as before.
-            if let Some(sink) = self.qctx.batch_commit {
-                self.graph.commit_batch(sink)?;
-            }
-            Ok(())
-        })();
-        match attempt {
-            Ok(()) => Ok(batch_out),
+        // The batch's PROFILE accounting (REL8-2047), opened with its
+        // marks before the body runs — the one value the commit's peaks
+        // and both notes go through.
+        let profile = BatchProfile::open(self.profile.as_ref(), self.graph);
+        match self.attempt_batch(&batch, &tx_id, &profile) {
+            Ok(batch_out) => Ok(batch_out),
             Err(error) => {
+                // The failed batch's facts note before the restore: the
+                // scratch it created is still measurable, and every
+                // failure policy — CONTINUE, BREAK and FAIL alike —
+                // rolled this batch back.
+                profile.rolled_back(&batch.rows);
                 self.graph.restore_scratch(snapshot);
-                // A cancellation — the caller's stop or the statement
-                // deadline (ADR-0692) — is the statement's, not the
-                // batch's: `ON ERROR CONTINUE`/`BREAK` must not absorb it
-                // and run on past the deadline. The failed batch is
-                // already rolled back; earlier batches stay committed.
-                if matches!(error, Error::Cancelled) {
-                    return Err(error);
-                }
-                // CALL IN TRANSACTIONS retry: not implemented — see the
-                // LABS-712 follow-up. The projection applies only a
-                // RETRY's explicit THEN fallback (the duration is
-                // deliberately unused), like a non-transient error. One
-                // decode of the three-state outcome, all three named.
-                match self.tx.on_error.outcome() {
-                    relate_ir::RetryFallback::Fail => return Err(error),
-                    relate_ir::RetryFallback::Break => self.breaking = true,
-                    relate_ir::RetryFallback::Continue => {}
-                }
-                // Report the failed batch (its own rows are gone with the
-                // rollback), and on BREAK every remaining row, where no
-                // transaction ever started and nothing was bound.
-                let mut failed = ChargedRows::new();
-                for row in &batch.rows {
-                    failed.push(failed_batch_row(
-                        self.graph,
-                        row,
-                        self.spec.query,
-                        self.spec.scope,
-                        self.params,
-                    )?)?;
-                }
-                failed.stamp(
-                    &BatchOutcome::Failed {
-                        id: tx_id.clone(),
-                        error: transaction_error_message(&error),
-                    },
-                    self.status_name.as_deref(),
-                )?;
-                land_batch(self.graph, &failed.rows)?;
-                Ok(failed)
+                self.report_failed_batch(&batch, &tx_id, error)
             }
         }
+    }
+
+    /// The success path of one batch, every stage that can fail folded
+    /// into one `Result` so a body, boundary, capacity or commit error
+    /// takes the same per-batch failure path: the body's rows, their
+    /// status stamp, the write-boundary close, the output-size check, the
+    /// commit, and the batch's PROFILE note once it succeeded. The output
+    /// is the attempt's own — built here and answered only on success, so
+    /// a failed attempt's partial rows are dropped with it.
+    fn attempt_batch(
+        &self,
+        batch: &ChargedRows,
+        tx_id: &str,
+        profile: &BatchProfile<'_>,
+    ) -> Result<ChargedRows> {
+        let mut batch_out = ChargedRows::new();
+        // The strategy is chosen once (ADR-0669's admission, classified per
+        // statement): the two producers share one signature, so the choice
+        // is the only thing that differs.
+        let produce = if self.batch_pass {
+            pass_batch_rows
+        } else {
+            per_row_batch_rows
+        };
+        produce(
+            self.graph,
+            &batch.rows,
+            &self.spec,
+            self.params,
+            self.qctx,
+            &mut batch_out,
+        )?;
+        // The success status is batch-invariant, so one stamping pass
+        // after the row production covers every produced row.
+        batch_out.stamp(
+            &BatchOutcome::Committed {
+                id: tx_id.to_string(),
+            },
+            self.status_name.as_deref(),
+        )?;
+        // Each `CALL { ... } IN TRANSACTIONS` batch is its
+        // own transaction boundary, so the property default values
+        // land here -- after the batch's writes, before the batch's
+        // constraint validation.
+        // The write boundary of this batch — the same stage the
+        // statement boundary closes with, named once in `exec/`.
+        crate::exec::close_write_boundary(self.graph)?;
+        // The output-size check runs inside the attempt, before the
+        // commit: a capacity refusal must take the same per-batch
+        // failure path as a body or constraint error — the batch is
+        // rolled back and reported — never fire on a batch already
+        // durably committed.
+        land_batch(self.graph, &batch_out.rows)?;
+        // The commit peaks read here, before the commit: its rebase
+        // drains the redo log the WAL figure reads (REL8-2047).
+        let peaks = profile.read_peaks();
+        // ADR-0210: with a facade-injected sink (auto-commit write
+        // path), each batch commits durably before the next starts
+        // and the scratch rebase keeps live state bounded by one
+        // batch. The commit is folded into the attempt so a failed
+        // batch commit (a conflict race, a capacity rejection, a WAL
+        // error) takes the same per-batch failure path as body and
+        // constraint errors: `ON ERROR CONTINUE`/`BREAK`/`RETRY` apply
+        // and `REPORT STATUS` rows are produced. The redo is drained
+        // only on commit success, so the failure path's
+        // `restore_scratch` rolls a failed batch back cleanly.
+        // Without a sink (explicit transactions, nested execution)
+        // the scratch accumulates to statement end, as before.
+        if let Some(sink) = self.qctx.batch_commit {
+            self.graph.commit_batch(sink)?;
+        }
+        // The batch's PROFILE facts (REL8-2047) note only once the
+        // commit succeeded — a failed commit takes the rolled-back
+        // arm of `run_batch`.
+        profile.committed(peaks, &batch.rows, &batch_out.rows);
+        Ok(batch_out)
+    }
+
+    /// The `ON ERROR` half of a failed, already rolled-back batch: decode
+    /// the failure policy once (`FAIL` propagates the error, `BREAK` arms
+    /// `self.breaking`, `CONTINUE` goes on), then answer the report rows —
+    /// the failed batch's own rows are gone with the rollback.
+    fn report_failed_batch(
+        &mut self,
+        batch: &ChargedRows,
+        tx_id: &str,
+        error: Error,
+    ) -> Result<ChargedRows> {
+        // A cancellation — the caller's stop or the statement deadline
+        // (ADR-0692) — is the statement's, not the batch's: `ON ERROR
+        // CONTINUE`/`BREAK` must not absorb it and run on past the
+        // deadline. The failed batch is already rolled back; earlier
+        // batches stay committed.
+        if matches!(error, Error::Cancelled) {
+            return Err(error);
+        }
+        // CALL IN TRANSACTIONS retry: not implemented — see the
+        // LABS-712 follow-up. The projection applies only a
+        // RETRY's explicit THEN fallback (the duration is
+        // deliberately unused), like a non-transient error. One
+        // decode of the three-state outcome, all three named.
+        match self.tx.on_error.outcome() {
+            relate_ir::RetryFallback::Fail => return Err(error),
+            relate_ir::RetryFallback::Break => self.breaking = true,
+            relate_ir::RetryFallback::Continue => {}
+        }
+        // Report the failed batch (its own rows are gone with the
+        // rollback), and on BREAK every remaining row, where no
+        // transaction ever started and nothing was bound.
+        let mut failed = ChargedRows::new();
+        for row in &batch.rows {
+            failed.push(failed_batch_row(
+                self.graph,
+                row,
+                self.spec.query,
+                self.spec.scope,
+                self.params,
+            )?)?;
+        }
+        failed.stamp(
+            &BatchOutcome::Failed {
+                id: tx_id.to_string(),
+                error: transaction_error_message(&error),
+            },
+            self.status_name.as_deref(),
+        )?;
+        land_batch(self.graph, &failed.rows)?;
+        Ok(failed)
     }
 
     /// Pull one transaction's input rows from the stream, charged as the
@@ -356,7 +421,7 @@ impl InTransactionsRows<'_> {
 /// both sides of the arm: the input batch [`pull_batch`] pulls and a
 /// batch's output [`run_batch`] produces, so the rows and the charge that
 /// bounds them are never two independent bindings a caller can let drift.
-struct ChargedRows {
+pub(super) struct ChargedRows {
     rows: Vec<Row>,
     charge: WorkspaceCharge,
 }
@@ -372,7 +437,7 @@ impl ChargedRows {
     /// A container over rows already in hand, measured on construction —
     /// the seed-container twin of [`Self::new`], so a second copy of a
     /// batch is billed by the same type rather than a binding beside it.
-    fn from_rows(rows: Vec<Row>) -> Result<Self> {
+    pub(super) fn from_rows(rows: Vec<Row>) -> Result<Self> {
         let mut batch = Self::new();
         batch.extend(rows)?;
         Ok(batch)
@@ -386,9 +451,17 @@ impl ChargedRows {
     }
 
     /// Append rows and re-measure, the batch-major twin of [`Self::push`].
-    fn extend(&mut self, rows: impl IntoIterator<Item = Row>) -> Result<()> {
+    pub(super) fn extend(&mut self, rows: impl IntoIterator<Item = Row>) -> Result<()> {
         self.rows.extend(rows);
         self.measure()
+    }
+
+    /// The rows, moved out for a crossing that consumes them — the charge
+    /// stays in `self`, which the caller keeps alive for exactly the rows'
+    /// use, so the reservation never outlives what it bounds. No
+    /// re-measure: the reservation is the rows' bound, and it stays.
+    pub(super) fn take_rows(&mut self) -> Vec<Row> {
+        std::mem::take(&mut self.rows)
     }
 
     /// Stamp an outcome onto these rows and re-measure: the `REPORT STATUS`
@@ -418,95 +491,6 @@ impl ChargedRows {
 /// the statement's output.
 fn land_batch(graph: &ExecGraph<'_>, rows: &[Row]) -> Result<()> {
     graph.check_expression_allocation(crate::workspace::retained_rows_of(rows))
-}
-
-/// Whether an `IN TRANSACTIONS` body takes the batch pass (ADR-0669): a
-/// single flat part, no `NEXT` stage, non-projecting, with no `WITH` and
-/// no schema/admin DDL among its own clauses. Everything else about the
-/// body runs in the pass exactly as its clause list would in a plain
-/// statement over the batch's seed rows — `MATCH`, procedure `CALL`,
-/// nested `CALL { … }`, conditionals, graph-reading expressions
-/// included: pipeline order, one clause-engine invocation and one
-/// nested-budget tick per batch, the per-row statement-engine loop
-/// never entered. The batch commits per batch either way (ADR-0210);
-/// what the pass removes is the per-row invocation, which is pure
-/// overhead — the caller already named the batch.
-///
-/// The exclusions are structural, not semantic preferences:
-/// - a `WITH`-carrying body needs the importing-scope re-attach
-///   (`run_nested_clauses_scoped`), which re-attaches one scope row per
-///   nested invocation — per-row by construction. The legacy
-///   importing-`WITH` form keeps the per-row path with it;
-/// - a projecting body (a trailing clause the canonical table says
-///   spills rows — [`stage_projects_rows`], the same classification the
-///   per-row merge consults, never inferred from the clause set) merges
-///   each body row back onto its originating outer row, a lineage the
-///   pass does not track. A terminal `LOAD CSV` projects and stays
-///   per-row with it.
-/// - schema/admin DDL has no per-row work to batch and stays per-row.
-///
-/// The pass gives up Neo4j's per-row read-after-write interleaving — the
-/// body evaluates the batch as a unit. That decision, its within-clause
-/// coincidence and the smaller-batch remedy are recorded once in ADR-0669.
-pub fn batch_pass_admission(query: &Query) -> bool {
-    query.is_single_flat_part()
-        && !stage_projects_rows(&query.final_stage().parts)
-        && !relate_planner::query_any_clause(query, &mut |clause| {
-            matches!(clause, Clause::With { .. }) || relate_planner::clause_is_ddl_command(clause)
-        })
-}
-
-/// The batch pass (ADR-0669): the whole batch's scope seeds — the same
-/// per-row [`scope_seed`] policy — in one [`execute_query_seeded`]
-/// crossing, the batch's one nested-budget tick. A non-projecting
-/// body's pass-through is the outer rows (the batch twin of the
-/// per-row path's `outer.clone()`), so the crossing's own output is
-/// discarded. Rollback stays with the caller's per-batch snapshot.
-fn pass_batch_rows(
-    graph: &ExecGraph<'_>,
-    batch: &[Row],
-    spec: &SubquerySpec<'_>,
-    params: &BTreeMap<String, Value>,
-    qctx: QueryCtx<'_>,
-    out: &mut ChargedRows,
-) -> Result<()> {
-    let seeds = ChargedRows::from_rows(
-        batch
-            .iter()
-            .map(|row| scope_seed(graph, spec.query, spec.scope, row))
-            .collect::<Result<Vec<_>>>()?,
-    )?;
-    // The seeds are a second copy of the batch, live for the crossing's
-    // lifetime: `seeds`'s own charge keeps them billed (it drops with the
-    // struct) while the body runs, so the ledger sees both copies.
-    let _ = execute_query_seeded(graph, spec.query, params, seeds.rows, qctx)?;
-    out.extend(batch.iter().cloned())
-}
-
-/// The per-row path, for the bodies the pass cannot take (a
-/// `WITH`-carrying body, a projecting body, schema/admin DDL): one
-/// nested statement-engine invocation per row through
-/// [`row_product`], the `OPTIONAL CALL` empty-body pad included.
-fn per_row_batch_rows(
-    graph: &ExecGraph<'_>,
-    batch: &[Row],
-    spec: &SubquerySpec<'_>,
-    params: &BTreeMap<String, Value>,
-    qctx: QueryCtx<'_>,
-    out: &mut ChargedRows,
-) -> Result<()> {
-    for row in batch {
-        out.extend(row_product(
-            graph,
-            row,
-            spec.optional,
-            spec.query,
-            spec.scope,
-            params,
-            qctx,
-        )?)?;
-    }
-    Ok(())
 }
 
 /// Resolve the call's batch size (rows per transaction) and validate the

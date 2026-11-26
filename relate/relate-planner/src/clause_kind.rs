@@ -339,13 +339,7 @@ pub(crate) fn clause_create_only_role(clause: &relate_ir::Clause) -> CreateOnlyR
 /// [`crate::validate`]'s nested-call rule) ride, so neither layer has to
 /// reach into the other for a per-clause reading.
 pub(crate) fn clause_is_in_transactions(clause: &relate_ir::Clause) -> bool {
-    matches!(
-        clause,
-        relate_ir::Clause::CallSubquery {
-            in_transactions: Some(_),
-            ..
-        }
-    )
+    clause.in_transactions_body().is_some()
 }
 
 #[cfg(test)]

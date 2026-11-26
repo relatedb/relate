@@ -17,6 +17,8 @@ use crate::row::Row;
 mod conditional;
 mod feed;
 pub(crate) mod in_transactions;
+mod in_tx_profile;
+pub(crate) mod in_tx_strategy;
 mod shared;
 
 pub(crate) use conditional::{conditional_produces_rows, exec_conditional};

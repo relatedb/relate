@@ -59,8 +59,7 @@ use relate_core::Result;
 use relate_ir::{Clause, Expr, MatchMode, PathPattern};
 
 use crate::ctx::ExecCtx;
-use crate::eval::rows_logical_bytes;
-use crate::metrics::PlanMetricsSite;
+use crate::metrics::ParkedRecord;
 use crate::overlay::{ExecGraph, RetainedTotal};
 use crate::row::Row;
 
@@ -182,6 +181,17 @@ impl RowFold for Collector {
     }
 }
 
+/// A stage's PROFILE observation: the record the stage reports through —
+/// the statement's site with the head clause's index — beside the facts
+/// it reports (`profile_chain.rs`), one optional value whose presence is
+/// the whole run's "observes itself" bit. The untimed run pays no sidecar
+/// (the guarantee `StageStats`' own doc states); an observing run carries
+/// one on every stage, by the one construction all stages share.
+struct Observed<'a> {
+    record: ParkedRecord<'a>,
+    stats: StageStats,
+}
+
 /// One clause of the run: its transform, its input buffer and its consumer.
 struct Stage<'a> {
     ctx: ExecCtx<'a>,
@@ -196,9 +206,9 @@ struct Stage<'a> {
     /// instrumentation one: one `Cell` add per batch, the
     /// `MatchFold::offer` and `StreamedStats::note_row` precedent.
     rows_in: Cell<u64>,
-    /// The stage's PROFILE facts (`profile_chain.rs`), present only when
-    /// the run observes itself, reported once it drains.
-    stats: Option<StageStats>,
+    /// The stage's PROFILE observation, present only when the run observes
+    /// itself, reported once it drains.
+    observed: Option<Observed<'a>>,
 }
 
 /// A run of streamed clauses after a `MATCH`: the push consumer of the
@@ -207,12 +217,6 @@ pub(crate) struct MatchChain<'a> {
     head: Stage<'a>,
     /// How many clauses after the head the run covers.
     stages: usize,
-    /// The PROFILE site with the head clause's index: present when the
-    /// statement is PROFILEd — the run then observes itself through the
-    /// stage sidecars and reports each consumed stage's own facts when it
-    /// drains. Its absence is the untimed form: the stages' windows and
-    /// notes run bare.
-    record: Option<(PlanMetricsSite<'a>, usize)>,
 }
 
 /// The stage `clauses[0]` is, or `None` when it is a barrier.
@@ -315,7 +319,7 @@ pub(crate) fn open_match_chain<'a>(
     class_slot: &'a OnceCell<ProjectionClass<'a>>,
     sink_class: &'a OnceCell<ProjectionClass<'a>>,
     scope: Option<&'a Row>,
-    record: Option<(PlanMetricsSite<'a>, usize)>,
+    record: Option<ParkedRecord<'a>>,
 ) -> Result<Option<MatchChain<'a>>> {
     let mut transforms = stage_run(ctx, &clauses[1..], scope)?;
     let stages = transforms.len();
@@ -358,10 +362,13 @@ pub(crate) fn open_match_chain<'a>(
             }
         }
     };
-    // Built back to front: each stage owns the stage after it.
+    // Built back to front: each stage owns the stage after it. The
+    // observation is one value cloned into every stage — the record the
+    // stage reports through beside its own sidecar — so "this run observes
+    // itself" has one owner, the `Option`'s presence, agreed on by
+    // construction and never re-derived.
     let mut run = transforms.into_iter().rev();
     let last = run.next().expect("a non-empty run");
-    let observing = record.is_some();
     let stage = |transform, next| Stage {
         ctx,
         transform,
@@ -369,30 +376,29 @@ pub(crate) fn open_match_chain<'a>(
         ran: Cell::new(false),
         next,
         rows_in: Cell::new(0),
-        stats: observing.then(StageStats::new),
+        observed: record.clone().map(|record| Observed {
+            record,
+            stats: StageStats::new(),
+        }),
     };
     let head = run.fold(stage(last, terminal), |after, transform| {
         stage(transform, Next::Stage(Box::new(after)))
     });
-    Ok(Some(MatchChain {
-        head,
-        stages,
-        record,
-    }))
+    Ok(Some(MatchChain { head, stages }))
 }
 
 impl<'a> Stage<'a> {
     /// Run the transform over the buffered rows and pass what it emits on.
     fn flush(&self, graph: &ExecGraph<'_>) -> Result<()> {
-        self.observed(graph, || self.run_batch(graph))
+        self.window(graph, || self.run_batch(graph))
     }
 
     /// Run `work` inside the stage's PROFILE window when the run observes
     /// itself, bare otherwise — the one place the sidecar's presence
     /// decides, so `flush` and `finish` state only what they wrap.
-    fn observed<T>(&self, graph: &ExecGraph<'_>, work: impl FnOnce() -> Result<T>) -> Result<T> {
-        match &self.stats {
-            Some(stats) => stats.window(graph, work),
+    fn window<T>(&self, graph: &ExecGraph<'_>, work: impl FnOnce() -> Result<T>) -> Result<T> {
+        match &self.observed {
+            Some(observed) => observed.stats.window(graph, work),
             None => work(),
         }
     }
@@ -408,13 +414,14 @@ impl<'a> Stage<'a> {
         graph.check_cancelled()?;
         self.ran.set(true);
         self.rows_in.set(self.rows_in.get() + batch.len() as u64);
+        let stats = self.observed.as_ref().map(|observed| &observed.stats);
         // The stage's consumer, wrapped to count at the emission boundary
         // when the run observes itself: a fold consumer takes rows as they
         // are offered, so the transform's returned vector holds none of
         // them and cannot be the count.
         let next_consumer = self.next.consumer();
         let counting;
-        let consumer: &dyn RowFold = if let Some(stats) = &self.stats {
+        let consumer: &dyn RowFold = if let Some(stats) = stats {
             counting = CountingFold::new(next_consumer, stats);
             &counting
         } else {
@@ -450,7 +457,7 @@ impl<'a> Stage<'a> {
                     tail,
                     fold,
                 )?;
-                if let Some(stats) = &self.stats {
+                if let Some(stats) = stats {
                     stats.note_facts(facts);
                     stats.note_start(super::take_walk_start());
                 }
@@ -481,7 +488,7 @@ impl<'a> Stage<'a> {
     /// drain — this stage's last batch and every downstream stage's — so
     /// the stage's totals keep covering everything downstream did.
     fn finish(&self, graph: &ExecGraph<'_>) -> Result<()> {
-        self.observed(graph, || self.drain(graph))
+        self.window(graph, || self.drain(graph))
     }
 
     /// The drain itself: this stage's last batch, then the stages after
@@ -494,6 +501,42 @@ impl<'a> Stage<'a> {
             Next::Stage(stage) => stage.finish(graph),
             Next::Fold(_) | Next::Sink(_) | Next::Rows(_) => Ok(()),
         }
+    }
+
+    /// Report this stage's own consumed-clause facts, tail-first: the
+    /// stage after it reports first and hands its totals back as exactly
+    /// the subtrahend — the downstream stage's totals contain every stage
+    /// below it, so summing the tail would count each deeper stage twice —
+    /// then this stage's record reports its own facts (its totals minus
+    /// that subtrahend, keyed `head clause + 1 + position`, `position`
+    /// counting from the head stage). The terminal stage's record carries
+    /// the retention its collector or sink holds until the barrier
+    /// consumes it — the container's own charged total, the one figure
+    /// both terminal forms report; every other stage's in-flight batch is
+    /// bounded and reports zero. Returns the stage's window totals for the
+    /// stage above (the head's, the arm's own delta to subtract); `None`
+    /// on an untimed run, which reports nothing and neither traverses the
+    /// stages nor reads the terminal's bytes.
+    fn report(&self, position: usize) -> Option<StageDelta> {
+        let Some(observed) = &self.observed else {
+            return None;
+        };
+        let (downstream, memory_bytes) = match &self.next {
+            Next::Stage(next) => (
+                next.report(position + 1)
+                    .expect("an observing run carries every stage's sidecar"),
+                0,
+            ),
+            Next::Sink(sink) => (StageDelta::default(), sink.retained_bytes()),
+            Next::Rows(collector) => (StageDelta::default(), collector.retained.borrow().total()),
+            Next::Fold(_) => (StageDelta::default(), 0),
+        };
+        Some(observed.stats.report(
+            &observed.record.site,
+            observed.record.clause + 1 + position,
+            downstream,
+            memory_bytes,
+        ))
     }
 }
 
@@ -525,23 +568,21 @@ impl<'a> MatchChain<'a> {
     /// and never before), the covered-clause count, what the terminal
     /// left, and — only when the run observes itself — the run's window
     /// totals for the arm's delta to subtract. The consumed stages'
-    /// PROFILE records are written here too, before the terminal's rows
-    /// leave the run — the terminal stage's record carries the bytes its
-    /// collector retains.
+    /// PROFILE records are written in the same tail-first report, before
+    /// the terminal's rows leave the run — the terminal stage's record
+    /// carries the bytes its collector retains.
     fn finish(self, graph: &ExecGraph<'_>) -> Result<(Option<StageDelta>, Landing<'a>)> {
         self.head.finish(graph)?;
         let offered = self.head.rows_in.get();
-        // The run's window totals — the head stage's, which contain every
-        // stage below it — for the arm's own delta to subtract, so the
-        // head clause's record states its own clause's work and never the
-        // run's. PROFILE's own evidence, produced only when the run
-        // observes itself; the landing stays production-only.
-        let observed = self.head.stats.as_ref().map(StageStats::totals);
-        // The consumed stages' records are written before the terminal's
-        // rows leave the run — the terminal stage's carries the bytes its
-        // collector holds. The whole traversal is PROFILE's: an untimed
-        // run reports nothing and walks once, straight to the terminal.
-        self.report_profiled();
+        // The one tail-first report walk: each consumed stage's own record
+        // (its totals minus the immediate downstream stage's), and the
+        // head's window totals — which contain every stage below it — back
+        // as the arm's own delta to subtract, so the head clause's record
+        // states its own clause's work and never the run's. PROFILE's own
+        // evidence, produced only when the run observes itself; an untimed
+        // run reports nothing and neither traverses the stages nor reads
+        // the terminal's bytes. The landing stays production-only.
+        let observed = self.head.report(0);
         let mut stage = self.head;
         let kind = loop {
             match stage.next {
@@ -566,57 +607,6 @@ impl<'a> MatchChain<'a> {
                 kind,
             },
         ))
-    }
-
-    /// Report each consumed stage's own PROFILE facts once the run has
-    /// drained: one borrowed walk over the stage list, the terminal
-    /// stage's retained bytes captured where the walk meets the collector,
-    /// then one record per stage, tail-first, with the immediate
-    /// downstream stage's totals subtracted out. Nothing at all runs
-    /// without a site — an untimed run performs neither the traversal nor
-    /// the byte sum.
-    fn report_profiled(&self) {
-        let Some((site, head_clause)) = self.record.as_ref() else {
-            return;
-        };
-        let mut stages: Vec<&Stage> = Vec::with_capacity(self.stages);
-        let mut stage = &self.head;
-        let mut retained = 0;
-        loop {
-            stages.push(stage);
-            match &stage.next {
-                Next::Stage(next) => stage = next,
-                Next::Rows(collector) => {
-                    retained = rows_logical_bytes(&collector.rows.borrow());
-                    break;
-                }
-                // A bounded sink's live container is the terminal's retained
-                // state too — the same accounting policy as the collector.
-                Next::Sink(sink) => {
-                    retained = sink.retained_bytes();
-                    break;
-                }
-                Next::Fold(_) => break,
-            }
-        }
-        // Tail-first: each stage's own facts are its totals minus the
-        // immediate downstream stage's totals — which contain every stage
-        // below it, so summing the tail would count each deeper stage
-        // twice — and each report hands its totals upstream as exactly
-        // that subtrahend. The terminal stage's record carries the
-        // retention its collector holds until the barrier consumes it;
-        // every other stage's in-flight batch is bounded and reports
-        // zero.
-        let last = stages.len().saturating_sub(1);
-        let mut downstream = StageDelta::default();
-        for (idx, stage) in stages.iter().enumerate().rev() {
-            let memory_bytes = if idx == last { retained } else { 0 };
-            let stats = stage
-                .stats
-                .as_ref()
-                .expect("an observing run carries every stage's sidecar");
-            downstream = stats.report(site, head_clause + 1 + idx, downstream, memory_bytes);
-        }
     }
 }
 
@@ -677,7 +667,7 @@ pub(crate) fn open_match_consumer<'a>(
     class_slot: &'a OnceCell<ProjectionClass<'a>>,
     sink_class: &'a OnceCell<ProjectionClass<'a>>,
     scope: Option<&'a Row>,
-    record: Option<(PlanMetricsSite<'a>, usize)>,
+    record: Option<ParkedRecord<'a>>,
 ) -> Result<Option<MatchConsumer<'a>>> {
     let ExecCtx { graph, params, .. } = ctx;
     if let Some(fold) = open_match_fold(graph, clauses.get(1), class_slot, params, scope)? {

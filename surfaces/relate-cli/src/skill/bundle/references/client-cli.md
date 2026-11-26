@@ -93,6 +93,10 @@ one-line hint to this flow, exactly once per run.
 - **Fused plan children** — in the `{"plan": …}` machine modes a seek-started
   `MATCH` nests display-only children marked by `FusedInto` (ADR-0622);
   skip them when counting executed operators. They carry no `Rows`/`TimeNs`/`DbHits`.
+- **Batched body children** — a `CALL { … } IN TRANSACTIONS` nests its body's
+  operators marked by `BodyOf` (REL8-2047); they run inside the operator's
+  batch, so skip them too when counting executed operators, and they carry no
+  metric block either.
 - **Memo counters** — a `PROFILE` table gains a `Memo` column (`hits/probes`,
   `*` when a memo gave up) only when the statement used an expression memo; the
   machine modes carry `MemoProbes`/`MemoHits`/`MemoInserts`/`MemoRefused`/

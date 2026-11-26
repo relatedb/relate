@@ -398,6 +398,24 @@ pub enum DropIndexTarget {
     },
 }
 
+impl Clause {
+    /// The body of a `CALL { … } IN TRANSACTIONS` clause, `None` on every
+    /// other clause — the one reading of the batched form's body, so the
+    /// planner's in-transactions classifiers (`clause_is_in_transactions`)
+    /// and the plan tree's body-children rule both derive it here rather
+    /// than re-matching the variant.
+    pub fn in_transactions_body(&self) -> Option<&Query> {
+        match self {
+            Clause::CallSubquery {
+                query,
+                in_transactions: Some(_),
+                ..
+            } => Some(query),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Projection {
     pub expr: Expr,

@@ -222,6 +222,20 @@ delta_counters! {
 }
 
 impl MemoCounters {
+    /// The group's six counts in `plan_keys::MEMO_GROUP_KEYS`' order
+    /// (probes, hits, inserts, refused, bytes, disabled count) — the
+    /// values the wire emitter pairs with that one key table.
+    pub fn counters(&self) -> [u64; 6] {
+        [
+            self.probes,
+            self.hits,
+            self.inserts,
+            self.refused,
+            self.bytes,
+            self.disabled_count,
+        ]
+    }
+
     /// The memo types behind an operator's sums (ADR-0654 §3): every
     /// operator-level memo is a guarded-state node-label memo (the
     /// constructor memos report at statement level through
@@ -249,6 +263,26 @@ pub struct StatementMemoRecord {
 }
 
 impl FrontierCounters {
+    /// The group's ten counts in `plan_keys::FRONTIER_GROUP_KEYS`' order
+    /// (edges, levels, endpoints, cells, memo hits, memo misses,
+    /// representative proofs, search proven, search disproven, declined
+    /// exhausted) — the values the wire emitter pairs with that one key
+    /// table.
+    pub fn counters(&self) -> [u64; 10] {
+        [
+            self.edge_visits,
+            self.levels,
+            self.endpoints,
+            self.cells,
+            self.memo_hits,
+            self.memo_misses,
+            self.representative_proofs,
+            self.search_proven,
+            self.search_disproven,
+            self.declined_exhausted,
+        ]
+    }
+
     /// The fraction of one run's re-arrival work budget the clause's
     /// runs spent: summed [`Self::rearrival_work`] over
     /// [`REARRIVAL_WORK_BUDGET`] — `1.0` on a run the budget cut
@@ -374,6 +408,193 @@ pub struct BatchFacts {
     pub zone_skips: u64,
 }
 
+/// The `CALL { … } IN TRANSACTIONS` batch facts one `CallSubquery`
+/// operator reports to PROFILE (REL8-2047): the batch counters — how many
+/// batches ran, how many committed, how many rolled back under the `ON
+/// ERROR` policy — and the per-batch maxima: the input batch's retained
+/// row bytes, the installed output's, the scratch the batch created
+/// (entities, adjacency and property state — the redo log excluded, its
+/// bytes are the WAL figure), and the redo log's reserved bytes at commit,
+/// the WAL payload the batch wrote. The counters are arm-local (not global
+/// counter snapshots): the batch loop notes each finished batch into the
+/// shared cell the clause's record reads once its consumer drains the
+/// stream. All-zero on every other clause, and on an unprofiled run.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct InTxBatches {
+    /// Batches that started a transaction.
+    pub batches: u64,
+    /// Batches that committed (both arms of the commit: a facade sink's
+    /// durable per-batch commit, and the statement-level boundary a
+    /// nested or explicit-transaction run closes with).
+    pub committed: u64,
+    /// Batches that rolled back — a handled failure under `ON ERROR
+    /// CONTINUE`/`BREAK`, or the failing batch of `ON ERROR FAIL`.
+    pub rolled_back: u64,
+    /// The largest input batch's retained row bytes.
+    pub peak_input_rows_bytes: u64,
+    /// The largest installed output's retained row bytes.
+    pub peak_output_rows_bytes: u64,
+    /// The most scratch bytes one batch created (redo excluded).
+    pub peak_scratch_bytes: u64,
+    /// The most redo-log bytes one batch carried at its commit — the WAL
+    /// payload it wrote.
+    pub peak_wal_bytes: u64,
+}
+
+/// The `CALL { … } IN TRANSACTIONS` arm's PROFILE facts (REL8-2047): the
+/// batch counters and per-batch maxima the batch loop notes as each batch
+/// finishes, in a cell shared between the arm's iterator (the writer) and
+/// the stream's parked record (the reader), so the clause's record —
+/// reported once the consumer drains or stops the stream, after every
+/// batch has run — carries them. One is built only when a PROFILE record
+/// is attached, so an unprofiled run never pays a cell write per batch.
+pub(crate) struct InTxStats {
+    facts: std::cell::Cell<InTxBatches>,
+}
+
+/// How one finished batch ended, as [`InTxStats::note_batch`] reads it —
+/// the counted outcome with the per-batch figures beside it, so a
+/// committed batch cannot note peaks without its WAL payload and a rolled
+/// back one cannot note an installed output it never handed over.
+pub(crate) enum InTxBatchEnd {
+    /// The batch committed: its output was installed and its redo became
+    /// the WAL payload — all four peaks are live.
+    Committed {
+        input_bytes: u64,
+        output_bytes: u64,
+        scratch_bytes: u64,
+        wal_bytes: u64,
+    },
+    /// The batch rolled back: its own rows are gone, so there is no
+    /// output or WAL figure — the input it held and the scratch it created
+    /// before the rollback are the peaks it still reached.
+    RolledBack {
+        input_bytes: u64,
+        scratch_bytes: u64,
+    },
+}
+
+impl InTxStats {
+    pub(crate) fn new() -> Self {
+        Self {
+            facts: std::cell::Cell::new(InTxBatches::default()),
+        }
+    }
+
+    /// Note one finished batch: the outcome counter beside the batch count,
+    /// each figure keeping the running maximum — the one write path the
+    /// batch loop takes per batch.
+    pub(crate) fn note_batch(&self, end: InTxBatchEnd) {
+        let mut facts = self.facts.get();
+        facts.batches += 1;
+        match end {
+            InTxBatchEnd::Committed {
+                input_bytes,
+                output_bytes,
+                scratch_bytes,
+                wal_bytes,
+            } => {
+                facts.committed += 1;
+                facts.peak_input_rows_bytes = facts.peak_input_rows_bytes.max(input_bytes);
+                facts.peak_output_rows_bytes = facts.peak_output_rows_bytes.max(output_bytes);
+                facts.peak_scratch_bytes = facts.peak_scratch_bytes.max(scratch_bytes);
+                facts.peak_wal_bytes = facts.peak_wal_bytes.max(wal_bytes);
+            }
+            InTxBatchEnd::RolledBack {
+                input_bytes,
+                scratch_bytes,
+            } => {
+                facts.rolled_back += 1;
+                facts.peak_input_rows_bytes = facts.peak_input_rows_bytes.max(input_bytes);
+                facts.peak_scratch_bytes = facts.peak_scratch_bytes.max(scratch_bytes);
+            }
+        }
+        self.facts.set(facts);
+    }
+
+    /// The accumulated facts — the clause record's read, once the stream
+    /// reports.
+    pub(crate) fn facts(&self) -> InTxBatches {
+        self.facts.get()
+    }
+}
+
+/// A parked stream's PROFILE record (REL8-2047): the site and clause the
+/// record keys, with the `CALL { … } IN TRANSACTIONS` arm's batch-facts
+/// cell riding inside — one optional value, so a cell without a record,
+/// or a record whose form has no batches, is unrepresentable. Every
+/// non-batched form builds one with [`Self::at`]; the arm's constructor
+/// attaches a cell through [`Self::with_intx`] — the one attaching site
+/// the type's API states, not a field any caller can assign.
+#[derive(Clone)]
+pub(crate) struct ParkedRecord<'a> {
+    /// The statement's PROFILE site — the sink and the `(stage, part)`
+    /// position its keys ride.
+    pub(crate) site: PlanMetricsSite<'a>,
+    /// The clause index the record keys.
+    pub(crate) clause: usize,
+    /// The arm's batch-facts cell, noted by the batch loop as each batch
+    /// finishes; absent on every other parked form. Private: presence is
+    /// decided by the constructor alone.
+    intx: Option<std::rc::Rc<InTxStats>>,
+}
+
+impl<'a> ParkedRecord<'a> {
+    /// The plain record every non-batched form parks — no cell attached.
+    pub(crate) fn at(site: PlanMetricsSite<'a>, clause: usize) -> Self {
+        Self {
+            site,
+            clause,
+            intx: None,
+        }
+    }
+
+    /// Attach the `IN TRANSACTIONS` arm's batch-facts cell — the one
+    /// attaching site (the arm's constructor, which keeps the writer
+    /// handle beside the record it hands the reader); no other form can,
+    /// so the cell's presence states "this record's clause runs batches".
+    pub(crate) fn with_intx(self, stats: std::rc::Rc<InTxStats>) -> Self {
+        Self {
+            intx: Some(stats),
+            ..self
+        }
+    }
+
+    /// The accumulated batch facts for the clause record's stamp — zeroed
+    /// on every record with no cell attached.
+    pub(crate) fn intx_facts(&self) -> InTxBatches {
+        self.intx
+            .as_deref()
+            .map(InTxStats::facts)
+            .unwrap_or_default()
+    }
+}
+
+impl InTxBatches {
+    /// Whether the arm ran any batch — the group's one presence rule: a
+    /// clause that ran none emits no `InTx*` key at all, so its absence is
+    /// the whole "no batches" fact (never a fabricated zero group).
+    pub fn ran(&self) -> bool {
+        self.batches > 0
+    }
+
+    /// The group's seven counts in `plan_keys::IN_TX_GROUP_KEYS`' order
+    /// (batches, committed, rolled back, peak input bytes, peak output
+    /// bytes, peak scratch bytes, peak WAL bytes) — the values the wire
+    /// emitter pairs with that one key table.
+    pub fn counters(&self) -> [u64; 7] {
+        [
+            self.batches,
+            self.committed,
+            self.rolled_back,
+            self.peak_input_rows_bytes,
+            self.peak_output_rows_bytes,
+            self.peak_scratch_bytes,
+            self.peak_wal_bytes,
+        ]
+    }
+}
+
 /// One clause operator's PROFILE metrics, reported to the sink (ADR-0344
 /// phase 2 + the metric-fields phase): the position key `(stage, part,
 /// clause)` — the same walk the plan tree construction uses — beside the
@@ -452,6 +673,11 @@ pub struct ClauseMetricsRecord {
     /// per-memo flag. Zero on every clause that probed no memo; stamped
     /// only while a PROFILE statement's arm runs.
     pub memo: MemoCounters,
+    /// The `CALL { … } IN TRANSACTIONS` batch facts (REL8-2047) — the one
+    /// clause kind that runs batches. Zeroed by the shared record
+    /// constructor; the arm's shared cell stamps its accumulated facts
+    /// onto the record at the one site that reports for the arm.
+    pub intx: InTxBatches,
 }
 
 /// Per-clause PROFILE metrics sink (ADR-0344 phase 2): the dispatch loop
@@ -471,4 +697,35 @@ pub trait PlanMetricsSink {
     /// statement finished (ADR-0654 §3): they belong to no one operator,
     /// so the consumer attaches them at the plan root.
     fn record_statement_memos(&self, record: StatementMemoRecord);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// REL8-2047: the batch-facts cell accumulates its counters and keeps
+    /// the running maxima — a smaller later batch never lowers a peak, and
+    /// a rolled-back batch counts without an output or WAL figure.
+    #[test]
+    fn intx_stats_accumulate_counters_and_keep_maxima() {
+        let stats = InTxStats::new();
+        stats.note_batch(InTxBatchEnd::Committed {
+            input_bytes: 100,
+            output_bytes: 60,
+            scratch_bytes: 500,
+            wal_bytes: 200,
+        });
+        stats.note_batch(InTxBatchEnd::RolledBack {
+            input_bytes: 80,
+            scratch_bytes: 300,
+        });
+        let facts = stats.facts();
+        assert_eq!(facts.batches, 2);
+        assert_eq!(facts.committed, 1);
+        assert_eq!(facts.rolled_back, 1);
+        assert_eq!(facts.peak_input_rows_bytes, 100, "the larger input holds");
+        assert_eq!(facts.peak_output_rows_bytes, 60);
+        assert_eq!(facts.peak_scratch_bytes, 500, "the larger scratch holds");
+        assert_eq!(facts.peak_wal_bytes, 200);
+    }
 }
