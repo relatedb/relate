@@ -62,6 +62,19 @@ fn coll_zip_takes_three_or_more_lists() {
 }
 
 #[test]
+fn coll_zip_type_checks_every_argument_before_null_propagates() {
+    // TCK `Zip lists; type errors compile time` @1.2: the type walk covers
+    // every argument, so the boolean at index 2 raises even though the
+    // null at index 1 would propagate — never a short-circuit past it.
+    // A type-clean null pair still propagates null.
+    assert_eq!(
+        eval_err("RETURN coll.zip([], null, false) AS z"),
+        "type error: coll.zip() requires a list"
+    );
+    assert_eq!(eval("RETURN coll.zip([], null) AS z"), Value::Null);
+}
+
+#[test]
 fn coll_zip_pads_short_lists_with_null() {
     // Longer first list: the second list's missing tail is null.
     assert_eq!(
