@@ -62,17 +62,24 @@ fn feed_sorted(mut ids: Vec<i64>, st: &mut PropPairIndex, feed: &impl Fn(i64, &m
 }
 
 /// [`feed_sorted`] for the pair's first build: after the first
-/// [`PRESIZE_PREFIX`] candidates the postings decide whether the key looks
-/// unique and reserve for the rest, so the build's table never doubles
-/// beside its predecessor. The drain keeps [`feed_sorted`]: it is small.
-fn feed_build(mut ids: Vec<i64>, st: &mut PropPairIndex, feed: &impl Fn(i64, &mut PropPairIndex)) {
+/// [`PRESIZE_PREFIX`] candidates the postings size their table once, from
+/// the key statistics' `distinct` count when one is published and from the
+/// prefix's sample otherwise ([`PairPostings::presize`]), so the build's
+/// table never doubles beside its predecessor. The drain keeps
+/// [`feed_sorted`]: it is small.
+fn feed_build(
+    mut ids: Vec<i64>,
+    st: &mut PropPairIndex,
+    feed: &impl Fn(i64, &mut PropPairIndex),
+    distinct: Option<u64>,
+) {
     ids.sort_unstable();
     let total = ids.len();
     let (head, tail) = ids.split_at(PRESIZE_PREFIX.min(total));
     for &id in head {
         feed(id, st);
     }
-    st.postings.presize(head.len(), total);
+    st.postings.presize(head.len(), total, distinct);
     for &id in tail {
         feed(id, st);
     }
@@ -127,11 +134,15 @@ impl Graph {
         // live version. The node pairs do; the relationship pairs post
         // alone.
         feed: impl Fn(i64, &mut PropPairIndex),
+        // The key's published distinct count, asked only when the pair is
+        // built: the node pairs answer from the key statistics, the
+        // relationship pairs have none.
+        distinct: impl FnOnce() -> Option<u64>,
         read: impl FnOnce(&PropPairIndex) -> R,
     ) -> R {
         let mut st = pairs.entry(pair).or_default();
         if !st.built {
-            feed_build(candidates(), &mut st, &feed);
+            feed_build(candidates(), &mut st, &feed, distinct());
             st.built = true;
             st.postings.shrink_to_fit();
         }
@@ -215,6 +226,7 @@ impl Graph {
             // live version carrying no value clears whatever a stale one
             // marked.
             |id, st| self.post_pair_node(st, id, lid, kid),
+            || self.published_distinct(lid, kid),
             read,
         )
     }
@@ -499,3 +511,6 @@ pub(super) fn prop_pair_post(st: &mut PropPairIndex, id: NodeId, gk: Option<&Gro
         st.postings.post(gk, id);
     }
 }
+
+#[cfg(test)]
+mod tests;

@@ -181,7 +181,7 @@ fn a_nearly_unique_prefix_reserves_for_the_rest_of_the_build() {
         p.post(&key(Value::Int(id)), id);
     }
     let before = p.ints.map.capacity();
-    p.presize(PRESIZE_PREFIX, 100_000);
+    p.presize(PRESIZE_PREFIX, 100_000, None);
     assert!(
         p.ints.map.capacity() >= 100_000,
         "a unique key reserves the remaining candidates: {before} -> {}",
@@ -197,7 +197,7 @@ fn a_low_cardinality_prefix_reserves_nothing() {
         p.post(&key(Value::Int(id % 5)), id);
     }
     let before = p.ints.map.capacity();
-    p.presize(PRESIZE_PREFIX, 10_000_000);
+    p.presize(PRESIZE_PREFIX, 10_000_000, None);
     assert_eq!(p.ints.map.capacity(), before);
 }
 
@@ -207,7 +207,7 @@ fn a_string_keyed_prefix_reserves_the_general_table_only() {
     for id in 0..PRESIZE_PREFIX as i64 {
         p.post(&key(Value::String(format!("u{id}").into())), id);
     }
-    p.presize(PRESIZE_PREFIX, 50_000);
+    p.presize(PRESIZE_PREFIX, 50_000, None);
     assert!(p.others.map.capacity() >= 50_000);
     assert_eq!(p.ints.map.capacity(), 0);
 }
@@ -221,4 +221,54 @@ fn removing_an_absent_id_from_a_many_bucket_changes_nothing() {
     }
     p.unpost(&k, 99);
     assert_eq!(p.ids(&k), &[1, 2, 3]);
+}
+
+#[test]
+fn published_distinct_sizes_the_table_whatever_the_prefix_looked_like() {
+    // The prefix is ONE value: the sample would call the key low-cardinality
+    // and reserve nothing; the statistics know the label has 100k values.
+    let mut p = PairPostings::default();
+    for id in 0..PRESIZE_PREFIX as i64 {
+        p.post(&key(Value::Int(7)), id);
+    }
+    p.presize(PRESIZE_PREFIX, 200_000, Some(100_000));
+    let (ints, others) = p.capacities();
+    assert!(ints >= 105_000, "distinct plus the 5% margin: {ints}");
+    assert!(ints < 200_000, "and not the whole candidate count: {ints}");
+    assert_eq!(others, 0, "the general table is untouched");
+}
+
+#[test]
+fn published_distinct_reserves_next_to_nothing_for_a_low_cardinality_key() {
+    let mut p = PairPostings::default();
+    for id in 0..PRESIZE_PREFIX as i64 {
+        p.post(&key(Value::Int(id % 5)), id);
+    }
+    let before = p.capacities();
+    p.presize(PRESIZE_PREFIX, 10_000_000, Some(5));
+    assert_eq!(p.capacities(), before, "five values need no more room");
+}
+
+#[test]
+fn published_distinct_is_capped_at_the_candidate_count_and_discounts_held_buckets() {
+    let mut p = PairPostings::default();
+    for id in 0..PRESIZE_PREFIX as i64 {
+        p.post(&key(Value::Int(id)), id);
+    }
+    // An estimate far above the candidates reserves the candidates, not more.
+    p.presize(PRESIZE_PREFIX, 3_000, Some(u64::MAX));
+    let (ints, _) = p.capacities();
+    assert!((3_000..6_000).contains(&ints), "capped at total: {ints}");
+}
+
+#[test]
+fn published_distinct_reserves_in_the_table_that_took_most_keys() {
+    let mut p = PairPostings::default();
+    for id in 0..PRESIZE_PREFIX as i64 {
+        p.post(&key(Value::String(format!("s{id}").into())), id);
+    }
+    p.presize(PRESIZE_PREFIX, 50_000, Some(40_000));
+    let (ints, others) = p.capacities();
+    assert!(others >= 42_000);
+    assert_eq!(ints, 0);
 }

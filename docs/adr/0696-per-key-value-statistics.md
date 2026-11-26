@@ -118,15 +118,31 @@ holds the node store's read lock for its whole walk.
    `rows / distinct` otherwise, with provenance). `equality_rows` keeps its contract (an
    index hit count, `None` without an index). Both new calls go through
    the per-statement memo of [ADR-0508](./0508-planner-stats-consult-memo.md).
-7. **Later slice, not implemented here: the lazy equality pair presizes
-   from the distinct count** when the
-   label's statistics are built, replacing the leading-sample estimate of
-   [ADR-0686](./0686-pair-postings-packed-bucket.md); without statistics the sample stays.
-8. **Later slice, not implemented here: `db.stats.retrieve('GRAPH
-   COUNTS')` serves the statistics** as an
-   added `data` section beside constraints and indexes, listing only keys
-   whose label is built (a read never triggers a build), with provenance
-   per entry.
+7. **The lazy equality pair presizes from the distinct count** when the
+   key's statistics are built. After the build's first
+   `PRESIZE_PREFIX` candidates the busiest table reserves `distinct`
+   plus a 5% margin (capped at the candidate count) minus the buckets it
+   holds, whatever the prefix looked like; without published statistics
+   the leading-sample estimate of
+   [ADR-0686](./0686-pair-postings-packed-bucket.md) stays. The build reads the
+   statistics without requesting them (a pair is built once per process,
+   so a request made for it would scan the label to benefit a build that
+   has already happened) and never waits for a statistics build. Only the
+   node pairs use it: relationship keys have no statistics. Where the
+   sample already works (a representative unique prefix) the table is the
+   same; the statistics help when the first candidates are not
+   representative (sorted or clustered ids), in either direction: a
+   one-valued prefix over unique ids stops the table doubling through the
+   tail, and a unique prefix over a handful of values stops it reserving
+   for the whole label.
+8. **`db.stats.retrieve('GRAPH COUNTS')` serves the statistics** as an
+   added `keyStatistics` list in `data`, beside constraints and indexes:
+   one entry per published `(label, property)` with its counts, distinct
+   estimate, range, sum and mean, heavy values and provenance, ordered by
+   label then property, and listing only keys whose label is built (a read
+   never triggers a build or records a request). The procedure's signature
+   is unchanged; only its payload grew, and the existing entries are
+   untouched.
 9. **Later slice, not implemented here: case-folded strings.** A
    `tolower(x) = tolower($p)` equality would be priced from the raw
    distinct count as an upper bound on the folded distinct count, flagged
@@ -159,6 +175,10 @@ holds the node store's read lock for its whole walk.
   makes none of. Once consumed, an unindexed equality on an admitted key
   gets an estimate with a stated provenance where it fell to a rank
   before.
+- The equality pair's build benefits only when a consult had the key's
+  statistics built before the pair was: it never asks for a build or waits
+  for one, so a graph whose planner never consults sizes its pairs exactly
+  as before. `GRAPH COUNTS` lists the built set and is a pure read.
 - The first consult on a label pays one chunked scan (about 0.3 s per
   million nodes on the measured shape); later consults are memo hits until
   a write dirties the label.

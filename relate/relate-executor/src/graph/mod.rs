@@ -61,7 +61,9 @@ mod index;
 mod index_lookup;
 mod index_postings;
 mod key_stats;
-pub(crate) use key_stats::{heavy_count as key_heavy_count, is_admitted as key_value_admitted};
+pub(crate) use key_stats::{
+    heavy_count as key_heavy_count, is_admitted as key_value_admitted, PublishedKeyStats,
+};
 mod label_mutation;
 mod label_probe;
 mod pair_postings;

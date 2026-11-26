@@ -95,10 +95,72 @@ fn index_entry(
     Value::Map(entry.into())
 }
 
+/// One GRAPH COUNTS key-statistics entry (ADR-0696): the `(label, property)`
+/// and its figures. `min`, `max`, `sum` and `mean` are null when the key has
+/// no such figure (strings and mixed families have no range; only numeric
+/// keys have a sum and a mean). `heavy` lists the values the summary is
+/// confident are frequent, each with an upper-bound `count`.
+fn key_statistics_entry(published: &crate::graph::PublishedKeyStats) -> Value {
+    let stats = &published.stats;
+    let sum = (stats.numeric_count > 0).then(|| {
+        let whole = i64::try_from(stats.int_sum).ok();
+        match whole {
+            Some(int) if stats.float_sum == 0.0 => Value::Int(int),
+            _ => Value::Float(stats.int_sum as f64 + stats.float_sum),
+        }
+    });
+    let heavy: Vec<Value> = stats
+        .heavy
+        .iter()
+        .map(|h| {
+            Value::Map(
+                BTreeMap::from([
+                    ("value".to_string(), h.value.clone()),
+                    ("count".to_string(), count_value(h.count)),
+                ])
+                .into(),
+            )
+        })
+        .collect();
+    let figure = |v: Option<Value>| v.unwrap_or(Value::Null);
+    Value::Map(
+        BTreeMap::from([
+            ("label".to_string(), Value::String(published.label.clone())),
+            (
+                "property".to_string(),
+                Value::String(published.property.clone()),
+            ),
+            (
+                "provenance".to_string(),
+                Value::String(stats.provenance.name().into()),
+            ),
+            ("count".to_string(), count_value(stats.count)),
+            ("declined".to_string(), count_value(stats.declined)),
+            ("distinct".to_string(), count_value(stats.distinct)),
+            ("min".to_string(), figure(stats.min.clone())),
+            ("max".to_string(), figure(stats.max.clone())),
+            ("sum".to_string(), figure(sum)),
+            ("mean".to_string(), figure(stats.mean().map(Value::Float))),
+            ("heavy".to_string(), Value::List(heavy.into())),
+        ])
+        .into(),
+    )
+}
+
+/// A statistics counter as the integer a Cypher result carries. The
+/// collector's counters are bounded by the node count, and a persisted node
+/// id is below `i64::MAX`, so the conversion is total.
+fn count_value(n: u64) -> Value {
+    Value::Int(i64::try_from(n).expect("a statistics counter is bounded by the node count"))
+}
+
 /// The GRAPH COUNTS row: the requested `section` echoed back and `data`
-/// carrying the `constraints` and `indexes` lists. Node/relationship counts,
-/// `TOKENS`, `QUERIES` and `META` are not served — no scenario projects them,
-/// and an empty list would be a fabricated answer.
+/// carrying the `constraints`, `indexes` and `keyStatistics` lists.
+/// `keyStatistics` lists the per-key value statistics that are currently
+/// BUILT and nothing else: reading it never builds or requests a build, so a
+/// label no statement has consulted is absent, not empty-statistics.
+/// Node/relationship counts, `TOKENS`, `QUERIES` and `META` are not served —
+/// no scenario projects them, and an empty list would be a fabricated answer.
 pub(crate) fn graph_counts_row(
     graph: &ExecGraph<'_>,
     section: &str,
@@ -122,6 +184,16 @@ pub(crate) fn graph_counts_row(
         Value::List(constraint_entries.into()),
     );
     data.insert("indexes".to_string(), Value::List(index_entries.into()));
+    let key_statistics: Vec<Value> = graph
+        .base()
+        .published_key_statistics()
+        .iter()
+        .map(key_statistics_entry)
+        .collect();
+    data.insert(
+        "keyStatistics".to_string(),
+        Value::List(key_statistics.into()),
+    );
     Ok(BTreeMap::from([
         ("section".to_string(), Value::String(section.into())),
         ("data".to_string(), Value::Map(data.into())),
@@ -329,3 +401,6 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod key_statistics_tests;

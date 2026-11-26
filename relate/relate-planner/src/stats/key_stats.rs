@@ -28,6 +28,18 @@ pub enum Provenance {
     Exact,
 }
 
+impl Provenance {
+    /// The name a surface reports the provenance under: the one spelling,
+    /// so no consumer matches the variants to invent its own.
+    pub fn name(self) -> &'static str {
+        match self {
+            Provenance::Sketched => "sketched",
+            Provenance::UpperBound => "upperBound",
+            Provenance::Exact => "exact",
+        }
+    }
+}
+
 /// A value a key holds more often than most, with a count that is an upper
 /// bound on how many admitted values equal it.
 #[derive(Clone, Debug, PartialEq)]
