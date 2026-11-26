@@ -197,7 +197,7 @@ fn composed_command(
     plan: &LogicalPlan,
     label: fn(&Clause) -> Option<&'static str>,
 ) -> Option<&'static str> {
-    let standalone = plan.parts.len() == 1 && plan.next.is_none();
+    let standalone = plan.single_part().is_some();
     for part in plan.parts() {
         let mut clauses = part
             .iter()
