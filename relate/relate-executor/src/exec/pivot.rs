@@ -163,9 +163,9 @@ pub(super) fn cheapest_start_expansion(
 /// `cheapest_start` rank candidates with the same numbers. Element 0's
 /// first hop is the path's first rel; element k walks `rels[k - 1]`
 /// backward. Element 0 is the start node the parsed-pattern invariant
-/// guarantees (F-8-4's boundary, stated once here). Private to this
-/// module: `choose_start` and `cheapest_start` are its callers.
-fn element_estimate<'g, 'a>(
+/// guarantees (F-8-4's boundary, stated once here). `choose_start` and `cheapest_start` are
+/// its callers, and the hub join's cost gate prices a pair's side B with it.
+pub(super) fn element_estimate<'g, 'a>(
     stats: &crate::exec::graph_stats::GraphStats<'g>,
     path: &'a PathPattern,
     bound: relate_planner::Bound<'_>,

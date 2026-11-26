@@ -6,7 +6,8 @@
 //! every merged row. The whole family lives here — the shape gate
 //! ([`hub_join_applies`]) with its minimum side-A row count
 //! ([`HUB_JOIN_MIN_SIDE_ROWS`], below which the nested loop is already
-//! cheap), the join itself ([`try_hub_join`], invoked by the driver at
+//! cheap) and its cost gate ([`hub_join_pays`], ADR-0701: side B's one
+//! enumeration against the nested loop's per-row expansions), the join itself ([`try_hub_join`], invoked by the driver at
 //! its pattern-0→pattern-1 boundary over the caller's own pattern-0
 //! rows; `Ok(None)` declines and the driver's nested loop continues
 //! from them), the row-shape helpers ([`HubMerge`] with
@@ -24,8 +25,10 @@ use crate::ctx::ExecCtx;
 use crate::row::{Row, RowRung};
 
 use super::feed::RowStream;
+use super::graph_stats::GraphStats;
 use super::one_path::{match_one_path, PathFilters};
 use super::pattern_policies::{reduce_row, MatchReduce, MatchTail, Matched};
+use super::pivot::element_estimate;
 use super::pushdown::{residual_ok, Residual};
 
 /// The minimum side-A row count before the hub join pays for itself:
@@ -112,6 +115,39 @@ fn hub_join_applies<'p>(
     }
 }
 
+/// The hub join's cost gate: the join pays when side B's one full
+/// enumeration is no dearer than the nested loop's per-row expansions
+/// from the bound hub — `rows(A) x (side B's walk from the hub)` against
+/// `side B's walk from its cheapest unbound end`, both priced by the
+/// ladder's one canonical estimate ([`GraphStats::estimate`], the
+/// per-row start selection's own). Ties go to the join (the measured
+/// fixture where every hub has one side-A row, LABS-348); side B's
+/// residual conjuncts narrow its start like any other estimate.
+fn hub_join_pays(
+    ctx: ExecCtx<'_>,
+    patterns: &[PathPattern],
+    hub_var: &SmallName,
+    side_a_rows: usize,
+    residual: &Residual<'_>,
+) -> bool {
+    // `hub_join_applies` guarantees side B is one unquantified hop between
+    // two nodes, one of them the hub, so elements 0 and 1 are its ends.
+    let side_b = &patterns[1];
+    let stats = GraphStats::new(ctx.graph.base(), ctx.params);
+    let conjuncts = residual.conjuncts;
+    let hub_bound = |name: &str| hub_var == name;
+    let unbound = |_: &str| false;
+    let hub_end = usize::from(side_b.nodes[1].variable.as_ref() == Some(hub_var));
+    let per_hub = element_estimate(&stats, side_b, &hub_bound, conjuncts.iter(), hub_end);
+    let nested = per_hub.saturating_mul(side_a_rows as u64);
+    // The one full enumeration starts at side B's cheaper end, neither end
+    // bound.
+    let full = (0..2)
+        .map(|end| element_estimate(&stats, side_b, &unbound, conjuncts.iter(), end))
+        .fold(u64::MAX, u64::min);
+    full <= nested
+}
+
 /// The name is a node variable of every pattern (the hub must be a
 /// shared end, not a shared rel).
 fn is_shared_node_var(patterns: &[PathPattern], name: &SmallName) -> bool {
@@ -134,8 +170,9 @@ fn is_shared_node_var(patterns: &[PathPattern], name: &SmallName) -> bool {
 /// itself ([`HubFanOut`]): the rows arrive in batches as the caller
 /// pulls them, never as a container proportional to the output.
 /// `Ok(Some(stream))` = the pair joined; `Ok(None)` = declined (the
-/// shape never applied, side A fell below the minimum row count, or the
-/// test hook forced the nested loop) — the caller's nested loop
+/// shape never applied, side A fell below the minimum row count, the
+/// cost gate priced the nested loop cheaper, or the test hook forced the
+/// nested loop) — the caller's nested loop
 /// continues from the pattern-0 rows it still holds.
 pub(super) fn try_hub_join<'a: 'r, 'r>(
     ctx: ExecCtx<'a>,
@@ -167,6 +204,14 @@ pub(super) fn try_hub_join<'a: 'r, 'r>(
         // bookkeeping would be pure overhead (the measured single-left
         // case joined as cheaply as the nested loop) — the driver's
         // loop continues from its own rows.
+        return Ok(None);
+    }
+    // The cost gate: the join enumerates side B once from the base row,
+    // however few hubs side A holds; the nested loop expands side B per
+    // side-A row from the bound hub. A selective side A (the planner's
+    // order already filtered it to a few rows) makes the full enumeration
+    // the expensive plan.
+    if !hub_join_pays(ctx, patterns, hub_var, a_rows.len(), residual) {
         return Ok(None);
     }
     // Only side A is indexed — the join drives off side B's rows
