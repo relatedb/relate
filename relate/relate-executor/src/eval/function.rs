@@ -207,8 +207,8 @@ fn render_scalar(v: &Value) -> Option<Arc<str>> {
         | Value::Point(_)
         | Value::Uuid(_)
         | Value::Vector { .. } => Some(render_accepted_scalar(v)),
-        // The declined vocabulary, spelled: the containers and graph
-        // values, each caller routing them on its own.
+        // The declined vocabulary, spelled: NULL, BYTES, the containers and
+        // the graph values, each caller routing them on its own.
         Value::Null
         | Value::Bytes(_)
         | Value::List(_)
