@@ -356,6 +356,14 @@ impl WriteScratch {
         self.batch.snapshot_ts
     }
 
+    /// Whether this scratch has logged no change yet: every mutation
+    /// appends its redo op, so an empty log means the view reads exactly
+    /// the base's pinned state (the count short-circuit's exactness
+    /// predicate, ADR-0689).
+    pub(super) fn has_no_changes(&self) -> bool {
+        self.redo.len() == 0
+    }
+
     /// Per-batch rebase (ADR-0210): reset the per-batch state (redo log,
     /// entity maps, prop indexes, adjacency, deleted/created sets, label
     /// probe, live-label delta) at the new snapshot timestamp, keeping the

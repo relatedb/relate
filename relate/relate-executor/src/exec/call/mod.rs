@@ -1,13 +1,14 @@
 //! `CALL { }` subqueries, `CALL IN TRANSACTIONS`, conditional
 //! branches, and part finishing.
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, HashSet};
 
 use relate_core::{Error, Result, Value};
 use relate_ir::{Clause, Projection, Query};
 use relate_names::SmallName;
 
-use crate::ctx::QueryCtx;
+use crate::ctx::{ExecCtx, QueryCtx};
 use crate::eval::is_agg_expr;
 use crate::graph::QueryStats;
 use crate::overlay::ExecGraph;
@@ -29,6 +30,8 @@ use super::scope::{
     carry_scope_bindings, has_star_item, nested_seed_row, return_columns, star_scope_names,
     terminal_return_items, visible_keys,
 };
+use super::seeded_count::resolve_seed_names;
+use super::stats_short_circuit::SeedShape;
 use super::{materialize_rows, QueryResult};
 
 /// `CALL { }` clause shape (CIP-141/CIP-32), bundled to
@@ -538,11 +541,22 @@ fn execute_query_seeded_in_scope(
         // part count on the statement's budget instead of hiding its
         // width inside one invocation tick. The top-level statement
         // driver (exec/mod.rs) never enters here.
+        // ADR-0689: a part seeded with one bound row (a `CALL (x) { … }`
+        // invocation) knows its dynamic label and type operands; it runs
+        // with them resolved to static names, so the statistics
+        // short-circuit and the label-index scan serve it like a
+        // hand-written static pattern. Borrowed unchanged otherwise.
+        let clauses = match SeedShape::of(&part_seeds) {
+            SeedShape::Bound(seed) => {
+                resolve_seed_names(ExecCtx::new(graph, params), &part.clauses, seed)
+            }
+            SeedShape::Whole | SeedShape::Other => Cow::Borrowed(&part.clauses[..]),
+        };
         let (rows, last) = match part_scope {
             Some(scope) => {
-                run_nested_clauses_scoped(graph, &part.clauses, params, part_seeds, qctx, scope)?
+                run_nested_clauses_scoped(graph, &clauses, params, part_seeds, qctx, scope)?
             }
-            None => run_nested_clauses(graph, &part.clauses, params, part_seeds, qctx)?,
+            None => run_nested_clauses(graph, &clauses, params, part_seeds, qctx)?,
         };
         let result = match last {
             Some(result) => result,

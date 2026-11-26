@@ -124,8 +124,10 @@ impl<'a> ExecGraph<'a> {
     /// The count-only statistics short-circuit's exactness precondition
     /// (LABS-370 v1 follow-up): this view reads the base's latest
     /// published state with nothing the base stats cannot see — no
-    /// scratch overlay (an explicit transaction's or write statement's
-    /// own writes live there and the base stats cannot see them), no
+    /// scratch overlay carrying changes (an explicit transaction's or write
+    /// statement's own writes live there and the base stats cannot see
+    /// them; a scratch that has logged nothing yet is invisible to them
+    /// and passes, ADR-0689), no
     /// in-flight base write window (`apply_redo` bumps the stats before
     /// it publishes), and no pinned older snapshot (a concurrent apply
     /// advances the base stats past an older pin). Any other view
@@ -137,7 +139,8 @@ impl<'a> ExecGraph<'a> {
     /// two checks is closed by the under-lock re-check, so no
     /// out-of-snapshot write leaks into the count.
     pub(crate) fn sees_exact_base_stats(&self) -> bool {
-        self.scratch.is_none()
+        self.scratch
+            .is_none_or(|scratch| scratch.borrow().has_no_changes())
             && !self.base.in_write_window()
             && self.pinned_ts == self.base.commit_ts()
     }
