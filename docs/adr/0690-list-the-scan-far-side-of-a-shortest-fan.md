@@ -5,7 +5,7 @@ claim: b7b2e40d97c053047f191e3ece333bbd1d9db13a
 date: 2026-11-25
 deciders: Relate maintainers
 name: 0690-list-the-scan-far-side-of-a-shortest-fan
-status: proposed
+status: accepted
 tags:
   - executor
   - pattern-matching
