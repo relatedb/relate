@@ -32,7 +32,7 @@ mod walk;
 use crate::exec::rider::Rider;
 use crate::shortest::reject_static_common_end_nodes;
 use early::{early_predicates, EarlyPredicates};
-use emit::GpmEmit;
+use emit::StateSink;
 use qpp::gpm_expand_quantified;
 use shortest_route::match_shortest_route;
 pub(crate) use shortest_route::{fold_shortest_route, RouteCaches};
@@ -529,7 +529,7 @@ pub(crate) fn match_gpm_path(
         Some(PatternElement::Node(node)) => (1, node),
         _ => (0, &anonymous),
     };
-    let mut states = gpm_start_nodes(graph, first, row, used, params, where_clause)?;
+    let states = gpm_start_nodes(graph, first, row, used, params, where_clause)?;
     // The rider (`emit`): with no selector choosing across candidates, a
     // cap or an EXISTS probe rides the walk itself — every complete state
     // flows through the per-candidate pipeline as it emerges and the walk
@@ -553,16 +553,38 @@ pub(crate) fn match_gpm_path(
     // LABS-448: the walk phase, through the one wrapper — the whole
     // elements walk this clause performs, inclusive of its nested
     // resolutions (the recursion nests inside the span).
-    states = crate::ctx::phase_walk(|| {
-        gpm_walk_elements(
-            &gctx,
-            elements,
-            &rel_filters.filters,
-            start,
-            states,
-            &mut emit,
-        )
-    })?;
+    let mut collected: Vec<GpmState> = Vec::new();
+    {
+        // The one terminal sink: a mounted rider receives each complete
+        // state through its offer (a halt it raises stops the walk); with
+        // none, the states collect for the post-walk candidate loop.
+        let mut sink = |state: GpmState| -> Result<()> {
+            match emit.as_mut() {
+                Some(emit) => emit.offer(&gctx, state),
+                None => {
+                    collected.push(state);
+                    Ok(())
+                }
+            }
+        };
+        crate::ctx::phase_walk(|| {
+            for state in states {
+                if gctx.halted() {
+                    break;
+                }
+                gpm_walk_elements(
+                    &gctx,
+                    elements,
+                    &rel_filters.filters,
+                    start,
+                    state,
+                    &mut sink,
+                )?;
+            }
+            Ok(())
+        })?;
+    }
+    let states = collected;
     // The rider consumed every complete state as it emerged (the walk's
     // deepest element offered them and returned nothing); its rows are
     // the answer, and the materializing tail below never runs.

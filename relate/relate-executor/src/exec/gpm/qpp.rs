@@ -8,7 +8,7 @@
 
 use std::sync::Arc;
 
-use super::walk::gpm_accept_target;
+use super::walk::{gpm_accept_target, gpm_walk_elements, target_rejects_before_clone};
 use super::*;
 use relate_ir::QuantifiedPathPattern;
 
@@ -23,7 +23,7 @@ use relate_ir::QuantifiedPathPattern;
 struct QppCursor<'a> {
     count: u32,
     max: u32,
-    groups: Vec<(String, Arc<Vec<Value>>)>,
+    groups: Vec<(&'a str, Arc<Vec<Value>>)>,
     reduces: Vec<BranchReduce<'a>>,
     prebound: &'a BTreeMap<String, Value>,
     /// The group's own element table (LABS-801), built once at the
@@ -151,8 +151,8 @@ pub(super) fn gpm_expand_quantified(
     qpp: &QuantifiedPathPattern,
     filters: &[super::ElementFilter],
     target: Option<&NodePattern>,
-    emit: &mut Option<super::GpmEmit<'_, '_>>,
-) -> Result<Vec<GpmState>> {
+    sink: &mut StateSink<'_>,
+) -> Result<()> {
     // The group's whole rebinding vocabulary — inner element names plus
     // the subpath variable — from the one spelling every consumer reads.
     let mut names = Vec::new();
@@ -184,7 +184,7 @@ pub(super) fn gpm_expand_quantified(
     // `x`/`z`).
     let groups = names
         .iter()
-        .map(|name| (name.clone(), Arc::new(Vec::<Value>::new())))
+        .map(|name| (name.as_str(), Arc::new(Vec::<Value>::new())))
         .collect::<Vec<_>>();
     // The legacy var-length reuse rule (LABS-661): a group name the
     // entering row already binds to a list pins the exact trail — the
@@ -211,10 +211,9 @@ pub(super) fn gpm_expand_quantified(
     // both spellings of one unbounded pattern enumerate to the same depth,
     // LABS-661).
     let max = qpp.max.unwrap_or_else(|| gctx.unbounded_dfs_cap());
-    let mut out = Vec::new();
     gpm_qpp_dfs(
         gctx,
-        state,
+        &mut state,
         qpp,
         target,
         QppCursor {
@@ -225,10 +224,9 @@ pub(super) fn gpm_expand_quantified(
             prebound: &prebound,
             filters,
         },
-        &mut out,
-        emit,
+        sink,
     )?;
-    Ok(out)
+    Ok(())
 }
 
 /// Every predicate a quantified pattern carries: each inner element's own
@@ -276,14 +274,22 @@ fn gpm_qpp_iteration_predicates_ok(
     Ok(true)
 }
 
+/// The quantification DFS over one in-place state, in the shape of
+/// `gpm_rel_dfs` (REL8-2242): an iteration's chain ids extend the
+/// state's trail and are truncated again after the descent, never cloned
+/// per hop, and the frame *consumes* the state's row and used set (moved
+/// into the iteration walk, replaced by the iteration's own before each
+/// descent) — so only an accepted stop clones the state, and the caller
+/// must not read `row`/`used` after the call. The group vocabulary names
+/// are borrowed from the entry (`QppCursor::groups`), never re-allocated
+/// per iteration.
 fn gpm_qpp_dfs(
     gctx: &GpmCtx<'_>,
-    state: GpmState,
+    state: &mut GpmState,
     qpp: &QuantifiedPathPattern,
     target: Option<&NodePattern>,
     cursor: QppCursor<'_>,
-    out: &mut Vec<GpmState>,
-    emit: &mut Option<super::GpmEmit<'_, '_>>,
+    sink: &mut StateSink<'_>,
 ) -> Result<()> {
     let GpmCtx { graph, params, .. } = *gctx;
     let QppCursor {
@@ -294,7 +300,7 @@ fn gpm_qpp_dfs(
         prebound,
         filters,
     } = cursor;
-    if count >= qpp.min {
+    if count >= qpp.min && !target_rejects_before_clone(gctx, state, target)? {
         let mut accepted = state.clone();
         // The pre-bound group lists gate the accept: a branch whose
         // accumulated list differs from the pinned binding is dropped —
@@ -307,28 +313,34 @@ fn gpm_qpp_dfs(
         let mut compatible = true;
         for (name, values) in &groups {
             let value = Value::List(Arc::clone(values));
-            if let Some(pinned) = prebound.get(name) {
+            if let Some(pinned) = prebound.get(*name) {
                 if !pinned.eq_non_null(&value) {
                     compatible = false;
                     break;
                 }
             }
-            accepted.row.insert(name.clone(), value);
+            accepted.row.insert((*name).to_string(), value);
         }
         if compatible && gpm_accept_target(gctx, &mut accepted, target)? {
             // the one complete-state delivery spelling — a rider (this
             // element is the pattern's last) receives the state and its
             // answer halts the enumeration: no further iterations, no
             // deeper hops
-            if super::emit::deliver(gctx, emit, accepted, out)? {
+            if super::emit::deliver(gctx, sink, accepted)? {
                 return Ok(());
             }
         }
     }
-    if count >= max || qpp.elements.is_empty() {
+    if count >= max {
         return Ok(());
     }
-    let mut clean = state.row.clone();
+    let Some(PatternElement::Node(first)) = qpp.elements.first() else {
+        // a quantification that does not open on a node element (the
+        // lowering's flat label-alternation spelling) has no iteration
+        // walk to drive: no further hop, as before
+        return Ok(());
+    };
+    let mut clean = std::mem::take(&mut state.row);
     // The vocabulary rides one carrier — the cursor's `groups` list, its
     // names the group's whole rebinding vocabulary in bind order
     // (`gpm_expand_quantified` builds it 1:1 from
@@ -337,9 +349,6 @@ fn gpm_qpp_dfs(
     for (name, _) in &groups {
         clean.shift_remove(name);
     }
-    let Some(PatternElement::Node(first)) = qpp.elements.first() else {
-        return Ok(());
-    };
     if !node_ok(graph, state.current, first, &clean, params)?
         || !gpm_bind_node(graph, first, state.current, &mut clean)
     {
@@ -351,30 +360,22 @@ fn gpm_qpp_dfs(
     push_visible_node(graph, state.current, &mut local_start);
     let iter_start = GpmState {
         row: clean,
-        used: state.used.clone(),
+        used: std::mem::take(&mut state.used),
         current: state.current,
         nodes: local_start,
         rels: Vec::new(),
     };
-    // The quantified operand's own walk never offers to a rider (its
-    // states are iteration rows, not complete bindings — the outer walk's
-    // last element offers those); a rider's halt still stops it, via the
-    // shared `GpmCtx` cell.
-    let mut no_rider = None;
-    let iterations = gpm_walk_elements(
-        gctx,
-        &qpp.elements,
-        filters,
-        1,
-        vec![iter_start],
-        &mut no_rider,
-    )?;
-    for iteration in iterations {
+    // The quantified operand's own walk never offers to the rider (its
+    // states are iteration rows, not complete bindings — the accepted
+    // stops below go to the continuation, whose last element offers
+    // those). Each complete iteration streams into the closure below, no
+    // iteration `Vec` (REL8-2242).
+    let mut descend = |iteration: GpmState| -> Result<()> {
         if gctx.halted() {
             return Ok(());
         }
         if !gpm_qpp_iteration_predicates_ok(graph, qpp, &iteration.row, params)? {
-            continue;
+            return Ok(());
         }
         // PROFILE: one quantification hop taken — the store-read tally
         // behind the plan table's `hops` kind and `Db Hits` total, so a
@@ -385,7 +386,7 @@ fn gpm_qpp_dfs(
         // iteration — the post-filter would reject them all.
         let mut next_reduces = reduces.clone();
         if !advance_reduces(gctx, &mut next_reduces, &iteration.row)? {
-            continue;
+            return Ok(());
         }
         // One carrier again: the vocabulary names are the map's keys.
         // Each list takes this iteration's binding for its name — the
@@ -400,11 +401,7 @@ fn gpm_qpp_dfs(
         let mut next_groups = groups.clone();
         for (name, values) in &mut next_groups {
             let values = Arc::make_mut(values);
-            if qpp
-                .subpath_variable
-                .as_ref()
-                .is_some_and(|v| v == name.as_str())
-            {
+            if qpp.subpath_variable.as_ref().is_some_and(|v| v == name) {
                 // the subpath variable observes the iteration's path —
                 // the one place an iteration's slices materialize
                 values.push(Value::from_path(super::materialize_path(
@@ -416,27 +413,23 @@ fn gpm_qpp_dfs(
                 values.push(
                     iteration
                         .row
-                        .get(name.as_str())
+                        .get(name)
                         .expect("a complete iteration row binds every vocabulary name")
                         .clone(),
                 );
             }
         }
-        // The per-iteration fields come from the iteration; the two
-        // chains carry the walk's own forward — stated by the literal,
-        // not cloned wholesale and overwritten.
-        let mut next = GpmState {
-            row: iteration.row,
-            used: iteration.used,
-            current: iteration.current,
-            nodes: state.nodes.clone(),
-            rels: state.rels.clone(),
-        };
-        next.nodes.extend(iteration.nodes.into_iter().skip(1));
-        next.rels.extend(iteration.rels);
-        gpm_qpp_dfs(
+        // The iteration's row, used set and cursor replace the state's;
+        // its chain ids extend the trail, truncated again below.
+        let (trail_nodes, trail_rels) = (state.nodes.len(), state.rels.len());
+        state.row = iteration.row;
+        state.used = iteration.used;
+        state.current = iteration.current;
+        state.nodes.extend(iteration.nodes.into_iter().skip(1));
+        state.rels.extend(iteration.rels);
+        let descended = gpm_qpp_dfs(
             gctx,
-            next,
+            state,
             qpp,
             target,
             QppCursor {
@@ -447,9 +440,11 @@ fn gpm_qpp_dfs(
                 prebound,
                 filters,
             },
-            out,
-            emit,
-        )?;
-    }
-    Ok(())
+            sink,
+        );
+        state.nodes.truncate(trail_nodes);
+        state.rels.truncate(trail_rels);
+        descended
+    };
+    gpm_walk_elements(gctx, &qpp.elements, filters, 1, iter_start, &mut descend)
 }

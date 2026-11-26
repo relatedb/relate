@@ -303,16 +303,16 @@ mod tests {
         );
     }
 
-    /// The documented counterpart: the `ORDER BY` path builds a scope row
-    /// whose schema extends the incoming row's, so it interns once per row
-    /// per new-name item. Pinned so the shortcut is a known cost, and the
-    /// test flips if the deferred per-sink scope cache lands.
+    /// The `ORDER BY` path builds a scope row whose schema extends the
+    /// incoming row's. The schema's append-link cache (REL8-2242) serves
+    /// every row after the first, so a thousand rows intern the schema
+    /// at most once — it was once per row per new-name item.
     #[test]
-    fn an_ordered_projection_row_interns_its_scope_schema() {
-        assert_eq!(
-            interning_rows("RETURN n.a AS a ORDER BY n.b", 1_000),
-            1_000,
-            "the ordered scope row's schema is the documented per-row cost"
+    fn an_ordered_projection_row_interns_its_scope_schema_once() {
+        let interned = interning_rows("RETURN n.a AS a ORDER BY n.b", 1_000);
+        assert!(
+            interned <= 1,
+            "the ordered scope row's schema is served by the append link, interned {interned}"
         );
     }
 

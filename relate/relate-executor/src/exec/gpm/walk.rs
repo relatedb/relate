@@ -1,5 +1,5 @@
-//! The GPM walk engine: the element-by-element walk over a path
-//! pattern's elements (`gpm_walk_elements`), the var-length relationship
+//! The GPM walk engine: the one sink-driven element walk over a path
+//! pattern's elements (`gpm_walk_elements`, REL8-2242), the var-length relationship
 //! DFS it dispatches to (`gpm_rel_dfs` over the `GpmRelWalk` cursor),
 //! and the accept policies the walk applies at its binding points
 //! (`gpm_accept_node`, `gpm_accept_target`). The pinned-or-fresh
@@ -11,7 +11,7 @@
 //! orchestrator (`match_gpm_path`), the shared context types
 //! (`GpmState`, `GpmCtx`), and the per-candidate completion policies
 //! (`complete_state`, `bind_path_value`) stay in the parent module; the
-//! walk calls into its siblings `emit` (the rider's delivery sites) and
+//! walk calls into its siblings `emit` (the sink type and delivery policy) and
 //! `qpp` (the quantified expansion).
 //!
 //! `gpm_accept_node` is walk-side by its consumers: its only call sites
@@ -40,124 +40,72 @@ struct GpmRelWalk<'a> {
     filter: &'a RelFilter,
 }
 
+/// The one element walk (REL8-2242): one entering state is driven through
+/// the pattern's elements depth-first, and every complete state is handed
+/// to `sink` as it is produced — a rider's offer, a collector's push or
+/// the quantification DFS's descent, the caller's choice. No per-element
+/// or complete-state `Vec<GpmState>` is materialized, and a rider's halt
+/// (the shared `GpmCtx` cell) stops the enumeration mid-expansion. Order
+/// is the level-by-level walk's: each element is an order-preserving map
+/// over its input states, so the depth-first and the level-wise
+/// concatenations enumerate identically.
 pub(super) fn gpm_walk_elements(
     gctx: &GpmCtx<'_>,
     elements: &[PatternElement],
     filters: &[super::ElementFilter],
     index: usize,
-    mut states: Vec<GpmState>,
-    emit: &mut Option<GpmEmit<'_, '_>>,
-) -> Result<Vec<GpmState>> {
+    mut state: GpmState,
+    sink: &mut StateSink<'_>,
+) -> Result<()> {
+    if gctx.halted() {
+        return Ok(());
+    }
     let Some(element) = elements.get(index) else {
-        // The walk's deepest point: the incoming states are the pattern's
-        // complete bindings, and the terminal drain (the delivery
-        // policy's bulk sibling) is their one spelling.
-        return emit::deliver_all(gctx, emit, states);
+        // The walk's deepest point: the state is a complete binding.
+        return sink(state);
     };
     // One dispatch over the element — the node arm is the walk's accept
-    // stage, the two expansion arms share the per-state drive below. Each
-    // expansion element reads its resolved filter from the pattern-level
-    // tables by cursor (LABS-801) — never a per-frame re-resolution.
+    // stage, the two expansion arms share the target lookahead below.
+    // Each expansion element reads its resolved filter from the
+    // pattern-level tables by cursor (LABS-801) — never a per-frame
+    // re-resolution.
     match element {
         PatternElement::Node(node) => {
-            let mut joined = Vec::new();
-            for mut state in states.drain(..) {
-                if gctx.halted() {
-                    break;
-                }
-                // the four-stage node-accept pipeline (`gpm_accept_node`) — a
-                // failed stage drops the state, before the following elements
-                // enumerate for it
-                if gpm_accept_node(gctx, node, state.current, &mut state.row)? {
-                    joined.push(state);
-                }
+            // the four-stage node-accept pipeline (`gpm_accept_node`) — a
+            // failed stage drops the state, before the following elements
+            // enumerate for it
+            if gpm_accept_node(gctx, node, state.current, &mut state.row)? {
+                gpm_walk_elements(gctx, elements, filters, index + 1, state, sink)?;
             }
-            gpm_walk_elements(gctx, elements, filters, index + 1, joined, emit)
+            Ok(())
         }
-        PatternElement::Relationship(rel) => {
-            // The element's filter sits at its own index in the
-            // pattern-level table (LABS-801) — `index` is the walk's
-            // position, so no cursor exists to mistrack.
-            let super::ElementFilter::Rel(filter) = &filters[index] else {
-                panic!("GpmFilters is built from the same elements: a Relationship element's slot is a Rel")
+        PatternElement::Relationship(_) | PatternElement::Quantified(_) => {
+            // The expansion's target: the node element that follows, when
+            // one does — the walk then advances past the pair; an
+            // expansion with no node element behind it (the pattern
+            // continues with another rel or a quantification) advances
+            // one element and hands the expansion no target.
+            let (target, advance) = match elements.get(index + 1) {
+                Some(PatternElement::Node(node)) => (Some(node), 2),
+                _ => (None, 1),
             };
-            gpm_walk_expansions(
-                gctx,
-                elements,
-                filters,
-                index,
-                states,
-                emit,
-                |state, target, emit_here| {
-                    gpm_expand_relationship(gctx, state, rel, filter, target, emit_here)
-                },
-            )
-        }
-        PatternElement::Quantified(qpp) => {
-            let super::ElementFilter::Group(filter) = &filters[index] else {
-                panic!("GpmFilters is built from the same elements: a Quantified element's slot is a Group")
+            // each accepted stop continues the walk at once
+            let mut onward = |next: GpmState| {
+                gpm_walk_elements(gctx, elements, filters, index + advance, next, sink)
             };
-            gpm_walk_expansions(
-                gctx,
-                elements,
-                filters,
-                index,
-                states,
-                emit,
-                |state, target, emit_here| {
-                    gpm_expand_quantified(gctx, state, qpp, filter, target, emit_here)
-                },
-            )
+            match (element, &filters[index]) {
+                (PatternElement::Relationship(rel), super::ElementFilter::Rel(filter)) => {
+                    gpm_expand_relationship(gctx, state, rel, filter, target, &mut onward)
+                }
+                (PatternElement::Quantified(qpp), super::ElementFilter::Group(filter)) => {
+                    gpm_expand_quantified(gctx, state, qpp, filter, target, &mut onward)
+                }
+                _ => panic!(
+                    "GpmFilters is built from the same elements: the slot matches its element"
+                ),
+            }
         }
     }
-}
-
-/// The expansion elements' shared per-state drive (`gpm/walk.rs`): the
-/// target lookup, the last-element rider routing, and the state loop
-/// that feeds every entering state to the caller's expansion. The node
-/// element never takes this path — its arm in `gpm_walk_elements` is
-/// the accept stage, not an expansion.
-fn gpm_walk_expansions<'g, 'e>(
-    gctx: &GpmCtx<'_>,
-    elements: &[PatternElement],
-    filters: &[super::ElementFilter],
-    index: usize,
-    mut states: Vec<GpmState>,
-    emit: &mut Option<GpmEmit<'g, 'e>>,
-    expand: impl Fn(
-        GpmState,
-        Option<&NodePattern>,
-        &mut Option<GpmEmit<'g, 'e>>,
-    ) -> Result<Vec<GpmState>>,
-) -> Result<Vec<GpmState>> {
-    // The expansion's target: the node element that follows, when one
-    // does — the walk then advances past the pair; an expansion with no
-    // node element behind it (the pattern continues with another rel or
-    // a quantification) advances one element and hands the expansion no
-    // target.
-    let (target, advance) = match elements.get(index + 1) {
-        Some(PatternElement::Node(node)) => (Some(node), 2),
-        _ => (None, 1),
-    };
-    // The last element's accepts are the walk's complete rows: a rider
-    // receives them there, directly (an offer can halt the enumeration
-    // mid-expansion — the whole point of the rider); every earlier
-    // element's accepts only feed the following elements, so they
-    // materialize as before.
-    let mut no_rider = None;
-    let emit_here: &mut Option<GpmEmit<'g, 'e>> = if index + advance >= elements.len() {
-        emit
-    } else {
-        &mut no_rider
-    };
-    let mut next = Vec::new();
-    for state in states.drain(..) {
-        if gctx.halted() {
-            break;
-        }
-        next.extend(expand(state, target, emit_here)?);
-    }
-    gpm_walk_elements(gctx, elements, filters, index + advance, next, emit)
 }
 
 fn gpm_expand_relationship(
@@ -166,8 +114,8 @@ fn gpm_expand_relationship(
     rel: &RelPattern,
     filter: &RelFilter,
     target: Option<&NodePattern>,
-    emit: &mut Option<GpmEmit<'_, '_>>,
-) -> Result<Vec<GpmState>> {
+    sink: &mut StateSink<'_>,
+) -> Result<()> {
     // The var-length bound pair — the one bound-pair spelling every
     // walk engine reads (`pattern_walk::hop_bounds_with`), with the GPM engine's
     // own unbounded ceiling: the walk's memoized cap
@@ -175,7 +123,6 @@ fn gpm_expand_relationship(
     // closure runs only for an unbounded pattern — a bounded one never
     // pays the rel-count enumeration behind it.
     let (min, max) = crate::pattern_walk::hop_bounds_with(rel, || gctx.unbounded_dfs_cap());
-    let mut out = Vec::new();
     // where this expansion's segment begins in the state's own rel list
     // (read before the state moves into the DFS)
     let base = state.rels.len();
@@ -194,10 +141,9 @@ fn gpm_expand_relationship(
             rel,
             filter,
         },
-        &mut out,
-        emit,
+        sink,
     )?;
-    Ok(out)
+    Ok(())
 }
 
 /// The var-length rel DFS over one in-place state: each hop pushes its
@@ -211,8 +157,7 @@ fn gpm_rel_dfs(
     state: &mut GpmState,
     target: Option<&NodePattern>,
     walk: GpmRelWalk<'_>,
-    out: &mut Vec<GpmState>,
-    emit: &mut Option<GpmEmit<'_, '_>>,
+    sink: &mut StateSink<'_>,
 ) -> Result<()> {
     let GpmCtx { graph, params, .. } = *gctx;
     let GpmRelWalk {
@@ -255,7 +200,7 @@ fn gpm_rel_dfs(
                 .early
                 .holds_at(graph, &accepted.row, rel.variable.as_ref(), params)?
             && gpm_accept_target(gctx, &mut accepted, target)?
-            && emit::deliver(gctx, emit, accepted, out)?
+            && emit::deliver(gctx, sink, accepted)?
         {
             return Ok(());
         }
@@ -321,8 +266,7 @@ fn gpm_rel_dfs(
                 rel,
                 filter,
             },
-            out,
-            emit,
+            sink,
         );
         frame.pop(state);
         descended
@@ -402,6 +346,33 @@ fn gpm_accept_node(
     gctx.walk
         .early
         .holds_at(graph, row, node.variable.as_ref(), params)
+}
+
+/// Whether `target` is label-only (no inline properties) and the
+/// state's current node already fails it: the clone-free early reject
+/// the var-length stops take before copying the state (REL8-2242). The
+/// label-only `node_ok` reads nothing the stop's own bindings write (the
+/// rel or group lists), so its verdict is the post-clone accept's.
+/// Property-bearing targets and dynamic label expressions answer `false`:
+/// their check can read a name the accepted copy binds first.
+pub(super) fn target_rejects_before_clone(
+    gctx: &GpmCtx<'_>,
+    state: &GpmState,
+    target: Option<&NodePattern>,
+) -> Result<bool> {
+    let Some(node) = target else {
+        return Ok(false);
+    };
+    if node.properties.is_some()
+        || node
+            .label_expr
+            .as_ref()
+            .is_some_and(|expr| !expr.is_static_conjunction())
+    {
+        return Ok(false);
+    }
+    let GpmCtx { graph, params, .. } = *gctx;
+    Ok(!node_ok(graph, state.current, node, &state.row, params)?)
 }
 
 pub(super) fn gpm_accept_target(

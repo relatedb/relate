@@ -164,6 +164,7 @@ mod type_error_classes;
 mod typed_ir_exprs;
 mod undefined_variable;
 mod unicode_identifiers;
+mod untyped_var_length_label_target;
 mod unwind_drain_charge;
 mod unwind_source_memory_bounds;
 mod user_alias_double_underscore;

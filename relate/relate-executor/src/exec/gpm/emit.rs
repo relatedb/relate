@@ -38,48 +38,23 @@ pub(super) struct GpmEmit<'a, 'data> {
     sink: MatchedSink<'a, 'data>,
 }
 
+/// The sink every walk delivers complete states to (REL8-2242): a mounted
+/// rider's offer, a collector's push, or the quantification DFS's descent.
+pub(super) type StateSink<'a> = dyn FnMut(super::GpmState) -> Result<()> + 'a;
+
 /// The complete-state delivery policy — the one spelling every per-accept
-/// site reads (both `gpm_rel_dfs` arms and the quantified expansion): a
-/// mounted rider receives the state (its offer runs the completion
-/// pipeline, the reduce tail, the count or the probe-answer policy) and
-/// a halt it raised ends the frame; without a rider the state
-/// materializes into `out`. Returns whether the walk halted.
+/// site reads (the rel DFS and the quantified expansion): the state goes
+/// to the walk's sink (a rider's offer runs the completion pipeline, the
+/// reduce tail, the count or the probe-answer policy; a collector
+/// materializes it) and a halt the sink raised ends the frame. Returns
+/// whether the walk halted.
 pub(super) fn deliver(
     gctx: &GpmCtx<'_>,
-    emit: &mut Option<GpmEmit<'_, '_>>,
+    sink: &mut StateSink<'_>,
     state: super::GpmState,
-    out: &mut Vec<super::GpmState>,
 ) -> Result<bool> {
-    if let Some(emit) = emit.as_mut() {
-        emit.offer(gctx, state)?;
-        Ok(gctx.halted())
-    } else {
-        out.push(state);
-        Ok(false)
-    }
-}
-
-/// The terminal drain — the delivery policy's bulk sibling, composed
-/// from the one per-state spelling: the walk's deepest point receives
-/// the pattern's complete bindings all at once. A mounted rider consumes
-/// each through its offer (a halt stops the drain, nothing continues
-/// up); without a rider the states collect into the returned vec for the
-/// post-walk candidate loop.
-pub(super) fn deliver_all(
-    gctx: &GpmCtx<'_>,
-    emit: &mut Option<GpmEmit<'_, '_>>,
-    states: Vec<super::GpmState>,
-) -> Result<Vec<super::GpmState>> {
-    let mut out = Vec::new();
-    for state in states {
-        if gctx.halted() {
-            break;
-        }
-        if deliver(gctx, emit, state, &mut out)? {
-            break;
-        }
-    }
-    Ok(out)
+    sink(state)?;
+    Ok(gctx.halted())
 }
 
 impl GpmEmit<'_, '_> {
