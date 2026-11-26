@@ -1,7 +1,8 @@
 use super::agg_fold::take_path_fold_bindings;
 use super::kernels::with_kernels_disabled;
 use super::test_support::{
-    build, error_of, exec_autocommit, exec_cypher, exec_cypher_resolved, try_exec_cypher,
+    assert_expression_cap, build, error_of, exec_autocommit, exec_cypher, exec_cypher_resolved,
+    same_rows, try_exec_cypher,
 };
 use super::*;
 use crate::graph::Graph;
@@ -808,4 +809,126 @@ fn absent_rel_and_pattern_map_keys_do_not_grow_with_candidates() {
         };
         assert_eq!(lookups_for(10), lookups_for(500), "{query}");
     }
+}
+
+/// A graph for the node-counted fold: followers `f1..f5` of persons `a`, `b`,
+/// `c`, with `b` and `c` sharing the name `x` (two key nodes, one group) and
+/// two unnamed persons (one null group).
+fn followers_graph() -> Graph {
+    let g = Graph::default();
+    g.begin_write().unwrap();
+    let person = |name: Option<&str>| {
+        let mut props = BTreeMap::new();
+        if let Some(name) = name {
+            props.insert("name".into(), Value::String(name.into()));
+        }
+        g.create_node(vec!["P".into()], props).unwrap()
+    };
+    let follower = || g.create_node(vec!["F".into()], BTreeMap::new()).unwrap();
+    let (a, b, c) = (person(Some("a")), person(Some("x")), person(Some("x")));
+    let (n1, n2) = (person(None), person(None));
+    for (to, times) in [(a, 2), (b, 1), (c, 2), (n1, 1), (n2, 2)] {
+        for _ in 0..times {
+            let from = follower();
+            g.create_rel(from, to, "R".into(), BTreeMap::new()).unwrap();
+        }
+    }
+    g.commit_write();
+    g
+}
+
+/// Run `folded` (which the path fold must take: eight bindings over the
+/// followers graph) and its `WITH`-wrapped `general` twin (which stays on the
+/// match-then-aggregate path), assert they answer the same rows, and return
+/// the folded answer.
+fn assert_folds_like_general(g: &Graph, folded: &str, general: &str) -> QueryResult {
+    let _ = take_path_fold_bindings();
+    let fast = exec_cypher(g, folded);
+    assert_eq!(take_path_fold_bindings(), 8, "the path fold took {folded}");
+    let slow = exec_cypher(g, general);
+    assert!(
+        same_rows(&fast, &slow),
+        "{folded}: {:?} vs {:?}",
+        fast.rows,
+        slow.rows
+    );
+    fast
+}
+
+/// The node-counted fold counts per key node and collapses nodes with equal
+/// key values: the answer is the general path's, for every plain-count seat
+/// mix — `count(*)`, `count(follower)` and `count(person)` over a key node's
+/// properties, including a shared key value and a null one.
+#[test]
+fn the_node_counted_fold_answers_what_the_general_path_answers() {
+    let g = followers_graph();
+    for (folded, general) in [
+        (
+            "MATCH (f:F)-[:R]->(p:P) RETURN p.name AS n, count(f) AS c",
+            "MATCH (f:F)-[:R]->(p:P) WITH p.name AS n, count(f) AS c RETURN n, c",
+        ),
+        (
+            "MATCH (f:F)-[:R]->(p:P) RETURN p.name AS n, count(*) AS s, count(f) AS w, count(p) AS e",
+            "MATCH (f:F)-[:R]->(p:P) WITH p.name AS n, count(*) AS s, count(f) AS w, count(p) AS e RETURN n, s, w, e",
+        ),
+        (
+            "MATCH (f:F)-[:R]->(p:P) RETURN p.name AS n, p.name AS again, count(f) AS c",
+            "MATCH (f:F)-[:R]->(p:P) WITH p.name AS n, p.name AS again, count(f) AS c RETURN n, again, c",
+        ),
+    ] {
+        assert_folds_like_general(&g, folded, general);
+    }
+    // The stated answer: a = 2, the two `x` nodes collapse to 1 + 2 = 3, the
+    // two unnamed nodes collapse to the null group 1 + 2 = 3.
+    let mut rows = exec_cypher(
+        &g,
+        "MATCH (f:F)-[:R]->(p:P) RETURN p.name AS n, count(f) AS c",
+    )
+    .rows;
+    rows.sort_by_key(|row| format!("{:?}", row[0]));
+    assert_eq!(
+        rows,
+        vec![
+            vec![Value::Null, Value::Int(3)],
+            vec![Value::String("a".into()), Value::Int(2)],
+            vec![Value::String("x".into()), Value::Int(3)],
+        ]
+    );
+}
+
+/// Seats the node-counted fold must not take stay on the per-binding
+/// table: a distinct count and a property count (null-skipping) each keep
+/// their own answer.
+#[test]
+fn a_distinct_or_property_count_keeps_the_per_binding_table() {
+    let g = followers_graph();
+    for (folded, general) in [
+        (
+            "MATCH (f:F)-[:R]->(p:P) RETURN p.name AS n, count(DISTINCT f) AS c",
+            "MATCH (f:F)-[:R]->(p:P) WITH p.name AS n, count(DISTINCT f) AS c RETURN n, c",
+        ),
+        (
+            "MATCH (f:F)-[:R]->(p:P) RETURN p.name AS n, count(p.name) AS c",
+            "MATCH (f:F)-[:R]->(p:P) WITH p.name AS n, count(p.name) AS c RETURN n, c",
+        ),
+    ] {
+        assert_folds_like_general(&g, folded, general);
+    }
+}
+
+/// The per-node counts are a retaining container (ADR-0463): each new key
+/// node lands its entry's bytes ahead of the insert, so a cap below the
+/// distinct-node footprint refuses the statement with the typed
+/// expression-capacity error.
+#[test]
+fn the_node_counts_are_charged_to_the_expression_budget() {
+    let mut g = followers_graph();
+    g.configure_expression_memory_limit(Some(64));
+    let error = try_exec_cypher(
+        &g,
+        "MATCH (f:F)-[:R]->(p:P) RETURN p.name AS n, count(f) AS c",
+    )
+    .err()
+    .expect("five key nodes cross a 64-byte cap");
+    assert_expression_cap(&error, 64);
 }
