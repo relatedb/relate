@@ -73,8 +73,9 @@ impl SnapshotContents {
         })
     }
 
-    /// Nodes for a Parquet id window. Missing ids are skipped, matching the
-    /// previous direct `node_at` loop.
+    /// Nodes for `ids`, ids the graph enumerated at `snapshot_ts`: an id
+    /// with no node at that timestamp breaks the enumeration's contract and
+    /// is refused, never skipped.
     pub(crate) fn nodes_in(
         graph: &dyn relate_engine_api::GraphExport,
         snapshot_ts: u64,
@@ -83,7 +84,9 @@ impl SnapshotContents {
         let mut nodes = Vec::new();
         for id in ids {
             let Some(n) = graph.node_at(*id, snapshot_ts) else {
-                continue;
+                return Err(Error::storage(format!(
+                    "node {id} enumerated at snapshot {snapshot_ts} is not readable"
+                )));
             };
             relate_core::validate_persisted_id(n.id, "node ID")?;
             nodes.push(n);
@@ -91,6 +94,7 @@ impl SnapshotContents {
         Ok(nodes)
     }
 
+    /// Relationships for `ids`, under [`nodes_in`](Self::nodes_in)'s contract.
     pub(crate) fn rels_in(
         graph: &dyn relate_engine_api::GraphExport,
         snapshot_ts: u64,
@@ -99,7 +103,9 @@ impl SnapshotContents {
         let mut rels = Vec::new();
         for id in ids {
             let Some(r) = graph.rel_at(*id, snapshot_ts) else {
-                continue;
+                return Err(Error::storage(format!(
+                    "relationship {id} enumerated at snapshot {snapshot_ts} is not readable"
+                )));
             };
             relate_core::validate_persisted_id(r.id, "relationship ID")?;
             relate_core::validate_persisted_id(r.start, "relationship start ID")?;

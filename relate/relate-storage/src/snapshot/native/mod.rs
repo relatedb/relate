@@ -77,11 +77,16 @@ impl Kind {
         ids
     }
 
+    /// The live ids at `ts`, strictly ascending: the planner, the layout and
+    /// every `partition_point` over them rely on that order, which the
+    /// engine's enumerators promise and this boundary states once.
     fn all_ids(self, graph: &dyn relate_engine_api::GraphExport, ts: u64) -> Vec<i64> {
-        match self {
+        let ids = match self {
             Self::Node => graph.all_node_ids_at(ts),
             Self::Rel => graph.all_rel_ids_at(ts),
-        }
+        };
+        debug_assert!(ids.is_sorted_by(|a, b| a < b), "live ids ascend strictly");
+        ids
     }
 
     fn loader(self) -> Loader {
