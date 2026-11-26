@@ -281,23 +281,16 @@ struct PreparedGraphType {
     purge: Vec<String>,
     derived: Vec<crate::graph_type::DerivedConstraint>,
     spec: crate::graph_type::GraphTypeSpec,
-    /// The rule-level delta of the SET (ADR-0667): the derived rules the
-    /// live constraints do not already hold (`created`) and the live rules
-    /// the new derivation retires (`dropped`) — what
-    /// `db.ontology.apply` reports. Matched by rule identity, so the
-    /// statement's mechanical purge-and-resync of unchanged rules counts
-    /// as neither.
-    delta: GraphTypeDelta,
     /// The live constraints under the statement's one captured snapshot:
-    /// the uncovered-independent and added-equivalent gates and the delta
-    /// read it inside prepare, and `db.ontology.apply`'s rename gate
-    /// reads it from here — one derivation per statement, never a
+    /// the uncovered-independent and added-equivalent gates read it inside
+    /// prepare, and `db.ontology.apply`'s rename gate and rule-level
+    /// delta read it from here — one derivation per statement, never a
     /// re-taken snapshot or a re-derived list between views.
     live: Vec<ConstraintDef>,
     /// The derived rules mapped to their catalog comparison shape: the
     /// uncovered-independent gate's coverage check reads it inside
-    /// prepare, the delta counts it, and `db.ontology.apply`'s rename
-    /// gate reads it from here — one mapping per statement.
+    /// prepare, and `db.ontology.apply`'s rename gate and rule-level
+    /// delta read it from here — one mapping per statement.
     defs: Vec<ConstraintDef>,
 }
 
@@ -336,7 +329,11 @@ pub(crate) fn set_current_graph_type_apply(
     let prepared = prepare_current_graph_type(graph, verb, body)?;
     reject_renamed_equivalent_constraints(&prepared.live, &prepared.defs)?;
     super::constraint_validation::validate_derived_constraints(graph, &prepared.derived)?;
-    let delta = prepared.delta;
+    // The rule-level delta (ADR-0667) derives from the one captured
+    // pair, matched by rule identity: the statement's mechanical
+    // purge-and-resync of unchanged rules counts as neither created
+    // nor dropped.
+    let delta = graph_type_delta(&prepared.live, &prepared.defs);
     commit_current_graph_type(graph, prepared)?;
     Ok(delta)
 }
@@ -390,7 +387,6 @@ fn prepare_current_graph_type(
         reject_added_equivalent_constraints(&live, verb_body, &merged)?;
     }
     reject_same_command_constraint_replacement(&before, &merged)?;
-    let delta = graph_type_delta(&live, &defs);
     Ok(PreparedGraphType {
         purge,
         derived,
@@ -398,7 +394,6 @@ fn prepare_current_graph_type(
         // already rejected -- never a lossy capture.
         spec: crate::graph_type::GraphTypeSpec::from_body(&merged)
             .map_err(|e| Error::semantic(e.to_string()))?,
-        delta,
         live,
         defs,
     })
