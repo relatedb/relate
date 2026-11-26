@@ -122,9 +122,10 @@ pub use self::show::{
 };
 pub use self::static_calls::validate_static_call_types;
 pub(crate) use self::static_types::validate_static_operator_types;
+pub(crate) use self::structure::validate_projection_names;
 pub use self::structure::{
     validate_count_subquery_union_shapes, validate_expr_traversal_bounds, validate_foreach_body,
-    validate_next_no_admin_commands, validate_projection_names, validate_relationship_uniqueness,
+    validate_next_no_admin_commands, validate_relationship_uniqueness,
     validate_shortest_path_mixing, validate_traversal_bounds, validate_union_columns,
     validate_use_placement,
 };

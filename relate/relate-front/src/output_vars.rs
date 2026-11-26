@@ -13,9 +13,7 @@ use relate_names::SmallName;
 
 use relate_parser::{Clause, Statement};
 
-use crate::ast::collect::{
-    bind_pattern_vars, is_updating_clause, projected_names, search_score_var,
-};
+use crate::ast::collect::{is_updating_clause, projected_names};
 use crate::show_columns::{catalog_output_names, is_catalog_clause};
 
 /// Simulates the column-name evolution through `stmt`'s own MATCH/WITH/
@@ -66,11 +64,16 @@ fn local_stage_output_vars(
         // binding clause voids it (`None`), a projecting clause sets it, and
         // a clause this stage ignores leaves it as it was.
         last_projection = match clause {
-            Clause::Match(mc) => {
-                bind_pattern_vars(&mc.pattern, &mut bound);
-                if let Some(sv) = search_score_var(mc) {
-                    bound.insert(sv.clone());
-                }
+            // The binding-only clauses ride the one scope-lifecycle fold
+            // ([`crate::call_scope::advance_scope`]): MATCH (pattern and
+            // SCORE variable), UNWIND, CREATE, MERGE, and a CALL
+            // subquery's exports all bind and void the projection.
+            Clause::Match(_)
+            | Clause::Unwind(_)
+            | Clause::Create(_)
+            | Clause::Merge(_)
+            | Clause::CallSubquery(_) => {
+                crate::call_scope::advance_scope(&mut bound, clause);
                 None
             }
             Clause::With(wc) => {
@@ -78,29 +81,12 @@ fn local_stage_output_vars(
                 bound = projected.clone();
                 Some(projected)
             }
-            Clause::Unwind(uw) => {
-                bound.insert(uw.alias.clone());
-                None
-            }
             Clause::Return(rc) => Some(projected_names(&rc.items, &bound)),
             // CIP-140/CIP-213: FINISH is always terminal (enforced
             // elsewhere) and exports nothing -- neither back into an
             // enclosing CALL's outer scope, nor (CIP-213) forward into a
             // following NEXT stage.
             Clause::Finish => Some(IdentHashSet::default()),
-            Clause::Create(cc) => {
-                bind_pattern_vars(&cc.pattern, &mut bound);
-                None
-            }
-            Clause::Merge(mc) => {
-                bind_pattern_vars(std::slice::from_ref(&mc.pattern), &mut bound);
-                None
-            }
-            Clause::CallSubquery(csq) => {
-                let exports = crate::call_scope::call_subquery_exports(csq, &bound);
-                bound.extend(exports);
-                None
-            }
             // A write clause after the last projection means the body does
             // not conclude with that projection: `WITH n DETACH DELETE n`
             // (the legacy importing-WITH idiom, ADR-0210) exports nothing,

@@ -6,7 +6,7 @@ use crate::ident_hash::IdentHashSet;
 use relate_names::SmallName;
 
 use relate_error::{EngineError, ErrorKind};
-use relate_parser::{Clause, SearchClause, SearchKind};
+use relate_parser::{Clause, MatchClause, SearchClause, SearchKind};
 
 use crate::ast::collect::{bind_pattern_vars, collect_expr_variables, search_score_var};
 use crate::ast::search_spec::{walk_search_spec, SearchSlot};
@@ -45,26 +45,28 @@ pub(crate) fn validate_search_clauses(clauses: &[Clause]) -> Result<(), EngineEr
             // SCORE-conflict checks both test against them), while
             // [`clause_introduced_names`] folds the pattern variables and the
             // SCORE variable together.
-            Clause::Match(mc) => match mc.search.as_ref() {
-                Some(search) => {
-                    let mut this_match_vars: IdentHashSet<SmallName> = IdentHashSet::default();
-                    bind_pattern_vars(&mc.pattern, &mut this_match_vars);
-                    validate_search_clause_rules(search, &this_match_vars, &scope)?;
-                    scope.extend(this_match_vars);
-                    // The SCORE conflict, checked where the scope lifecycle lives: after
-                    // this MATCH's own variables have entered the scope, one
-                    // `insert` decides the conflict (and binds on win).
-                    if let Some(sv) = search_score_var(mc) {
-                        if !scope.insert(sv.clone()) {
-                            return Err(EngineError::semantic(
-                                ErrorKind::VariableAlreadyDefined,
-                                format!("variable '{sv}' is already defined"),
-                            ));
-                        }
+            Clause::Match(
+                mc @ MatchClause {
+                    search: Some(search),
+                    ..
+                },
+            ) => {
+                let mut this_match_vars: IdentHashSet<SmallName> = IdentHashSet::default();
+                bind_pattern_vars(&mc.pattern, &mut this_match_vars);
+                validate_search_clause_rules(search, &this_match_vars, &scope)?;
+                scope.extend(this_match_vars);
+                // The SCORE conflict, checked where the scope lifecycle lives: after
+                // this MATCH's own variables have entered the scope, one
+                // `insert` decides the conflict (and binds on win).
+                if let Some(sv) = search_score_var(mc) {
+                    if !scope.insert(sv.clone()) {
+                        return Err(EngineError::semantic(
+                            ErrorKind::VariableAlreadyDefined,
+                            format!("variable '{sv}' is already defined"),
+                        ));
                     }
                 }
-                None => crate::call_scope::advance_scope(&mut scope, clause),
-            },
+            }
             clause => crate::call_scope::advance_scope(&mut scope, clause),
         }
     }
