@@ -179,8 +179,11 @@ const ZIP_OP: &str = "coll.zip()";
 
 /// `coll.zip(list1, list2, ...)` (CIP-274): zips two or more lists into a
 /// list of per-index lists, to the length of the longest input, padding
-/// missing positions with null. A null argument propagates null; a non-list
-/// argument is a type error.
+/// missing positions with null. A non-list argument is a type error and a
+/// null argument propagates null — but the type walk covers **every**
+/// argument first: `coll.zip([], null, false)` is the index-2 type error,
+/// never a null result short-circuiting past it (TCK `Zip lists; type
+/// errors compile time` @1.2).
 pub(crate) fn collection_zip(graph: &ExecGraph<'_>, vals: &[Value]) -> Result<Value> {
     if vals.len() < 2 {
         return Err(Error::syntax(format!(
@@ -190,14 +193,19 @@ pub(crate) fn collection_zip(graph: &ExecGraph<'_>, vals: &[Value]) -> Result<Va
         )));
     }
     let mut lists: Vec<Arc<Vec<Value>>> = Vec::with_capacity(vals.len());
+    let mut null_argument = false;
     for v in vals {
-        let Some(items) = list_arg(v.clone(), ZIP_OP)? else {
-            return Ok(Value::Null);
-        };
-        lists.push(items);
+        match list_arg(v.clone(), ZIP_OP)? {
+            Some(items) => lists.push(items),
+            None => null_argument = true,
+        }
     }
-    // The arity check above guarantees at least two list arguments, so the
-    // max is invariant-bound — expect, never a fabricated 0 default.
+    if null_argument {
+        return Ok(Value::Null);
+    }
+    // The arity check above guarantees at least two arguments and the
+    // null early-return kept every pushed entry a list, so the max is
+    // invariant-bound — expect, never a fabricated 0 default.
     let len = lists
         .iter()
         .map(|l| l.len())
