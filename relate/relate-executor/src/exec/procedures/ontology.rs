@@ -43,7 +43,7 @@ use crate::row::Row;
 
 use super::super::compose::{ComposeSource, Produced};
 use super::CallSpec;
-use relate_ir::CallArgs;
+use relate_ir::{CallArgs, Expr, YieldItems};
 
 /// The database every stored ontology belongs to (ADR-0121 §2) — the
 /// `database` payload the store-level redo ops carry.
@@ -323,11 +323,6 @@ pub(crate) fn ontology_get_source<'a>(
         optional,
         where_clause,
     } = call;
-    let columns: Vec<&'static str> = signature.returns.iter().map(|ret| ret.name).collect();
-    // The defaults handed to the composition's YIELD resolution; the
-    // one column the produced cells key on is bound below — 'static
-    // slices, pointer copies, never per-row work.
-    let defaults = columns.clone();
     // The effective document resolves once per clause execution, never
     // per produced row: the source constructs at this clause's own
     // execution point — after the clauses before it ran — and nothing
@@ -339,31 +334,33 @@ pub(crate) fn ontology_get_source<'a>(
     // The one declared return column, bound once at construction: the
     // registry signature's returns table is the row's one column — a
     // static fact of the registry row, never a per-row runtime index.
-    let column = *columns
-        .first()
-        .expect("the get signature declares its one return column");
-    Ok(ComposeSource::new(
-        &defaults,
+    Ok(compose_ontology_source(
+        signature,
         yield_items,
         optional,
         where_clause,
-        move |input| {
-            let format = format_arg(ctx, input, source, name)?;
-            let value = match &document {
-                None => Value::Null,
-                // A stored document that no longer decodes fails through
-                // the family's one stored-document error path — the same
-                // class and framing `apply` fails with (ADR-0667), never
-                // an argument error blaming the format argument.
-                Some(document) => Value::String(
-                    render_ontology_document(document.as_bytes(), format)
-                        .map_err(stored_document_error)?
-                        .into(),
-                ),
-            };
-            let mut row = BTreeMap::new();
-            row.insert(column.to_string(), value);
-            Ok(Produced::Rows(vec![row]))
+        move |columns| {
+            let column = *columns
+                .first()
+                .expect("the get signature declares its one return column");
+            move |input: &Row| {
+                let format = format_arg(ctx, input, source, name)?;
+                let value = match &document {
+                    None => Value::Null,
+                    // A stored document that no longer decodes fails through
+                    // the family's one stored-document error path — the same
+                    // class and framing `apply` fails with (ADR-0667), never
+                    // an argument error blaming the format argument.
+                    Some(document) => Value::String(
+                        render_ontology_document(document.as_bytes(), format)
+                            .map_err(stored_document_error)?
+                            .into(),
+                    ),
+                };
+                let mut row = BTreeMap::new();
+                row.insert(column.to_string(), value);
+                Ok(Produced::Rows(vec![row]))
+            }
         },
     ))
 }
@@ -387,44 +384,66 @@ pub(crate) fn ontology_apply_source<'a>(
         where_clause,
         ..
     } = call;
-    let columns: Vec<&'static str> = signature.returns.iter().map(|ret| ret.name).collect();
-    // The defaults handed to the composition's YIELD resolution; the
-    // same declared columns stay with the producer for the produced
-    // cells' keys (two 'static slices — pointer copies, never per-row
-    // work).
-    let defaults = columns.clone();
-    Ok(ComposeSource::new(
-        &defaults,
+    Ok(compose_ontology_source(
+        signature,
         yield_items,
         optional,
         where_clause,
-        move |_input| {
-            let ApplyOutcome {
-                ontology,
-                created,
-                dropped,
-                skipped,
-            } = exec_ontology_apply(ctx.graph)?;
-            let cells = [
-                Value::String(ontology),
-                Value::Int(created as i64),
-                Value::Int(dropped as i64),
-                Value::List(
-                    skipped
-                        .iter()
-                        .map(|report| Value::String(report.as_str().into()))
-                        .collect::<Vec<_>>()
-                        .into(),
-                ),
-            ];
-            let row: BTreeMap<String, Value> = columns
-                .iter()
-                .zip(cells)
-                .map(|(column, cell)| (column.to_string(), cell))
-                .collect();
-            Ok(Produced::Rows(vec![row]))
+        move |columns| {
+            move |_input: &Row| {
+                let ApplyOutcome {
+                    ontology,
+                    created,
+                    dropped,
+                    skipped,
+                } = exec_ontology_apply(ctx.graph)?;
+                let cells = [
+                    Value::String(ontology),
+                    Value::Int(created as i64),
+                    Value::Int(dropped as i64),
+                    Value::List(
+                        skipped
+                            .iter()
+                            .map(|report| Value::String(report.as_str().into()))
+                            .collect::<Vec<_>>()
+                            .into(),
+                    ),
+                ];
+                let row: BTreeMap<String, Value> = columns
+                    .iter()
+                    .zip(cells)
+                    .map(|(column, cell)| (column.to_string(), cell))
+                    .collect();
+                Ok(Produced::Rows(vec![row]))
+            }
         },
     ))
+}
+
+/// The source prelude both `db.ontology.*` row producers share (ADR-0667):
+/// the registry signature's declared return columns are the one column
+/// table — the defaults handed to the composition's YIELD resolution and
+/// the keys the produced cells land under. `bind` receives that table once
+/// per clause execution (a static fact of the registry row, never per-row
+/// work) and answers the one-per-row producer.
+fn compose_ontology_source<'a, P>(
+    signature: &'static crate::procedure_registry::ProcSignature,
+    yield_items: &YieldItems,
+    optional: bool,
+    where_clause: Option<&'a Expr>,
+    bind: impl FnOnce(Vec<&'static str>) -> P,
+) -> ComposeSource<'a>
+where
+    P: FnMut(&Row) -> Result<Produced> + 'a,
+{
+    let columns: Vec<&'static str> = signature.returns.iter().map(|ret| ret.name).collect();
+    ComposeSource::new(
+        &columns,
+        yield_items,
+        optional,
+        where_clause,
+        bind(columns.clone()),
+    )
 }
 
 /// `get`'s format argument decode (ADR-0667): absent or `null` is `yaml`,
