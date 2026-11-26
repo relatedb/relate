@@ -45,6 +45,7 @@ exec/clause_arms.rs::exec_merge # clause arm materializes its output rows; to be
 exec/clause_arms.rs::exec_remove # clause arm materializes its output rows; to be replaced by streaming
 exec/clause_arms.rs::exec_set # clause arm materializes its output rows; to be replaced by streaming
 exec/count_stats.rs::count_only_stats_result # bounded count-only result, one row per statement
+exec/seeded_count.rs::seeded_count_result # bounded count-only result, one row per body invocation (the ADR-0387 recognizer's answer, resolved names only)
 exec/stats_short_circuit.rs::stats_short_circuit # the one dispatch seam over the three statistics short-circuits, bounded by their own results (count-only: one row; label-set groups: ADR-0589; index aggregates: the final page of the charged group table, ADR-0611)
 exec/index_aggregates.rs::index_aggregates_result # the final page of the grouped answer, bounded by the charged first-seen group table (ADR-0611); the fold arm is one row
 exec/index_aggregates.rs::group_values # one row per distinct value, bounded by the charged first-seen group table (ADR-0611)

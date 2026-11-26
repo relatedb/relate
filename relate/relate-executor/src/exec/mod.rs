@@ -101,6 +101,9 @@ pub(crate) mod rider;
 pub(crate) mod scope;
 pub(crate) mod search;
 pub(crate) mod search_filters;
+mod seeded_count;
+#[cfg(test)]
+mod seeded_count_tests;
 pub(crate) mod shortest_eval;
 pub(crate) mod sink;
 mod stats_short_circuit;
