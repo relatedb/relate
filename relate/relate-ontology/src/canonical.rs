@@ -254,8 +254,10 @@ fn graft_extensions(map: &mut IndexMap<String, Value>, source: Option<&Value>, k
 /// The document's canonical value tree: the validated model re-emitted
 /// with only the schema's members, in the schema's member order, with
 /// the shorthand expanded and the flags moved into constraint entries.
-/// Infallible: the model is validated, so every member the builder
-/// reads is present and shaped.
+/// The model is validated, so every member the builder reads is present
+/// and shaped; the one failure left is a flag-derived constraint whose
+/// generated id collides with an explicit entry's
+/// ([`canonical_constraints`]).
 fn canonical_tree(doc: &OntologyDocument) -> Result<Value, OntologyError> {
     let mut root = IndexMap::new();
     set(&mut root, "schema", Value::String(doc.schema().to_owned()));
@@ -344,9 +346,9 @@ fn canonical_relationship(
 /// [`NodeType`] or a [`RelationshipType`], so a field added to one
 /// kind's element body joins the shared shape by construction.
 struct ElementBody<'a> {
-    /// The entry kind's own name — `node` or `relationship` — for the
-    /// element-level failures the shared body reports.
-    kind: &'static str,
+    /// The entry kind: names it in the element-level failures the shared
+    /// body reports and selects its closed extensions envelope key set.
+    kind: ElementKind,
     /// The entry's id in the document's map.
     key: &'a str,
     /// The entry's properties, in document order.
@@ -359,21 +361,47 @@ struct ElementBody<'a> {
     aliases: &'a [String],
     /// Informational URI pointing at an external definition.
     reference: Option<&'a str>,
+}
+
+/// The two element kinds a document carries — the one typed encoding of
+/// node-vs-relationship the shared element body reads, so the kind's
+/// word and its envelope key set cannot drift apart.
+#[derive(Debug, Clone, Copy)]
+enum ElementKind {
+    /// A node entry.
+    Node,
+    /// A relationship entry.
+    Relationship,
+}
+
+impl ElementKind {
+    /// The kind's word in element-level failures.
+    fn word(self) -> &'static str {
+        match self {
+            Self::Node => "node",
+            Self::Relationship => "relationship",
+        }
+    }
+
     /// The kind's closed extensions envelope key set.
-    envelope_keys: &'static [&'static str],
+    fn envelope_keys(self) -> &'static [&'static str] {
+        match self {
+            Self::Node => crate::validate::NODE_ENVELOPE_KEYS,
+            Self::Relationship => crate::validate::RELATIONSHIP_ENVELOPE_KEYS,
+        }
+    }
 }
 
 impl<'a> From<&'a NodeType> for ElementBody<'a> {
     fn from(entry: &'a NodeType) -> Self {
         Self {
-            kind: "node",
+            kind: ElementKind::Node,
             key: entry.key.as_str(),
             properties: &entry.properties,
             constraints: &entry.constraints,
             description: entry.description.as_deref(),
             aliases: &entry.aliases,
             reference: entry.reference.as_deref(),
-            envelope_keys: crate::validate::NODE_ENVELOPE_KEYS,
         }
     }
 }
@@ -381,14 +409,13 @@ impl<'a> From<&'a NodeType> for ElementBody<'a> {
 impl<'a> From<&'a RelationshipType> for ElementBody<'a> {
     fn from(entry: &'a RelationshipType) -> Self {
         Self {
-            kind: "relationship",
+            kind: ElementKind::Relationship,
             key: entry.key.as_str(),
             properties: &entry.properties,
             constraints: &entry.constraints,
             description: entry.description.as_deref(),
             aliases: &entry.aliases,
             reference: entry.reference.as_deref(),
-            envelope_keys: crate::validate::RELATIONSHIP_ENVELOPE_KEYS,
         }
     }
 }
@@ -418,7 +445,7 @@ fn graft_element_body(
     if !constraints.is_empty() {
         set(out, "constraints", Value::Object(constraints));
     }
-    graft_element_extensions(out, source, entry.envelope_keys);
+    graft_element_extensions(out, source, entry.kind.envelope_keys());
     set_str(out, "description", entry.description);
     set_list(out, "aliases", entry.aliases);
     set_str(out, "reference", entry.reference);
@@ -522,7 +549,7 @@ fn canonical_constraints(
                     "Ontology {} '{}' declares an explicit constraint whose \
                      id '{generated}' collides with the name a property's {} \
                      flag generates.",
-                    element.kind,
+                    element.kind.word(),
                     element.key,
                     kind.as_str().to_lowercase()
                 )));
