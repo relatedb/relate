@@ -140,15 +140,12 @@ enum NormTemporal {
         day: u32,
         time: NaiveTime,
     },
-    /// A zoned datetime: UTC instant plus zone.
-    DateTime {
-        utc: NaiveDateTime,
-        zone: ZoneId,
-    },
-    /// A far-year zoned datetime (ADR-0683): the same UTC instant plus
-    /// zone identity, over the wide i128 epoch nanos the civil wall clock
-    /// denotes.
-    CivilZoned {
+    /// A zoned datetime — either representation (ADR-0683): the wide UTC
+    /// instant in epoch nanoseconds plus zone identity, keyed from the one
+    /// derivation the ordering relations read
+    /// ([`Temporal::zoned_instant_identity`]), so a representation added
+    /// to the zoned partition can never fork the equivalence.
+    Zoned {
         instant: i128,
         zone: ZoneId,
     },
@@ -159,14 +156,26 @@ enum NormTemporal {
     },
 }
 
-/// Nanoseconds since midnight, mirroring `Temporal::compare`'s private
-/// `time_to_nanos`.
+/// Nanoseconds since midnight, mirroring core's temporal-internal
+/// `time_to_nanos` (whose signed UTC form, `utc_time_nanos`, is what the
+/// temporal relations rank by); the copy exists for crate visibility.
 fn time_to_nanos(t: NaiveTime) -> i64 {
     t.num_seconds_from_midnight() as i64 * 1_000_000_000 + t.nanosecond() as i64
 }
 
 fn norm_temporal(t: &Temporal) -> NormTemporal {
     match t {
+        // The zoned pair — either representation (ADR-0683) — keys on the
+        // one derivation the ordering relations read, in one arm, so the
+        // two halves of the partition can never fork the equivalence.
+        // The identity answers for exactly these variants (its doc states
+        // the invariant), so the expect states it, never fabricates.
+        Temporal::DateTime { .. } | Temporal::CivilZoned(_) => {
+            let (instant, zone) = t
+                .zoned_instant_identity()
+                .expect("the identity answers for exactly the zoned variants");
+            NormTemporal::Zoned { instant, zone }
+        }
         Temporal::Date(d) => NormTemporal::Date(*d),
         Temporal::CivilDate { year, month, day } => NormTemporal::CivilDate {
             year: *year,
@@ -189,16 +198,6 @@ fn norm_temporal(t: &Temporal) -> NormTemporal {
             month: *month,
             day: *day,
             time: *time,
-        },
-        Temporal::DateTime { utc, offset, zone } => NormTemporal::DateTime {
-            utc: *utc,
-            zone: ZoneId::of(zone.as_deref(), *offset),
-        },
-        // The instant is the fields' one derivation (ADR-0683) — the same
-        // value the ordering relations rank by.
-        Temporal::CivilZoned(fields) => NormTemporal::CivilZoned {
-            instant: fields.epoch_nanos(),
-            zone: ZoneId::of(fields.zone.as_deref(), fields.offset),
         },
         Temporal::Duration {
             months,
@@ -497,7 +496,7 @@ fn value_has_nan(v: &Value) -> bool {
 /// class: a **named-zone** `DateTime` (an IANA region) occurs anywhere
 /// in it — bare, or nested inside a list, map or vector. The two halves
 /// of a DST fall-back overlap are `=`-equal (one wall clock and zone)
-/// but key apart ([`NormTemporal::DateTime`] carries the instant plus
+/// but key apart ([`NormTemporal::Zoned`] carries the instant plus
 /// the zone), so an identity-keyed bucket — the property index's —
 /// cannot answer a `=` lookup for such a value: it would miss the
 /// partner a scan finds (the declared range index answers identity for

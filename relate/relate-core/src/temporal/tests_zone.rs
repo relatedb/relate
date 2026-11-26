@@ -1,6 +1,7 @@
 //! Zoned-datetime tests: IANA offset resolution, DST gaps and overlaps, and
 //! the offset/zone agreement rules.
 
+use std::cmp::Ordering;
 use std::collections::BTreeMap;
 
 use super::test_support::{component_map, naive_utc};

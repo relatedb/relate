@@ -6,7 +6,7 @@
 
 use chrono::{Datelike, NaiveDateTime, NaiveTime, Timelike};
 use relate::Temporal;
-use relate_core::temporal::{civil_epoch_days, civil_epoch_seconds, zone_region, CivilZonedFields};
+use relate_core::temporal::{civil_epoch_days, civil_epoch_seconds, ZonedParts};
 use relate_core::PointValue;
 
 use crate::dialect::Dialect;
@@ -82,8 +82,19 @@ pub(crate) fn temporal_pack(t: &Temporal, dialect: Dialect) -> Result<Pack, Stri
                 ],
             }
         }
-        Temporal::DateTime { utc, offset, zone } => datetime_pack(*utc, *offset, zone, dialect)?,
-        Temporal::CivilZoned(fields) => civil_zoned_pack(fields, dialect)?,
+        // Both zoned representations (ADR-0683) emit through the one
+        // packer, reading the engine's zoned facts — so no surface caller
+        // reassembles what the engine's zoned view owns. `zoned_parts`
+        // answers for exactly the two variants this arm matched (the
+        // engine's one `kind_key` match keeps the two sets identical), so
+        // the `Some` is the arm's own condition, stated rather than
+        // re-derived.
+        Temporal::DateTime { .. } | Temporal::CivilZoned(_) => {
+            let parts = t
+                .zoned_parts()
+                .expect("the arm's variants are exactly the ones zoned_parts answers for");
+            zoned_pack(parts, dialect)?
+        }
         Temporal::Duration {
             months,
             days,
@@ -122,37 +133,38 @@ pub(crate) fn point_pack(p: &PointValue) -> Pack {
     }
 }
 
-/// The four DateTime structures: offset-only zones carry the offset, IANA
-/// regions the zone id (the engine's `zone_region` decides); the legacy
-/// forms carry the local wall clock, the UTC forms the UTC instant. The
-/// UTC forms apply when the `utc` patch was negotiated or the connection
-/// speaks 5.x (ADR-0329, ADR-0484 decision 7) — the codec's one predicate,
-/// both axes. Only the tag depends on both axes — the exhaustive 4-arm
-/// match derives it alone — while the seconds read the UTC axis once and
-/// the `tz` field the region axis once.
-fn datetime_pack(
-    utc: NaiveDateTime,
-    offset: i32,
-    zone: &Option<String>,
-    dialect: Dialect,
-) -> Result<Pack, String> {
+/// The DateTime structure for either zoned representation (ADR-0683),
+/// from the engine's one zoned view ([`ZonedParts`]): the already-classified
+/// region decides offset-only vs zone id, and the dialect's UTC axis
+/// decides the tag — the legacy forms carry the local wall clock, the UTC
+/// forms the UTC instant. The instant arrives as wide epoch nanoseconds and
+/// is split here, so no caller re-does the flooring: the wall clock is the
+/// instant moved by the whole-second offset, exact in `i128`, and a
+/// component outside `i64` is the out-of-range failure `fit` reports.
+fn zoned_pack(parts: ZonedParts<'_>, dialect: Dialect) -> Result<Pack, String> {
+    let ZonedParts {
+        instant: instant_nanos,
+        offset,
+        region,
+    } = parts;
     let utc_structures = dialect.utc_datetime_structures();
-    let region = zone_region(zone.as_deref());
-    let (utc_seconds, nanos) = epoch_parts(utc);
     let tag = match (region, utc_structures) {
         (None, false) => DATE_TIME,
         (Some(_), false) => DATE_TIME_ZONE_ID,
         (None, true) => DATE_TIME_UTC,
         (Some(_), true) => DATE_TIME_ZONE_ID_UTC,
     };
+    let per_second = i128::from(NANOS_PER_SECOND);
+    let (instant_seconds, nanos) = (
+        instant_nanos.div_euclid(per_second),
+        instant_nanos.rem_euclid(per_second),
+    );
     // The legacy structures carry the local wall clock read as UTC; the
     // UTC structures carry the UTC instant itself.
     let seconds = if utc_structures {
-        utc_seconds
+        instant_seconds
     } else {
-        utc_seconds
-            .checked_add(offset.into())
-            .ok_or_else(|| out_of_range(tag))?
+        instant_seconds + i128::from(offset)
     };
     // Offset-only zones carry the offset, IANA regions the zone id.
     let tz = match region {
@@ -161,38 +173,10 @@ fn datetime_pack(
     };
     Ok(Pack::Struct {
         tag,
-        fields: vec![Pack::Int(seconds), Pack::Int(nanos), tz],
-    })
-}
-
-/// The far-year zoned datetime's Bolt structure (ADR-0683): the same
-/// fields [`datetime_pack`] emits for an offset-only zone — seconds, the
-/// wall clock's nanos, the offset — over the wide day arithmetic. The zone
-/// is always offset-only (`Z` or a fixed/prefixed spelling; the parser
-/// rejects a named zone at a far year), so the zone-id structure never
-/// arises here.
-fn civil_zoned_pack(fields: &CivilZonedFields, dialect: Dialect) -> Result<Pack, String> {
-    let utc_structures = dialect.utc_datetime_structures();
-    let local_seconds = civil_epoch_seconds(fields.year, fields.month, fields.day, fields.time);
-    let utc_seconds = local_seconds - i128::from(fields.offset);
-    let tag = if utc_structures {
-        DATE_TIME_UTC
-    } else {
-        DATE_TIME
-    };
-    // The legacy structure carries the local wall clock read as UTC; the
-    // UTC structure the instant itself — [`datetime_pack`]'s rule.
-    let seconds = if utc_structures {
-        utc_seconds
-    } else {
-        local_seconds
-    };
-    Ok(Pack::Struct {
-        tag,
         fields: vec![
             Pack::Int(fit(tag, seconds)?),
-            Pack::Int(fields.time.nanosecond().into()),
-            Pack::Int(fields.offset.into()),
+            Pack::Int(fit(tag, nanos)?),
+            tz,
         ],
     })
 }
