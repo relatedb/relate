@@ -91,6 +91,7 @@ mod match_shape_validation;
 mod misc_tail_forms;
 mod not_parenthesized_operand;
 mod notifications;
+mod order_by_id_scan_order;
 mod order_by_top_k_bounds;
 mod parameter_missing;
 mod parquet_wide_format_facade;
