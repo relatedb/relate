@@ -39,22 +39,25 @@ impl<'e> FoldedGroup<'e> {
 }
 
 /// Where an aggregate call's value comes from: the group's resolved
-/// accumulators, or — in the discovery pass that finds the call sites the
-/// accumulators are built for — nowhere (the call is recorded and reads as
-/// null).
+/// accumulators plus the `seed` row a non-aggregate leaf is asked about,
+/// or — in the discovery pass that finds the call sites the accumulators
+/// are built for — nowhere (the call is recorded and reads as null, and
+/// there is no seed row).
 #[derive(Clone, Copy)]
 enum AggSource<'a, 'e> {
-    Folded(&'a FoldedGroup<'e>),
+    Folded {
+        folded: &'a FoldedGroup<'e>,
+        seed: Option<&'a Row>,
+    },
     Discover(&'a RefCell<Vec<&'e Expr>>),
 }
 
-/// The two scopes one aggregation evaluation reads, bundled so they travel
-/// together through the recursion: the source of every aggregate call's
-/// value, and the `seed` row a non-aggregate leaf is asked about.
+/// The scope one aggregation evaluation reads, bundled so it travels
+/// through the recursion: the source of every aggregate call's value and,
+/// for a folded group, the seed row a non-aggregate leaf is asked about.
 #[derive(Clone, Copy)]
 pub(crate) struct AggScope<'a, 'e> {
     source: AggSource<'a, 'e>,
-    seed: Option<&'a Row>,
 }
 
 impl<'a, 'e> AggScope<'a, 'e> {
@@ -69,8 +72,7 @@ impl<'a, 'e> AggScope<'a, 'e> {
     /// aliases shadow.
     pub(crate) fn of_group(folded: &'a FoldedGroup<'e>, seed: Option<&'a Row>) -> Self {
         Self {
-            source: AggSource::Folded(folded),
-            seed,
+            source: AggSource::Folded { folded, seed },
         }
     }
 
@@ -78,14 +80,22 @@ impl<'a, 'e> AggScope<'a, 'e> {
     pub(super) fn discovering(found: &'a RefCell<Vec<&'e Expr>>) -> Self {
         Self {
             source: AggSource::Discover(found),
-            seed: None,
+        }
+    }
+
+    /// The row a non-aggregate leaf is asked about; the discovery pass has
+    /// none.
+    fn seed(&self) -> Option<&'a Row> {
+        match self.source {
+            AggSource::Folded { seed, .. } => seed,
+            AggSource::Discover(_) => None,
         }
     }
 
     /// The value of the aggregate call at `call`, or its recording.
     fn aggregate_call(&self, call: &'e Expr) -> Result<Value> {
         match self.source {
-            AggSource::Folded(folded) => folded.value(call),
+            AggSource::Folded { folded, .. } => folded.value(call),
             AggSource::Discover(found) => {
                 found.borrow_mut().push(call);
                 Ok(Value::Null)
@@ -179,7 +189,7 @@ pub(crate) fn agg_eval<'e>(
     expr: &'e Expr,
     params: &BTreeMap<String, Value>,
 ) -> Result<Value> {
-    let seed = scope.seed;
+    let seed = scope.seed();
     match expr {
         Expr::CountStar => scope.aggregate_call(expr),
         Expr::Function { name, .. } => {
@@ -287,7 +297,7 @@ fn agg_eval_compound<'e>(
     params: &BTreeMap<String, Value>,
 ) -> Result<Value> {
     let mut children = Vec::new();
-    let prefix = fresh_prefix(graph, scope.seed, expr);
+    let prefix = fresh_prefix(graph, scope.seed(), expr);
     let rebuilt = bind_enclosing_children(expr, &prefix, &mut children);
     agg_eval_combinator(graph, scope, &children, params, || rebuilt)
 }
@@ -304,7 +314,7 @@ fn agg_eval_combinator<'e, S: AsRef<str>>(
     params: &BTreeMap<String, Value>,
     rebuild: impl FnOnce() -> Expr,
 ) -> Result<Value> {
-    let mut row = scope.seed.cloned().unwrap_or_default();
+    let mut row = scope.seed().cloned().unwrap_or_default();
     for (name, child) in children {
         row.insert(name.as_ref().into(), agg_eval(graph, scope, child, params)?);
     }
