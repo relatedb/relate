@@ -260,7 +260,7 @@ fn profile_flags_a_ten_x_estimate_skew_with_the_typed_warning() {
     // The scan: estimated at the label count (25), one actual row — a
     // 25.0x overshoot flagged by the typed warning.
     let scan = common::find_node(tree, "NodeByLabelScan").expect("the scan");
-    assert_eq!(scan.estimated_rows, Some(25), "{tree:?}");
+    assert_eq!(scan.estimated_rows(), Some(25), "{tree:?}");
     let scan_metrics = scan.metrics.expect("the scan's metrics");
     assert_eq!(scan_metrics.rows, 1, "{scan_metrics:?}");
     assert_eq!(

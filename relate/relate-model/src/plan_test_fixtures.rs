@@ -87,6 +87,11 @@ pub(crate) fn plan_seek_wire_node(
         plan_keys::ESTIMATED_ROWS.to_string(),
         CypherValue::Int(estimated_rows),
     );
+    // The estimate and its ladder level ride together (ADR-0708).
+    args.insert(
+        plan_keys::ESTIMATE_PROVENANCE.to_string(),
+        CypherValue::Str(crate::wire::EstimateProvenance::Measured.as_str().into()),
+    );
     node
 }
 

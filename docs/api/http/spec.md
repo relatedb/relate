@@ -727,7 +727,9 @@ de-chunk the frames first, and inflate when gzip was negotiated.
   `arguments` carries the engine's own args map as-is — the richer internal
   form: `Id` (the pre-order operator number), `Details` (the one-line
   details string), `EstimatedRows` (an integer on children; on the root the
-  Neo4j-facing float the decoration writes, ADR-0357), the PROFILE metric
+  Neo4j-facing float the decoration writes, ADR-0357), `EstimateProvenance`
+  (`measured`, `sampled`, `statistic` or `defaulted`: the planner ladder level behind the
+  estimate, present exactly when `EstimatedRows` is, ADR-0708), the PROFILE metric
   entries (`Rows`, `TimeNs`, `DbHits`, `MemoryBytes`, `ExpressionBuiltBytes` —
   Neo4j's own
   `arguments` keeps its `Rows`/`DbHits` there too), the expression-memo

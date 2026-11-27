@@ -37,6 +37,10 @@ The cursor adds the Neo4j driver's `single()`,
 resolved namespace, query type, bookmark, timings, notifications, plan)
 and `graph()`.
 
+Each `plan` node carries `estimated_rows` and `estimate_provenance`
+(`measured`, `sampled`, `statistic` or `defaulted`; ADR-0708) — a `defaulted` estimate is
+the planner's guess, not a measurement.
+
 A `plan` tree for a seek-started `MATCH` nests display-only fused children
 (ADR-0622): ordinary `children` entries, never executed operators, with no
 rows/time/memory of their own (the parent's totals stand). A batched

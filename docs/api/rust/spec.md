@@ -1446,7 +1446,7 @@ The plan representation is the `PlanNode` tree:
   the parts' pipelines as children, `Next` above chained `NEXT` stages.
   A planned write leaves the graph untouched, like `EXPLAIN`; a statement
   that cannot be planned fails with the planner's typed error.
-- `PlanNode { operator, details, identifiers, children, estimated_rows, id, metrics }` —
+- `PlanNode { operator, details, identifiers, children, estimate, id, metrics }` —
   operator names follow the Neo4j vocabulary where the mechanism has an
   analog (`ProduceResults`, `Expand`, `EagerAggregation`, `Union`), this
   engine's own names otherwise (`VectorSearchMatch`, `Catalog`). Each
@@ -1467,10 +1467,13 @@ The plan representation is the `PlanNode` tree:
   clause: the bound is per row) with no count of its own — an
   aggregation names its grouping keys, a
   `Create`/`Merge` carries its
-  pattern text. `estimated_rows` is filled at tree construction from the
-  store's cardinality hints (ADR-0218) — what they offer honestly (a
-  single-label scan's label row count, a single typed relationship's
-  type count), `None` where no signal covers the operator; `metrics`
+  pattern text. `estimate` (`Option<PlanEstimate { rows, provenance }>`, `estimated_rows()` reads the rows) is filled at tree construction from the
+  planner's own pricing ladder (ADR-0708) — the rows of a single pattern's
+  start element (an index seek's count, a label's rows, a sampled or
+  default-selectivity estimate), `None` where the ladder only ranks the
+  element and for a multi-pattern clause; `provenance`
+  (`EstimateProvenance`: `measured`, `sampled`, `statistic`, `defaulted`) names the
+  ladder level, held with the rows as one fact; `metrics`
   (`Option<ClauseMetrics { rows, db_hits, memory_bytes, expression_built_bytes,
   time_ns, reads, start, phases, batched, zone_skips, frontier, frontier_decline,
   memo, memo_kinds, intx }>` — `reads` is the

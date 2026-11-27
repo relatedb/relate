@@ -26,7 +26,8 @@ pub(super) struct ClauseNode {
     pub(super) operator: ClauseOperator,
     pub(super) details: String,
     pub(super) identifiers: Vec<String>,
-    pub(super) estimated_rows: Option<u64>,
+    /// The MATCH estimate and its ladder level (ADR-0708).
+    pub(super) estimate: Option<super::estimate::PlanEstimate>,
     pub(super) warnings: Vec<PlanWarning>,
     pub(super) notifications: Vec<Notification>,
     /// The store's active pattern-engine rung (LABS-1117), set on a
@@ -46,7 +47,7 @@ impl ClauseNode {
             operator: operator.into(),
             details,
             identifiers,
-            estimated_rows: None,
+            estimate: None,
             warnings: Vec::new(),
             notifications: Vec::new(),
             pattern_engine: None,
@@ -135,11 +136,7 @@ pub(super) fn clause_node(clause: &Clause, stats: &dyn PlanStats) -> ClauseNode 
             }
             ClauseNode {
                 fused,
-                estimated_rows: super::subject::match_estimate(
-                    patterns,
-                    stats,
-                    seek.as_ref().and_then(|seek| seek.rows),
-                ),
+                estimate: super::estimate::match_estimate(patterns, where_clause.as_ref(), stats),
                 warnings: super::warning::match_warnings(
                     patterns,
                     where_clause.as_ref(),

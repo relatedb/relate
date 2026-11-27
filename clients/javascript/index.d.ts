@@ -126,12 +126,17 @@ export interface PlanActual {
   start: { element: number; backward: boolean; reason: PlanStartReason } | null;
 }
 
+/** The planner ladder level behind a plan node's estimate (ADR-0708). */
+export type EstimateProvenance = "measured" | "sampled" | "statistic" | "defaulted";
+
 /** One operator of a `relate.plan/v1` document (LABS-418, ADR-0381). */
 export interface PlanNode {
   operator: string;
   details: string;
   identifiers: string[];
   estimated_rows: number | null;
+  /** The planner ladder level behind `estimated_rows` (ADR-0708); null exactly when it is. */
+  estimate_provenance: EstimateProvenance | null;
   actual: PlanActual | null;
   children: PlanNode[];
   /** The operator's remedy-bearing notifications (ADR-0363), joined by id. */

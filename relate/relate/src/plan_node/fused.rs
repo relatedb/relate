@@ -93,19 +93,13 @@ pub(super) fn breakdown(
     let mut rows = seek.rows.map(u128::from);
     for (hop, rel) in pattern.rels.iter().enumerate() {
         let estimated_rows = rows.map(|r| {
-            // The one u128→u64 saturation: clamp, then convert — never a
-            // silent `unwrap_or` that hides the width policy.
-            u64::try_from(
-                apply_degree(
-                    r,
-                    &pattern.nodes[hop],
-                    rel,
-                    seed_on_rel_start(rel, false),
-                    stats,
-                )
-                .min(u128::from(u64::MAX)),
-            )
-            .expect("clamped to u64")
+            super::estimate::clamp_rows(apply_degree(
+                r,
+                &pattern.nodes[hop],
+                rel,
+                seed_on_rel_start(rel, false),
+                stats,
+            ))
         });
         rows = estimated_rows.map(u128::from);
         hops.push(HopStep {
@@ -140,8 +134,10 @@ pub(super) fn build_children(
     // estimate and the step's own measured pair (the seek's, never a
     // hop's) are the only facts the kinds differ in.
     let mut step = |operator: &str, details: String, rows: Option<u64>, metrics| {
+        // The seek's count is a measurement, and the hop steps chain off
+        // it (ADR-0708): every fused step's provenance is the start's.
         let mut node = PlanNode::new(operator, details, Vec::new(), Vec::new())
-            .with_estimated_rows(rows)
+            .with_estimate_of(rows.map(super::estimate::PlanEstimate::measured))
             .with_fused(parent_id, metrics);
         node.id = cursor.take_id();
         node
@@ -207,7 +203,7 @@ mod tests {
         let seek_child = &children[0];
         assert_eq!(seek_child.operator, "NodeIndexSeekByRange");
         assert_eq!(seek_child.details, "RANGE INDEX n:User(age) WHERE age > 5");
-        assert_eq!(seek_child.estimated_rows, Some(5));
+        assert_eq!(seek_child.estimated_rows(), Some(5));
         assert_eq!(
             seek_child.fused(),
             Some(FusedChild {
@@ -219,7 +215,7 @@ mod tests {
         let hop0 = &children[1];
         assert_eq!(hop0.operator, "Expand");
         assert_eq!(hop0.details, "(n:User)-[:LINKS]->(m:User)");
-        assert_eq!(hop0.estimated_rows, Some(5), "the ladder's carry-through");
+        assert_eq!(hop0.estimated_rows(), Some(5), "the ladder's carry-through");
         assert_eq!(
             hop0.fused(),
             Some(FusedChild {

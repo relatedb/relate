@@ -217,7 +217,7 @@ pub(super) fn part_tree(
             facts.identifiers,
             Vec::new(),
         )
-        .with_estimated_rows(facts.estimated_rows)
+        .with_estimate_of(facts.estimate)
         .with_warnings(facts.warnings)
         .with_metrics(
             metrics
@@ -232,7 +232,7 @@ pub(super) fn part_tree(
         // metrics through the one derivation helper — the same 10x
         // policy the ratio cell's warning marker reads.
         if let Some(miss) =
-            warning::estimation_miss_warning(node.estimated_rows, node.metrics.map(|m| m.rows))
+            warning::estimation_miss_warning(node.estimated_rows(), node.metrics.map(|m| m.rows))
         {
             node.warnings.push(miss);
         }
@@ -240,7 +240,7 @@ pub(super) fn part_tree(
         // means: the data-flow child is the `chain` node, and reading it
         // by name here keeps the eager-buffer notification independent of
         // the children vector's position.
-        let input_rows = chain.as_ref().and_then(|child| child.estimated_rows);
+        let input_rows = chain.as_ref().and_then(|child| child.estimated_rows());
         // The facts bundle is consumed field by field — nothing is taken
         // through a `&mut` escape: the notifications move out here and
         // are staged at the loop's end.

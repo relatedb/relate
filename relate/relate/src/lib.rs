@@ -45,7 +45,8 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 pub use plan_node::{
-    ChildRole, ClauseMetrics, FusedChild, FusedChildMetrics, PlanArtifacts, PlanNode, PlanWarning,
+    ChildRole, ClauseMetrics, FusedChild, FusedChildMetrics, PlanArtifacts, PlanEstimate, PlanNode,
+    PlanWarning,
 };
 pub use relate_core::{
     node_element_id, parse_node_element_id, parse_rel_element_id, rel_element_id,
@@ -152,7 +153,7 @@ pub use relate_executor::REARRIVAL_WORK_BUDGET;
 /// shares.
 pub use relate_model::wire::{
     notification_to_neo4j_json, notification_to_wire_json, notifications_to_wire_json,
-    Notification, NotificationCategory, NotificationKind, NotificationSeverity,
+    EstimateProvenance, Notification, NotificationCategory, NotificationKind, NotificationSeverity,
 };
 pub use relate_planner::QueryType;
 // LABS-1120: the plan-cache outcome rides the result header — the one

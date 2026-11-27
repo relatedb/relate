@@ -13,6 +13,10 @@ pub const CHILDREN: &str = "children";
 pub const ID: &str = "Id";
 pub const DETAILS: &str = "Details";
 pub const ESTIMATED_ROWS: &str = "EstimatedRows";
+/// Which planner ladder level produced `EstimatedRows` (ADR-0708): one of
+/// [`EstimateProvenance::NAMES`](crate::wire::EstimateProvenance::NAMES). Emitted exactly when `EstimatedRows` is, never
+/// alone. The one place the key (and its siblings in ADR-0708) are named.
+pub const ESTIMATE_PROVENANCE: &str = "EstimateProvenance";
 /// The fused parent operator's `Id` (virtual plan operators) — present
 /// exactly on a fused virtual child: a display-only breakdown step of its
 /// fused parent operator, never an executed one. The key's presence IS

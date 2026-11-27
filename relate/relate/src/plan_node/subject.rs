@@ -17,14 +17,11 @@
 
 use std::borrow::Cow;
 
-use relate_ir::{
-    BinaryOp, Direction, Expr, LabelExpr, NodePattern, PathPattern, PatternElement, RelPattern,
-};
+use relate_ir::{BinaryOp, Direction, Expr, NodePattern, PathPattern, PatternElement, RelPattern};
 use relate_names::SmallName;
 use relate_planner::where_conjuncts_of;
 
 use super::seek::IndexSeek;
-use crate::stats::PlanStats;
 
 /// The MATCH subject: the operator a pattern set lowers to and its
 /// details text. A lone node with no relationships is a scan (it names
@@ -273,79 +270,6 @@ pub(super) fn pattern_texts(patterns: &[PathPattern]) -> String {
         .join(", ")
 }
 
-/// The cardinality estimate for a MATCH's subject from ADR-0218
-/// `PatternStats` — only what the stats offer honestly: an index-backed
-/// start's own count (`seek_rows`, ADR-0486 — the narration and the
-/// estimate gate together, so a narrated seek is never priced at
-/// anything but the seek's count; the per-row keyed lookup of LABS-1083
-/// narrates without a count, so the estimate falls through to the
-/// fused paths below), a single-label scan's label row count
-/// — the scan-then-filter reality a fused operator without a serving
-/// index pays — and a single typed relationship's type row count when
-/// both endpoints are unfiltered. `None` everywhere else (a multi-pattern
-/// cartesian, a multi-label node, a quantified path — no signal covers
-/// those).
-pub(super) fn match_estimate(
-    patterns: &[PathPattern],
-    stats: &dyn PlanStats,
-    seek_rows: Option<u64>,
-) -> Option<u64> {
-    // The index-backed start's own count (ADR-0486): the same `Option`
-    // that narrates the seek prices it.
-    if let Some(rows) = seek_rows {
-        return Some(rows);
-    }
-    // One decomposition per function: the single pattern destructured
-    // once at the top, the scan shape read off it through `lone_node`
-    // (the shape half of `lone_node_of`, whose other callers hold no
-    // other need for the single pattern).
-    let [single] = patterns else {
-        return None;
-    };
-    if let Some(node) = lone_node(single) {
-        // One static label (the `labels` list is its retained conjunction,
-        // however the label expression spelled it): the stats count it.
-        // A conjunction of several labels has no count of its own.
-        if single_static_label(node).is_some() {
-            // The indexed point read and the range window narrate as the
-            // seek above, whose own rows are this node's estimate.
-            // Without one, the fused scan-then-filter operator really
-            // scans the whole label before filtering — the label count IS
-            // the honest estimate, and the est-vs-actual ⚠ it fires on a
-            // point lookup is the missing-index diagnosis (the LABS-328
-            // class), pairing with the scan warnings.
-            return stats.label_rows(&node.labels[0]);
-        }
-        return None;
-    }
-    // A single relationship between two unfiltered endpoints: the
-    // relationship type's row count is the pattern's row count.
-    if single.where_clause.is_some() {
-        return None;
-    }
-    let [start, end] = &single.nodes[..] else {
-        return None;
-    };
-    let [rel] = &single.rels[..] else {
-        return None;
-    };
-    if !node_is_unfiltered(start)
-        || !node_is_unfiltered(end)
-        || rel.var_length
-        || rel.quantified
-        || rel.properties.is_some()
-        || rel.where_clause.is_some()
-        || rel.types.len() != 1
-        || !rel
-            .type_expr
-            .as_ref()
-            .is_none_or(LabelExpr::is_static_disjunction)
-    {
-        return None;
-    }
-    stats.rel_type_rows(&rel.types[0])
-}
-
 /// A pattern's lone node, when the pattern is a single node with no
 /// relationships — the scan shape.
 pub(super) fn lone_node(pattern: &PathPattern) -> Option<&NodePattern> {
@@ -354,16 +278,6 @@ pub(super) fn lone_node(pattern: &PathPattern) -> Option<&NodePattern> {
     } else {
         None
     }
-}
-
-/// A node endpoint the stats say nothing about — no labels, no label
-/// expression, no properties, no predicates: the estimate's own shape,
-/// deliberately narrower than [`is_all_nodes_scan`]'s classic arm (a
-/// label expression, however it spells, is a predicate the estimate
-/// must not ignore — the fold's bare `Or` never widens an endpoint's
-/// count, LABS-1083 review).
-fn node_is_unfiltered(node: &NodePattern) -> bool {
-    is_label_less(node) && node.properties.is_none() && node.where_clause.is_none()
 }
 
 /// One hop's text: `(start)-[:R]->(end)` — the fused breakdown's per-hop
@@ -510,10 +424,7 @@ fn push_quantifier(text: &mut String, min: u32, max: Option<u32>) {
 mod tests {
     use std::collections::BTreeMap;
 
-    use relate_names::NamedToken;
-    use relate_planner::PatternStats;
-
-    use super::super::fixtures::{compact, comparison, node, rel, rows_of, seeking};
+    use super::super::fixtures::{compact, comparison, node, rel, seeking};
     use super::super::seek::index_seek;
     use super::*;
 
@@ -675,89 +586,6 @@ mod tests {
         assert_eq!(pattern_text(&quantified), "p = (a:A)-[:R*1..2]->(:B)");
     }
 
-    /// Stats offering exactly one label count and one rel-type count.
-    struct Counting {
-        labels: Vec<(&'static str, u64)>,
-        rels: Vec<(&'static str, u64)>,
-    }
-
-    impl PlanStats for Counting {
-        fn has_property_index(&self) -> bool {
-            false
-        }
-        fn range_indexed_properties(&self) -> Vec<crate::stats::RangeIndexedProperty> {
-            Vec::new()
-        }
-    }
-
-    impl PatternStats for Counting {
-        // The fixture tables are String literals; the name-domain
-        // parameters compare by text.
-        fn label_rows(&self, (label, _): &NamedToken) -> Option<u64> {
-            rows_of(&self.labels, label)
-        }
-        fn equality_rows(
-            &self,
-            _: &NamedToken,
-            _: &NamedToken,
-            _: &relate_ir::Expr,
-        ) -> Option<u64> {
-            None
-        }
-        fn contains_rows(
-            &self,
-            _: &NamedToken,
-            _: &NamedToken,
-            _: &relate_ir::Expr,
-        ) -> Option<relate_planner::ContainsCount> {
-            None
-        }
-        fn rel_type_rows(&self, (rel_type, _): &NamedToken) -> Option<u64> {
-            self.rels
-                .iter()
-                .find(|(t, _)| rel_type == *t)
-                .map(|(_, rows)| *rows)
-        }
-    }
-
-    #[test]
-    fn estimates_come_from_the_stats_honestly() {
-        let stats = Counting {
-            labels: vec![("Person", 2)],
-            rels: vec![("KNOWS", 3)],
-        };
-        // A single-label scan: the label's row count.
-        let scan = compact(vec![node(Some("n"), &["Person"])], Vec::new());
-        assert_eq!(match_estimate(&[scan], &stats, None), Some(2));
-        // A single typed relationship between bare endpoints.
-        let expand = compact(
-            vec![node(None, &[]), node(None, &[])],
-            vec![rel(&["KNOWS"], 1, None)],
-        );
-        assert_eq!(match_estimate(&[expand], &stats, None), Some(3));
-        // A labeled endpoint narrows past the type count: no signal.
-        let narrowed = compact(
-            vec![node(None, &["Person"]), node(None, &[])],
-            vec![rel(&["KNOWS"], 1, None)],
-        );
-        assert_eq!(match_estimate(&[narrowed], &stats, None), None);
-        // A quantified path's row count is not the rel count: None.
-        let quantified = compact(
-            vec![node(None, &[]), node(None, &[])],
-            vec![rel(&["KNOWS"], 1, Some(2))],
-        );
-        assert_eq!(match_estimate(&[quantified], &stats, None), None);
-        // Two patterns: a cartesian — None.
-        let pair = vec![
-            compact(vec![node(Some("a"), &["Person"])], Vec::new()),
-            compact(vec![node(Some("b"), &["Person"])], Vec::new()),
-        ];
-        assert_eq!(match_estimate(&pair, &stats, None), None);
-        // A label the stats do not count: None, never zero.
-        let unknown = compact(vec![node(None, &["City"])], Vec::new());
-        assert_eq!(match_estimate(&[unknown], &stats, None), None);
-    }
-
     /// A multi-element pattern keeps its pattern text after the seek
     /// line (ADR-0486) — the hops the fused operator still walks — and
     /// the estimate is the seek's own count, where the fused `Expand`
@@ -779,7 +607,7 @@ mod tests {
                 "RANGE INDEX n:User(age) WHERE age > 5, (n:User)-[:LINKS]->(m:User)".to_string()
             )
         );
-        assert_eq!(match_estimate(&patterns, &stats, seek.rows), Some(5));
+        assert_eq!(seek.rows, Some(5), "the seek's own count");
         // An OPTIONAL MATCH wraps the seek's name the fused form's way.
         assert_eq!(
             match_subject(&patterns, true, Some(&seek)).0,

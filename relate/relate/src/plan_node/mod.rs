@@ -13,6 +13,7 @@
 //! form (ADR-0345).
 
 mod clause;
+mod estimate;
 #[cfg(test)]
 mod fixtures;
 mod fused;
@@ -24,6 +25,7 @@ mod subject;
 mod tree;
 mod warning;
 
+pub use estimate::PlanEstimate;
 pub use fused::{FusedChild, FusedChildMetrics};
 pub use warning::PlanWarning;
 
@@ -53,11 +55,11 @@ pub struct PlanNode {
     pub identifiers: Vec<String>,
     /// Child operators feeding this one, rendered beneath it.
     pub children: Vec<PlanNode>,
-    /// Cardinality estimate from ADR-0218 `PatternStats`, read from the
-    /// store at tree construction: what the stats offer honestly (a
-    /// scan's label count, a single typed relationship's count), `None`
-    /// where no signal covers the operator.
-    pub estimated_rows: Option<u64>,
+    /// The planner ladder's estimate for this operator and the level that
+    /// produced it (ADR-0708), `None` where the ladder offers no count.
+    /// One fact, never two fields: [`PlanNode::estimated_rows`] reads the
+    /// rows.
+    pub estimate: Option<PlanEstimate>,
     /// Pre-order id (parent before children), the one numbering fact both
     /// the text `Id` column and the wire form's `args.Id` read. Stamped
     /// when the engine builds the tree (`plan_tree`); a hand-built tree
@@ -396,7 +398,7 @@ impl PlanNode {
             details,
             identifiers,
             children,
-            estimated_rows: None,
+            estimate: None,
             id: 0,
             metrics: None,
             warnings: Vec::new(),
@@ -414,11 +416,21 @@ impl PlanNode {
         self
     }
 
-    /// Stamp the cardinality estimate (ADR-0344 phase 3) — the only way a
-    /// node gains one; `None` is the constructor's value everywhere else.
-    pub fn with_estimated_rows(mut self, estimated_rows: Option<u64>) -> PlanNode {
-        self.estimated_rows = estimated_rows;
+    /// Stamp an estimate with its ladder level (ADR-0344 phase 3,
+    /// ADR-0708) — rows and provenance together, the only way a node
+    /// gains one; `None` is the constructor's value everywhere else.
+    pub fn with_estimate(
+        mut self,
+        rows: u64,
+        provenance: relate_model::wire::EstimateProvenance,
+    ) -> PlanNode {
+        self.estimate = Some(PlanEstimate { rows, provenance });
         self
+    }
+
+    /// The estimated rows, when the ladder priced the operator.
+    pub fn estimated_rows(&self) -> Option<u64> {
+        self.estimate.map(|estimate| estimate.rows)
     }
 
     /// Stamp the typed warnings (typed node warnings) — the one way a

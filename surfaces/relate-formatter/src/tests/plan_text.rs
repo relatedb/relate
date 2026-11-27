@@ -135,13 +135,10 @@ fn estimate_column_appears_only_when_a_node_carries_an_estimate() {
         estimated.iter().any(|l| l.contains("Estimated Rows")),
         "the scan's estimate fills the column: {estimated:?}"
     );
-    let unestimated = text_of(
-        &mut conn,
-        "EXPLAIN MATCH (:Person)-[:KNOWS*1..2]->(:Person) RETURN 1",
-    );
+    let unestimated = text_of(&mut conn, "EXPLAIN MATCH ()-[:KNOWS]->() RETURN 1");
     assert!(
         !unestimated.iter().any(|l| l.contains("Estimated Rows")),
-        "labeled endpoints narrow past the type count: {unestimated:?}"
+        "a bare start has no ladder count: {unestimated:?}"
     );
 }
 

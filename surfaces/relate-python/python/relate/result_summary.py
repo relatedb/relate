@@ -110,7 +110,9 @@ class ResultSummary:
 
         A ``relate.plan/v1`` document — ``schema``, ``profiled``,
         ``statement`` and ``root``, each node carrying ``operator``,
-        ``details``, ``identifiers``, ``estimated_rows``, ``actual``
+        ``details``, ``identifiers``, ``estimated_rows``,
+        ``estimate_provenance`` (``measured``, ``sampled``, ``statistic`` or ``defaulted``;
+        ``None`` exactly when ``estimated_rows`` is), ``actual``
         (PROFILE metrics, including the read-kind mix and the walk's
         ``start``), ``children`` and ``warnings`` (the engine's
         remedy-bearing notifications for that operator, ADR-0363). ``None``

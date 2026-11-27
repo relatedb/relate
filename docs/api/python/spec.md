@@ -267,8 +267,8 @@ are stamped at the end of execution):
   `"relate.plan/v1"`, `profiled` says whether the tree carries runtime
   metrics, `statement` is the echoed statement text (the `EXPLAIN`/`PROFILE`
   preamble removed), and `root` is the operator tree — each node
-  `{operator, details, identifiers, estimated_rows, actual, children,
-  warnings}`. `actual` is `None` on an `EXPLAIN` tree and otherwise
+  `{operator, details, identifiers, estimated_rows, estimate_provenance,
+  actual, children, warnings}`. `actual` is `None` on an `EXPLAIN` tree and otherwise
   `{rows, time_ms, total_time_ms, db_hits, memory_bytes, expression_built_bytes,
   hops, neighbor_walks, node_reads, seek_ms, walk_ms, loops, batched,
   zone_skips, start}` — plus `memo` only when a memo was probed on the
