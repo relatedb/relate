@@ -140,9 +140,23 @@ impl MiddleTallies<'_, '_> {
         self.tallies.walk();
     }
 
-    /// The admitted second-hop arrivals of `middle`, skipping `skip` (the
-    /// first hop's rel in the self-loop case, `None` otherwise).
-    fn completions(&mut self, middle: NodeId, skip: Option<RelId>) -> Result<u128> {
+    /// The admitted second-hop arrivals of `middle`.
+    fn completions_all(&mut self, middle: NodeId) -> Result<u128> {
+        self.completions_where(middle, |_| true)
+    }
+
+    /// The admitted second-hop arrivals of `middle` other than through
+    /// `excluded` (the first hop's rel in the self-loop case).
+    fn completions_excluding(&mut self, middle: NodeId, excluded: RelId) -> Result<u128> {
+        self.completions_where(middle, |rid| rid != excluded)
+    }
+
+    /// The admitted second-hop arrivals of `middle` whose rel `counts`.
+    fn completions_where(
+        &mut self,
+        middle: NodeId,
+        counts: impl Fn(RelId) -> bool,
+    ) -> Result<u128> {
         let graph: &ExecGraph<'_> = self.ctx.graph;
         let (ctx, end_pred) = (self.ctx, self.end_pred);
         let (end_prepared, tallies) = (&mut self.end_prepared, &self.tallies);
@@ -153,7 +167,7 @@ impl MiddleTallies<'_, '_> {
             &self.types2,
             |rid, end| {
                 graph.cancel_tick()?;
-                if skip == Some(rid) || !end_pred.admits(end_prepared, ctx, end)? {
+                if !counts(rid) || !end_pred.admits(end_prepared, ctx, end)? {
                     return Ok::<(), Error>(());
                 }
                 tallies.walk();
@@ -224,9 +238,9 @@ fn tally(ctx: ExecCtx<'_>, first: &Hop<'_>, second: &Hop<'_>, starts: &[NodeId])
             total += if mid == start {
                 // The one lineage case: the first hop's rel is also a
                 // candidate of the second hop from `mid`.
-                run.completions(mid, Some(rid))?
+                run.completions_excluding(mid, rid)?
             } else {
-                memo.0.answer(graph, mid, || run.completions(mid, None))?
+                memo.0.answer(graph, mid, || run.completions_all(mid))?
             };
         }
     }
