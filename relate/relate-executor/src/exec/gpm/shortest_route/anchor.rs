@@ -67,7 +67,25 @@ fn far_set(ids: &[NodeId]) -> Option<FarSet> {
     if FAR_SET_OFF.with(Cell::get) {
         return None;
     }
-    FarSet::of(ids)
+    let set = FarSet::of(ids);
+    #[cfg(test)]
+    if set.is_some() {
+        FAR_LISTINGS.with(|c| c.set(c.get() + 1));
+    }
+    set
+}
+
+#[cfg(test)]
+thread_local! {
+    static FAR_LISTINGS: Cell<u64> = const { Cell::new(0) };
+}
+
+/// Take and reset this thread's count of far sets built — the fans whose
+/// far side was listed (the `take_batches` and [`take_anchor_arms`]
+/// precedent).
+#[cfg(test)]
+pub(super) fn take_far_listings() -> u64 {
+    FAR_LISTINGS.with(|c| c.replace(0))
 }
 
 /// Run `f` with the far set disabled on this thread.
@@ -132,6 +150,13 @@ pub(super) enum Anchor {
 }
 
 impl Anchor {
+    /// Whether the pair product of two listed sides is within
+    /// [`SEEK_PAIR_LIMIT`] — the one home of the pair bound's decision,
+    /// read by [`Route::listed`] and the count-selector early block.
+    fn fits_pair(starts: &Side, ends: &Side) -> bool {
+        starts.ids().len().saturating_mul(ends.ids().len()) <= SEEK_PAIR_LIMIT
+    }
+
     /// A fan from `origins` along `way` with no listed far side: each
     /// reached node is tested against the end pattern alone.
     fn fan(origins: Side, way: Way) -> Self {
@@ -176,35 +201,59 @@ impl Side {
             Side::Many(ids) => ids,
         }
     }
+
+    /// Whether the side has enough origins for a fan's work to be shared:
+    /// at least two — one origin has nothing to share, and a listing per
+    /// input row would re-list the far side for it. The one home of the
+    /// threshold.
+    pub(super) fn shares(&self) -> bool {
+        self.ids().len() >= 2
+    }
 }
 
 /// One endpoint's bounded resolution ([`Route::probe`]).
 enum Probed {
-    /// Scan territory: the fan answers the endpoint itself.
-    Scan,
+    /// Scan territory: the fan answers the endpoint itself. `props_ready`
+    /// is the side's map readiness, answered once by [`Route::probe`] (a
+    /// side with no map is ready): the far listing reads it instead of
+    /// asking again.
+    Scan { props_ready: bool },
     /// More than [`SEEK_PAIR_LIMIT`] nodes match: no list was built, and
     /// the side counts as longer than any listed one. The ask that
     /// produced it rides along: the full listing ([`Route::listed_side`])
     /// re-asks through the same entry, never a re-derived one.
-    Over(OverAsk),
+    Over(Ask),
     /// The complete candidate list, at most [`SEEK_PAIR_LIMIT`] long.
     Within(Side),
 }
 
+/// A fan's far side that is scan territory: its pattern and the map
+/// readiness the probe already answered.
+#[derive(Clone, Copy)]
+struct ScanFar<'a> {
+    np: &'a NodePattern,
+    props_ready: bool,
+}
+
 impl Probed {
-    /// The far side's pattern `np` when this probe left it scan territory:
-    /// the only far side a fan lists on its own behalf. An over-bound side
-    /// is `None`; a listed side never reaches a fan's far position.
-    fn scan_side(self, np: &NodePattern) -> Option<&NodePattern> {
-        matches!(self, Probed::Scan).then_some(np)
+    /// The far side `np` when this probe left it scan territory: the only
+    /// far side a fan lists on its own behalf. An over-bound side is
+    /// `None`; a listed side never reaches a fan's far position.
+    fn scan_side(self, np: &NodePattern) -> Option<ScanFar<'_>> {
+        match self {
+            Probed::Scan { props_ready } => Some(ScanFar { np, props_ready }),
+            Probed::Over(_) | Probed::Within(_) => None,
+        }
     }
 }
 
-/// The funnel entry an over-bound side was asked through — the two asks
-/// that can produce [`Probed::Over`]; a scan side never probes over, so
-/// `Scan` is unrepresentable here.
+/// The funnel entry a side is asked through — the vocabulary of
+/// [`Route::asked`]'s dispatch table, shared by every ask: the capped probe
+/// ([`Probed::Over`] carries it back to the full listing), the full
+/// listing and the far listing. A scan side is never asked, so `Scan` is
+/// unrepresentable here.
 #[derive(Clone, Copy)]
-enum OverAsk {
+enum Ask {
     Point,
     Map,
 }
@@ -282,7 +331,7 @@ impl Route<'_> {
         if counted {
             return Ok(match probed {
                 (Probed::Within(starts), Probed::Within(ends)) => {
-                    Some(Self::listed(starts, ends)).filter(|a| matches!(a, Anchor::Pair { .. }))
+                    Anchor::fits_pair(&starts, &ends).then_some(Anchor::Pair { starts, ends })
                 }
                 _ => None,
             });
@@ -302,10 +351,10 @@ impl Route<'_> {
             // bounded: one full-depth fan per property match must not beat
             // the start scan's one ball per start (a non-selective map
             // makes the backward fan pay |ends| balls).
-            (Probed::Within(starts), far @ (Probed::Over(_) | Probed::Scan)) => {
+            (Probed::Within(starts), far @ (Probed::Over(_) | Probed::Scan { .. })) => {
                 self.fan_or_empty(starts, Way::Forward, far.scan_side(end))?
             }
-            (far @ (Probed::Over(_) | Probed::Scan), Probed::Within(ends)) => {
+            (far @ (Probed::Over(_) | Probed::Scan { .. }), Probed::Within(ends)) => {
                 self.fan_or_empty(ends, Way::Backward, far.scan_side(start))?
             }
             // Neither side has a list: the start candidates fan forward —
@@ -342,20 +391,16 @@ impl Route<'_> {
         &self,
         origins: Side,
         way: Way,
-        scan_far: Option<&NodePattern>,
+        scan_far: Option<ScanFar<'_>>,
     ) -> Result<Anchor> {
         if origins.ids().is_empty() {
             return Ok(Self::empty_pair());
         }
         // One origin has nothing to share, and a row-by-row loop would
-        // re-list the side per input row: the listing is for fans with at
-        // least two origins, whose own list is already in full.
+        // re-list the side per input row: the listing is for fans that
+        // share ([`Side::shares`]), whose own list is already in full.
         let listing = match scan_far {
-            // A label-less side has no bucket to list: it would read the
-            // whole node store per input row, so it stays the fan's to test.
-            Some(np) if origins.ids().len() >= 2 && !np.labels.is_empty() => {
-                self.far_listing(np)?
-            }
+            Some(far) if origins.shares() => self.far_listing(far)?,
             _ => None,
         };
         Ok(match listing {
@@ -374,18 +419,21 @@ impl Route<'_> {
     /// at most [`SEEK_LIST_LIMIT`] and the scan answers them exactly. Unlike
     /// [`Self::listed_side`] this never refuses: a side over the bound or
     /// with no exact scan answer stays unlisted and each reached node is
-    /// tested against the end pattern, as before.
-    fn far_listing(&self, np: &NodePattern) -> Result<Option<Vec<NodeId>>> {
-        // A property map reading a variable the walk binds later cannot be
-        // resolved from the input row: the side stays the fan's to test.
-        if np
-            .properties
-            .as_ref()
-            .is_some_and(|props| !expr_ready(props, self.row))
-        {
+    /// tested against the end pattern, as before. The one home of the
+    /// "may this side be listed" policy: it needs a label bucket
+    /// (a retained label conjunction; a disjunction endpoint never reaches
+    /// the route, `shortest::followable`) and a map the input row resolves
+    /// (the probe's readiness).
+    fn far_listing(&self, far: ScanFar<'_>) -> Result<Option<Vec<NodeId>>> {
+        let ScanFar { np, props_ready } = far;
+        // A label-less side has no bucket to list: it would read the whole
+        // node store per input row, so it stays the fan's to test. A map
+        // reading a variable the walk binds later cannot be resolved from
+        // the input row either.
+        if np.labels.is_empty() || !props_ready {
             return Ok(None);
         }
-        Ok(match self.asked(np, OverAsk::Map, list_limit())? {
+        Ok(match self.asked(np, Ask::Map, list_limit())? {
             Some(Capped::Within(ids)) => Some(ids),
             Some(Capped::Over) | None => None,
         })
@@ -399,7 +447,7 @@ impl Route<'_> {
         let (s, e) = (starts.ids().len(), ends.ids().len());
         if s == 0 || e == 0 {
             Self::empty_pair()
-        } else if s.saturating_mul(e) <= SEEK_PAIR_LIMIT {
+        } else if Anchor::fits_pair(&starts, &ends) {
             Anchor::Pair { starts, ends }
         } else if e < s {
             Anchor::Fan {
@@ -438,15 +486,21 @@ impl Route<'_> {
         // The sizing, decided once: no ask answers a scan-territory side
         // through the fan; the ask it chose rides into the over answer —
         // one vocabulary, no re-projection.
-        let Some(ask) = self.side_sizing(np, unbound) else {
-            return self.scanned_side(np, class, cell);
+        // The map's readiness, answered once: the sizing reads it, and a
+        // side that stays scan territory carries it to the far listing.
+        let props_ready = np
+            .properties
+            .as_ref()
+            .is_none_or(|props| expr_ready(props, self.row));
+        let Some(ask) = self.side_sizing(np, unbound, props_ready) else {
+            return self.scanned_side(np, class, cell, props_ready);
         };
         Ok(match self.asked(np, ask, SEEK_PAIR_LIMIT)? {
             Some(Capped::Within(ids)) => Probed::Within(Side::Many(ids)),
             Some(Capped::Over) => Probed::Over(ask),
             // No ask answers this side: the side keeps the fan's own
             // handling.
-            None => self.scanned_side(np, class, cell)?,
+            None => self.scanned_side(np, class, cell, props_ready)?,
         })
     }
 
@@ -459,19 +513,21 @@ impl Route<'_> {
         np: &NodePattern,
         class: NodeBinding<'_>,
         cell: &SideCell,
+        props_ready: bool,
     ) -> Result<Probed> {
         Ok(self
             .filtered_side(np, class, cell)?
-            .map_or(Probed::Scan, Probed::Within))
+            .map_or(Probed::Scan { props_ready }, Probed::Within))
     }
 
     /// Which funnel ask, if any, answers `np`'s side — the one home of
-    /// the sizing, over the classification's single fact (`unbound`: a
-    /// named unbound variable the funnel may seek is present): a
+    /// the sizing, over the classification's `unbound` fact (a named
+    /// unbound variable the funnel may seek is present) and the map's
+    /// readiness `props_ready`, answered once by the probe: a
     /// row-resolvable property map is seeked through the full capped
-    /// funnel ([`OverAsk::Map`]), and that named, unbound variable's
+    /// funnel ([`Ask::Map`]), and that named, unbound variable's
     /// endpoint-only `WHERE` conjuncts are asked point-only (an index
-    /// point lookup must serve it — [`OverAsk::Point`]). `None`: scan
+    /// point lookup must serve it — [`Ask::Point`]). `None`: scan
     /// territory, the fan's own answer.
     ///
     /// A shape whose scan is a superset (the funnel's own no-answer) is
@@ -489,14 +545,14 @@ impl Route<'_> {
     /// map against the same unresolvable row.
     ///
     /// The split: a row-resolvable property map asks as
-    /// [`OverAsk::Map`]; a named, unbound variable with no map asks as
-    /// [`OverAsk::Point`] (a point seek serves it, or the side keeps the
+    /// [`Ask::Map`]; a named, unbound variable with no map asks as
+    /// [`Ask::Point`] (a point seek serves it, or the side keeps the
     /// fan's handling); anything else — a nameless pattern, an unready
     /// map — is `None` (scan territory, the fan's own answer).
-    fn side_sizing(&self, np: &NodePattern, unbound: bool) -> Option<OverAsk> {
+    fn side_sizing(&self, np: &NodePattern, unbound: bool, props_ready: bool) -> Option<Ask> {
         match np.properties.as_ref() {
-            Some(props) if expr_ready(props, self.row) => Some(OverAsk::Map),
-            None if unbound => Some(OverAsk::Point),
+            Some(_) if props_ready => Some(Ask::Map),
+            None if unbound => Some(Ask::Point),
             _ => None,
         }
     }
@@ -514,7 +570,7 @@ impl Route<'_> {
     /// no re-sorting. The ask is the one the probe handed over
     /// ([`Probed::Over`]): the listing re-asks through the same entry,
     /// never a re-derived sizing.
-    fn listed_side(&self, np: &NodePattern, ask: OverAsk) -> Result<Side> {
+    fn listed_side(&self, np: &NodePattern, ask: Ask) -> Result<Side> {
         let limit = list_limit();
         let capped = self.asked(np, ask, limit)?.ok_or_else(|| {
             Error::internal("shortest-path route: a probed side lost its point seek")
@@ -531,23 +587,23 @@ impl Route<'_> {
         })
     }
 
-    /// The ask-to-entry dispatch, the one table ([`OverAsk`]'s two
+    /// The ask-to-entry dispatch, the one table ([`Ask`]'s two
     /// entries), from the route's endpoint-only residual through the
     /// counted funnel (the seek phase stamped inside it), stopped at the
     /// first match past `cap` — the pair bound's probe
     /// ([`SEEK_PAIR_LIMIT`]) and the full listing's bound
     /// ([`SEEK_LIST_LIMIT`]): the full funnel for a map side
-    /// ([`OverAsk::Map`]), the point ask for a conjunct side
-    /// ([`OverAsk::Point`], no property map). Both answer
+    /// ([`Ask::Map`]), the point ask for a conjunct side
+    /// ([`Ask::Point`], no property map). Both answer
     /// `Option<Capped>` — `None` is "no ask answers this side", the one
     /// fact each caller declines on (a superset scan, or a point seek
     /// that served nothing).
-    fn asked(&self, np: &NodePattern, ask: OverAsk, cap: usize) -> Result<Option<Capped>> {
+    fn asked(&self, np: &NodePattern, ask: Ask, cap: usize) -> Result<Option<Capped>> {
         let ExecCtx { graph, params, .. } = self.ctx;
         let conjuncts = &self.filters.endpoint;
         Ok(match ask {
-            OverAsk::Point => point_candidates_capped(graph, np, self.row, params, conjuncts, cap)?,
-            OverAsk::Map => node_candidates_capped(graph, np, self.row, params, conjuncts, cap)?,
+            Ask::Point => point_candidates_capped(graph, np, self.row, params, conjuncts, cap)?,
+            Ask::Map => node_candidates_capped(graph, np, self.row, params, conjuncts, cap)?,
         })
     }
 
