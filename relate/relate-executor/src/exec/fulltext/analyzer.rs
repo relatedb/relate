@@ -263,20 +263,27 @@ fn is_kana_mark(c: char) -> bool {
     matches!(c as u32, 0x3099 | 0x309A)
 }
 
+/// Whether `c` attaches to the open run instead of ending it: the one
+/// decomposed-kana rule, a combining sound mark after an Ideographic or
+/// Katakana run. [`clusters`] reads the same [`is_kana_mark`] for the
+/// characters inside such a run.
+fn attaches_to_run(c: char, open: Option<Kind>) -> bool {
+    is_kana_mark(c) && matches!(open, Some(Kind::Ideographic | Kind::Katakana))
+}
+
 /// The characters of an Ideographic or Katakana run, each with any trailing
-/// combining kana sound marks attached.
+/// combining kana sound marks attached. A run is never empty and never
+/// starts with a sound mark (see [`attaches_to_run`]).
 fn clusters(run: &str) -> Vec<&str> {
     let mut out = Vec::new();
     let mut start = 0;
-    for (at, c) in run.char_indices() {
-        if at > start && !is_kana_mark(c) {
+    for (at, c) in run.char_indices().skip(1) {
+        if !is_kana_mark(c) {
             out.push(&run[start..at]);
             start = at;
         }
     }
-    if start < run.len() {
-        out.push(&run[start..]);
-    }
+    out.push(&run[start..]);
     out
 }
 
@@ -288,10 +295,7 @@ fn for_each_segment(text: &str, mut each: impl FnMut(Kind, &str)) {
     let mut start = 0;
     for (at, c) in lower.char_indices() {
         let kind = Kind::of(c);
-        let continues_kana = kind.is_none()
-            && is_kana_mark(c)
-            && matches!(open, Some(Kind::Ideographic | Kind::Katakana));
-        if kind == open || continues_kana {
+        if kind == open || (kind.is_none() && attaches_to_run(c, open)) {
             continue;
         }
         if let Some(previous) = open {
@@ -462,8 +466,15 @@ mod tests {
             cjk_bigrams("あか\u{3099}い"),
             ["あか\u{3099}", "か\u{3099}い"]
         );
-        // Same term count as the composed form.
-        assert_eq!(tokenize(decomposed).len(), tokenize("がぎ").len());
+        // The decomposed form emits the same number of terms as the composed
+        // one, each the composed term's base kana plus its sound mark.
+        let composed = tokenize("がぎ");
+        let bases: Vec<String> = tokenize(decomposed)
+            .iter()
+            .map(|term| term.chars().take(1).collect())
+            .collect();
+        assert_eq!(bases, ["か", "き"]);
+        assert_eq!(composed, ["が", "ぎ"]);
         // A mark after a non-kana character is still a separator.
         assert_eq!(tokenize("a\u{3099}b"), ["a", "b"]);
     }
