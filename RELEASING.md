@@ -415,11 +415,17 @@ keypair.
    gpg --list-secret-keys --with-colons | grep '^fpr:' | head -n 1 | cut -d: -f10
    ```
 
-2. Commit the public half and its fingerprint:
+2. Commit the public half, its fingerprint, and the fixture's
+   signature — the three files move together, and the suite's first
+   case fails a key whose fixture stayed on the old signer:
 
    ```sh
    gpg --armor --export <FINGERPRINT> > distribution/repo-signing-key.asc
    printf '%s\n' <FINGERPRINT> > distribution/repo-signing-key.fingerprint
+   gpg --batch --yes --pinentry-mode loopback --passphrase '' \
+     --local-user <FINGERPRINT> --detach-sign --armor \
+     --output scripts/tests/fixtures/repo-signing/Release.gpg \
+     scripts/tests/fixtures/repo-signing/Release
    ```
 
 3. Upload the private half as the secret, then delete the local copy:
@@ -438,6 +444,23 @@ keypair.
      -f repo-signing-dry-run=true -f npm=false -f pypi=false \
      -f crates-io=false -f maven=false
    ```
+
+### Repository signing key rotation
+
+1. Generate the new keypair (first-time setup, step 1) and re-sign the
+   fixture in the same sitting, while the private half still exists
+   locally (first-time setup, step 2); commit the new `.asc`,
+   `.fingerprint` and `Release.gpg` together — `review-scripts-test`
+   runs on all three paths, and its first case fails a rotation whose
+   fixture stayed on the old key.
+2. Upload the new private half over `REPO_GPG_KEY` (first-time setup,
+   step 3), then rehearse it against the committed key (step 4).
+3. If a rotation ever lands without its fixture, dispatch
+   `repo-signing-fixture-refresh.yml` (Actions →
+   repo-signing-fixture-refresh → Run workflow): it re-signs the
+   committed fixture from the secret — the private half exists nowhere
+   else once the local copy is deleted — and opens a pull request
+   carrying the new signature.
 
 ### The RPM repository tree
 

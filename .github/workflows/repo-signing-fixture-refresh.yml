@@ -1,0 +1,131 @@
+name: repo-signing-fixture-refresh
+
+# The recovery arm for a repository-signing-key rotation that landed
+# without re-signing the committed fixture (RELEASING.md, "Repository
+# signing key" → Rotation): scripts/tests/test_sign_repo_metadata.sh's
+# first case fails while the committed Release.gpg still carries the old
+# key's signature, and the new private half exists only as the REPO_GPG_KEY
+# Actions secret — nowhere local to sign it. This workflow signs the
+# committed fixture Release with the secret through the production script
+# (which refuses a secret whose fingerprint is not the committed one and
+# verifies the fresh signature against the committed public key before
+# writing anything), then opens a pull request carrying the new signature
+# — the create-loadtest-baselines shape: it never pushes to main.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: repo-signing-fixture-refresh
+  cancel-in-progress: false
+
+env:
+  DO_NOT_TRACK: "1"
+
+jobs:
+  refresh:
+    name: Re-sign the committed fixture with the repository signing key
+    runs-on: ubuntu-latest
+    environment: release
+    outputs:
+      stale: ${{ steps.check.outputs.stale }}
+    steps:
+      - name: Patch CVE-2026-111943 (eMudhra CA compromise)
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --only-upgrade -y ca-certificates
+          sudo update-ca-certificates --fresh
+          if find /usr/share/ca-certificates /etc/ssl/certs -iname '*emudhra*' -print -quit | grep -q .; then
+            echo "::error::eMudhra root still trusted after CA rebuild (CVE-2026-111943)"
+            exit 1
+          fi
+          dpkg-query -W -f='ca-certificates ${Version}' ca-certificates
+
+      # The fixture to refresh is main's, and the dispatch ref must not
+      # choose the code that runs beside the REPO_GPG_KEY secret: pin the
+      # checkout to the default branch (the publish-registries jobs' ref
+      # gate) and drop the persisted credential — the PR step pushes with
+      # its own token.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          persist-credentials: false
+
+      # The suite's case 1, verbatim: the committed signature against the
+      # committed public key, in the same throwaway keyring a user's
+      # apt/dnf holds. Still verifying means nothing to refresh.
+      - name: Does the committed fixture still verify?
+        id: check
+        run: |
+          set -euo pipefail
+          fixture="scripts/tests/fixtures/repo-signing/Release"
+          committed="scripts/tests/fixtures/repo-signing/Release.gpg"
+          keyring="$(mktemp -d)"
+          chmod 700 "$keyring"
+          gpg --homedir "$keyring" --batch \
+            --import distribution/repo-signing-key.asc 2>/dev/null
+          if gpg --homedir "$keyring" --batch \
+            --verify "$committed" "$fixture" >/dev/null 2>&1; then
+            echo "stale=false" >> "$GITHUB_OUTPUT"
+            echo "the committed fixture verifies against the committed public key; nothing to refresh"
+          else
+            echo "stale=true" >> "$GITHUB_OUTPUT"
+            echo "the committed fixture does not verify against the committed public key — re-signing"
+          fi
+
+      # The production signing step the APT and RPM lanes run: secret key,
+      # committed fingerprint and committed public key must agree before
+      # the fixture is signed, and the fresh signature is verified against
+      # the committed public key before it replaces the committed one.
+      - name: Re-sign the fixture with the repository signing key
+        if: steps.check.outputs.stale == 'true'
+        env:
+          REPO_GPG_KEY: ${{ secrets.REPO_GPG_KEY }}
+        run: |
+          set -euo pipefail
+          scripts/sign-repo-metadata.sh \
+            scripts/tests/fixtures/repo-signing/Release \
+            scripts/tests/fixtures/repo-signing/Release.gpg
+
+      - name: Open PR with the re-signed fixture
+        if: steps.check.outputs.stale == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          branch="repo-signing/fixture-refresh-${GITHUB_RUN_ID}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -B "$branch"
+          git add scripts/tests/fixtures/repo-signing/Release.gpg
+          if git diff --cached --quiet; then
+            echo "the signature is byte-identical; nothing to propose"
+            exit 0
+          fi
+          git commit -m "$(cat <<EOF
+          Re-sign the repository signing fixture (ADR-0630).
+
+          Produced by repo-signing-fixture-refresh from the REPO_GPG_KEY
+          secret: the committed Release.gpg carried the previous key's
+          signature.
+          EOF
+          )"
+          git push \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+            "HEAD:refs/heads/$branch"
+          gh pr create \
+            --title "chore(distribution): re-sign the repository signing fixture" \
+            --body "$(cat <<EOF
+          ## Summary
+          - The committed \`scripts/tests/fixtures/repo-signing/Release.gpg\` re-signed with the current repository signing key, by \`repo-signing-fixture-refresh\` (run ${GITHUB_RUN_ID}) from the \`REPO_GPG_KEY\` secret — the private half exists nowhere else.
+          - Recovery arm for a key rotation that landed without its fixture (RELEASING.md, "Repository signing key" → Rotation).
+
+          ## Test plan
+          - [ ] \`review-scripts-test\` on this PR is green (its first case verifies this fixture against the committed public key)
+          EOF
+          )"

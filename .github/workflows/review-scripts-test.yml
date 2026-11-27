@@ -9,6 +9,14 @@ on:
       - "surfaces/relate-cli/tests/fixtures/releases.json"
       - "surfaces/relate-cli/tests/fixtures/extension/extensions.json"
       - "distribution/extension-packages.json"
+      # The repository signing key and its fixture move together
+      # (RELEASING.md, "Repository signing key"): a rotation touching
+      # only distribution/ must still run the suite whose first case
+      # fails a fixture left on the old key — the blind spot the 11-25
+      # rotation slipped through.
+      - "distribution/repo-signing-key.asc"
+      - "distribution/repo-signing-key.fingerprint"
+      - "scripts/tests/fixtures/repo-signing/**"
       - "extensions/*/Cargo.toml"
       - "extensions/*/package/extension.json"
       - ".agents/skills/stellar-review/tools/**"
