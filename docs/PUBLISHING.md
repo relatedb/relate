@@ -303,13 +303,14 @@ and uploads with a Central Portal token, both stored as secrets in the
 
    `maven` is on by default on the dispatch form, so turning the other
    registries off publishes Maven alone — this dispatch is the recovery
-   arm and the partial-failure re-run, not the primary path. A release
-   dispatched with `registries=true` chains the Maven publish
-   (`publish-maven-central` in `release.yml`), forwarding the four
-   repository secrets; with `registries` off (the default) a release
-   publishes nothing anywhere, the Java client included. Maven needs no
-   registry-side registration — Central authenticates the static token,
-   not the run's identity (ADR-0630).
+   arm and the partial-failure re-run, not the primary path. The primary
+   path is the release itself: every non-offline release chains the
+   Maven publish (`publish-maven-central` in `release.yml`,
+   ADR-0704), forwarding the four repository secrets — no `registries`
+   opt-in, because Maven needs no registry-side registration: Central
+   authenticates the static token, not the run's identity (ADR-0630).
+   The `registries` input gates only the OIDC legs (npm, PyPI,
+   crates.io).
 
    The job verifies the five FFI archives' build attestations, stages the
    natives, signs and uploads the fat jar plus the five classifier jars.

@@ -20,7 +20,7 @@ on:
         default: false
         type: boolean
       registries:
-        description: "Chain the registry publish (npm/PyPI/crates.io, plus the Maven Central jars, via publish-registries.yml) after the GitHub release — off by default: the chained run's OIDC identity is release.yml's, which the OIDC registries' trusted publishers do not accept until release.yml is registered on each (docs/PUBLISHING.md); the Maven jars need no registration — their credentials ride the call (ADR-0630)"
+        description: "Chain the registry publish (npm/PyPI/crates.io, via publish-registries.yml) after the GitHub release — off by default: the chained run's OIDC identity is release.yml's, which the OIDC registries' trusted publishers do not accept until release.yml is registered on each (docs/PUBLISHING.md). The Maven Central jars publish with every non-offline release through their own call below (ADR-0704), not through this input"
         required: false
         default: false
         type: boolean
@@ -1928,14 +1928,15 @@ jobs:
   # An offline release also skips the call; the website, Slack, and
   # canary jobs are unaffected by this input.
   #
-  # Maven Central rides the same opt-in through its own call below
-  # (publish-maven-central): no registry-side registration to do first —
-  # Central authenticates a static token, not the run's identity — and
-  # its four credentials are repository secrets (ADR-0630) the call
-  # forwards explicitly: a called workflow's `secrets` context carries
-  # only what its caller passes, repository secrets included — the
-  # v1.2.0 cut's call forwarded nothing and the job died importing an
-  # empty signing key (run 44705331863).
+  # Maven Central does NOT ride this opt-in: it publishes through its own
+  # call below (publish-maven-central) on every non-offline release
+  # (ADR-0704) — no registry-side registration to do first, Central
+  # authenticates a static token, not the run's identity — and its four
+  # credentials are repository secrets (ADR-0630) the call forwards
+  # explicitly: a called workflow's `secrets` context carries only what
+  # its caller passes, repository secrets included — the v1.2.0 cut's
+  # call forwarded nothing and the job died importing an empty signing
+  # key (run 44705331863).
   #
   # NuGet (ADR-0652) stays out of this call: its trusted-publishing policy
   # names publish-registries.yml while a chained token names release.yml,
@@ -1965,11 +1966,12 @@ jobs:
     secrets:
       CHOCOLATEY_API_KEY: ${{ secrets.CHOCOLATEY_API_KEY }}
 
-  # The Maven leg of the `registries` opt-in: same gate as the OIDC call
-  # above, its own call because its inputs differ — maven on, every other
-  # channel off (the OIDC three and Chocolatey, which the call above
-  # publishes), so a release with `registries` on deploys each exactly
-  # once. The four Central credentials are repository secrets
+  # The Maven Central publish runs on every non-offline release
+  # (ADR-0704, lifting ADR-0630 §2's shared opt-in): its own call because
+  # its inputs differ — maven on, every other channel off (the OIDC
+  # three and Chocolatey, which the call above publishes when
+  # `registries` is on), so a release deploys the jars exactly once. The
+  # four Central credentials are repository secrets
   # (ADR-0630) and are passed explicitly: a called workflow's `secrets`
   # context carries only what its caller forwards, repository secrets
   # included, and the v1.2.0 cut's call forwarded nothing — the job
@@ -1981,7 +1983,7 @@ jobs:
   publish-maven-central:
     name: Publish the Java client to Maven Central
     needs: [version, create-release]
-    if: ${{ !inputs.offline && inputs.registries }}
+    if: ${{ !inputs.offline }}
     # Same grant as the OIDC call: a nested job's scope the caller does
     # not grant invalidates the whole workflow file at dispatch, whether
     # or not that job runs.
