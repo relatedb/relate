@@ -36,7 +36,7 @@ ENV = {
 LOCAL_ENV = dict(ENV, runner="local")
 
 
-def query(qid, profile, p50_ns, mean_ns=None, status="ok", detail=None):
+def query(qid, profile, p50_ns, mean_ns=None, status="ok", detail=None, db_hits=1000):
     """One QueryOutcome in the suite report's shape (engine Stats)."""
     return {
         "qid": qid,
@@ -45,6 +45,7 @@ def query(qid, profile, p50_ns, mean_ns=None, status="ok", detail=None):
         "detail": detail,
         "rows": 1,
         "rounds": 100,
+        "db_hits": db_hits,
         "engine": {
             "p50_ns": p50_ns,
             "mean_ns": mean_ns if mean_ns is not None else p50_ns,
@@ -84,6 +85,20 @@ class QueryLatencyFreezeTests(unittest.TestCase):
         self.assertEqual(q19["p50_ms"], 130.0)
         self.assertEqual(result.payload["peak_rss_bytes"], 3_400_000_000)
 
+    def test_envelope_keeps_the_worst_db_hits(self):
+        r1 = report([query(1, "upstream", 1_000_000, db_hits=900)])
+        r2 = report([query(1, "upstream", 1_000_000, db_hits=1100)])
+        result = self.run_freeze([r1, r2])
+        self.assertEqual(result.process.returncode, 0, result.process.stderr)
+        self.assertEqual(result.payload["queries"][0]["db_hits"], 1100)
+
+    def test_envelope_refuses_a_report_without_db_hits(self):
+        q = query(1, "upstream", 1_000_000)
+        del q["db_hits"]
+        result = self.run_freeze([report([q])])
+        self.assertEqual(result.process.returncode, 1)
+        self.assertIn("q1 report has no db_hits", result.process.stderr)
+
     def test_envelope_refuses_mixed_environment_classes(self):
         other = LOCAL_ENV
         result = self.run_freeze([
@@ -114,10 +129,39 @@ class QueryLatencyCompareTests(unittest.TestCase):
             "environment": ENV,
             "peak_rss_bytes": 3_000_000_000,
             "queries": [
-                {"qid": 1, "index_profile": "upstream", "p50_ms": 0.17, "mean_ms": 0.2},
-                {"qid": 19, "index_profile": "upstream", "p50_ms": 130.0, "mean_ms": 140.0},
+                {"qid": 1, "index_profile": "upstream", "p50_ms": 0.17, "mean_ms": 0.2, "db_hits": 1000},
+                {"qid": 19, "index_profile": "upstream", "p50_ms": 130.0, "mean_ms": 140.0, "db_hits": 50000},
             ],
         }
+
+    def test_db_hits_over_the_band_fails_in_every_class(self):
+        # 50,000 -> 60,000 is +20%: over the 5% ratchet, and judged even
+        # under a mismatched environment class (the count is deterministic).
+        for env in (ENV, LOCAL_ENV):
+            rep = report([query(1, "upstream", 200_000), query(19, "upstream", 130_000_000, db_hits=60_000)], environment=env)
+            status, diags = ql_compare.verdict(self.base(), rep)
+            self.assertEqual(status, "fail", env)
+            self.assertTrue(any("q19/upstream db_hits 60000" in d for d in diags), diags)
+
+    def test_db_hits_within_the_floor_and_below_the_envelope_pass(self):
+        # +40 reads on a 1000-read query is inside the 64-read floor; a
+        # drop to 10 is an improvement and passes.
+        rep = report([query(1, "upstream", 200_000, db_hits=1040), query(19, "upstream", 130_000_000, db_hits=10)])
+        self.assertEqual(ql_compare.verdict(self.base(), rep), ("ok", []))
+
+    def test_a_report_without_db_hits_is_a_hard_failure(self):
+        q = query(1, "upstream", 200_000)
+        del q["db_hits"]
+        status, diags = ql_compare.verdict(self.base(), report([q, query(19, "upstream", 130_000_000)]))
+        self.assertEqual(status, "fail")
+        self.assertTrue(any("missing db_hits" in d for d in diags), diags)
+
+    def test_an_envelope_without_db_hits_skips_the_band(self):
+        base = self.base()
+        for q in base["queries"]:
+            del q["db_hits"]
+        rep = report([query(1, "upstream", 200_000, db_hits=10**9), query(19, "upstream", 130_000_000)])
+        self.assertEqual(ql_compare.verdict(base, rep), ("ok", []))
 
     def test_ok_within_bands(self):
         rep = report([query(1, "upstream", 200_000), query(19, "upstream", 190_000_000)])
