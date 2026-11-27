@@ -1,5 +1,5 @@
 //! The 42I25 write-classification family: the per-clause answer
-//! ([`clause_is_write`]), its unbatched refinement
+//! ([`clause_is_write_by`]), its unbatched refinement
 //! ([`clause_is_unbatched_write`]), and the walk-owned facts the
 //! composition rule threads — [`WriteHistory`] (the chain's accumulated
 //! fact) and [`ClausePosition`] (one clause's position and the history
@@ -9,7 +9,7 @@
 use relate_ir::{Clause, Query};
 
 /// Whether `clause` writes — the write-classification family's per-clause
-/// answer. `is_write_procedure` classifies `CALL` targets: the canonical
+/// answer, as ONE fold under both policies (conservative and composition). `is_write_procedure` classifies `CALL` targets: the canonical
 /// registry-backed predicate, injected by the facade — the procedure
 /// registry lives in the executor, which the planner cannot depend on.
 /// Every write gate (the `IN TRANSACTIONS` composition rule, the
@@ -26,25 +26,52 @@ use relate_ir::{Clause, Query};
 /// callers are this family's own folds; cross-module consumers
 /// (the expression-body write refusal, the namespace gate) read
 /// [`query_contains_write`].
-fn clause_is_write(c: &Clause, is_write_procedure: &mut impl FnMut(&str) -> bool) -> bool {
-    crate::clause_mutates_store(c)
-        || matches!(c, Clause::CallSubquery { query, .. } if query_contains_write(query, is_write_procedure))
+///
+/// Parameterized on the per-clause
+/// store-mutation predicate it reads at every depth: the conservative
+/// clause table ([`crate::clause_mutates_store`], where `LOAD CSV` is a
+/// `Write` for the access fold, ADR-0332) or the composition rule's
+/// [`clause_writes_store`]. Nested `CALL { … }` / `WHEN` bodies descend
+/// with the same predicate, so the two answers never disagree below the
+/// top level.
+fn clause_is_write_by(
+    c: &Clause,
+    is_write_procedure: &mut impl FnMut(&str) -> bool,
+    mutates: fn(&Clause) -> bool,
+) -> bool {
+    let mut body_writes = |query: &Query| {
+        crate::query_any_clause(query, &mut |c| {
+            clause_is_write_by(c, is_write_procedure, mutates)
+        })
+    };
+    mutates(c)
+        || matches!(c, Clause::CallSubquery { query, .. } if body_writes(query))
+        || matches!(c, Clause::Conditional { branches, else_query }
+            if branches.iter().any(|(_, query)| body_writes(query))
+                || else_query.as_deref().is_some_and(&mut body_writes))
         || matches!(c, Clause::Call { name, .. }
             if name.with_str(|text| is_write_procedure(text)))
-        || matches!(c, Clause::Conditional { branches, else_query }
-            if branches.iter().any(|(_, query)| query_contains_write(query, is_write_procedure))
-                || else_query.as_deref().is_some_and(|q| query_contains_write(q, is_write_procedure)))
+}
+
+/// Whether `clause` mutates the store, as the 42I25 composition rule reads
+/// it: the clause table's answer minus `LOAD CSV`, which only reads a file
+/// (the table classes it `Write` for the conservative access fold,
+/// ADR-0332; REL8-1224).
+fn clause_writes_store(clause: &Clause) -> bool {
+    crate::clause_mutates_store(clause) && !matches!(clause, Clause::LoadCsv { .. })
 }
 
 pub(crate) fn query_contains_write(
     query: &Query,
     is_write_procedure: &mut impl FnMut(&str) -> bool,
 ) -> bool {
-    crate::query_any_clause(query, &mut |c| clause_is_write(c, is_write_procedure))
+    crate::query_any_clause(query, &mut |c| {
+        clause_is_write_by(c, is_write_procedure, crate::clause_mutates_store)
+    })
 }
 
 /// Whether `clause` writes outside `CALL { … } IN TRANSACTIONS`'s own
-/// batches — the 42I25 refinement over [`clause_is_write`]: a batched
+/// batches — the 42I25 refinement over [`clause_is_write_by`]: a batched
 /// subquery's own writes run in its batches' own transactions, so they
 /// never make their part (or stage) a writing one. The clause-validation
 /// loop folds it into the 42I25 history each clause accumulates
@@ -53,13 +80,14 @@ pub(crate) fn query_contains_write(
 /// statement's `NEXT` chain. The exclusion is the one canonical per-clause
 /// reading ([`crate::clause_kind::clause_is_in_transactions`], as cheap as
 /// the inline match it replaces), read before the classification so a
-/// batched clause pays no recursive body walk.
+/// batched clause pays no recursive body walk. A `LOAD CSV` (top level or
+/// inside a body) is not a write here ([`clause_writes_store`]).
 fn clause_is_unbatched_write(
     clause: &Clause,
     is_write_procedure: &mut impl FnMut(&str) -> bool,
 ) -> bool {
     !crate::clause_kind::clause_is_in_transactions(clause)
-        && clause_is_write(clause, is_write_procedure)
+        && clause_is_write_by(clause, is_write_procedure, clause_writes_store)
 }
 
 /// The 42I25 write history of one `NEXT` chain: whether a write outside

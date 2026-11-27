@@ -117,6 +117,31 @@ fn a_batched_part_does_not_refuse_a_later_part() {
     }
 }
 
+/// `LOAD CSV` only reads a file: the bulk-load idiom feeds it into
+/// `CALL { … } IN TRANSACTIONS` (REL8-1224), while a real write before the
+/// same call is still refused.
+#[test]
+fn load_csv_may_precede_call_in_transactions() {
+    crate::plan_of(
+        "LOAD CSV FROM 'file:///rows.csv' AS row \
+         CALL (row) { CREATE (:X {v: row[0]}) } IN TRANSACTIONS",
+    );
+    // The same answer below the top level: a body that only reads a file.
+    crate::plan_of(
+        "CALL { LOAD CSV FROM 'file:///rows.csv' AS row RETURN row } \
+         CALL (row) { CREATE (:X {v: row[0]}) } IN TRANSACTIONS",
+    );
+    let error = rejection(
+        "LOAD CSV FROM 'file:///rows.csv' AS row \
+         CREATE (:Y) \
+         CALL (row) { CREATE (:X {v: row[0]}) } IN TRANSACTIONS",
+    );
+    assert!(
+        error.contains("WriteBeforeCallInTransactions"),
+        "unexpected error: {error}"
+    );
+}
+
 /// A grammar-ending DDL command is standalone whichever AST carries it
 /// (`clause_kind::clause_is_ddl_command`'s family — schema DDL plus
 /// `ALTER DATABASE`): its grammar ends at its own `OPTIONS`/EOF, so every
