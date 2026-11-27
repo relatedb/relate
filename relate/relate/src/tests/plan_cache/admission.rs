@@ -84,7 +84,7 @@ fn plan_trees_never_serve_cached_plans() {
     // An indexed point read: the seek line narrates the predicate with the
     // bound as spelled — the contract a cached (auto-parameterized) plan
     // would break with `$__AUTO_*__`.
-    c.query("CREATE INDEX user_id FOR (n:User) ON (n.id)")
+    c.query("CREATE INDEX user_name FOR (n:User) ON (n.name)")
         .unwrap();
     // Warm the plain shape first: an entry exists.
     c.query("MATCH (n:User {id: 1}) RETURN n.name AS name")

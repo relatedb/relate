@@ -89,6 +89,11 @@ fn main() -> Result<()> {
     let read = "MATCH (n:Person {name: 'Alice'}) RETURN n.name AS name";
     let first = conn.query(read)?;
     assert_eq!(first.plan_cache().as_str(), "miss");
+    // The unindexed equality prices from the per-key statistics, which that
+    // first consult requested: their publication moves the statistics epoch,
+    // so the entry replans once (ADR-0700) before it serves raw hits.
+    let settled = conn.query(read)?;
+    assert_eq!(settled.plan_cache().as_str(), "replan");
     let hit = conn.query(read)?;
     assert_eq!(hit.plan_cache().as_str(), "hit-raw-fastpath");
     assert_eq!(hit.lex_parse_ms(), 0.0, "a hit parses nothing");

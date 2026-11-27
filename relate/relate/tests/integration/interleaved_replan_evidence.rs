@@ -49,6 +49,10 @@ fn read_user(conn: &mut Connection, id: i64) -> (PlanCacheOutcome, Value) {
 fn an_interleaved_workload_hits_until_drift_or_schema_change() {
     let mut conn = connection();
     seed(&mut conn);
+    // `id` is indexed so the point read prices from the index, not from the
+    // lazily built per-key statistics (ADR-0696): a read of those replans
+    // once as they publish (ADR-0700), which is not the rule this arm pins.
+    run(&mut conn, "CREATE INDEX user_id FOR (n:User) ON (n.id)");
 
     // Cold: the first statement compiles, plans and inserts.
     let (outcome, name) = read_user(&mut conn, 1);
@@ -110,7 +114,7 @@ fn an_interleaved_workload_hits_until_drift_or_schema_change() {
 
     // Schema DDL moves the full-invalidation epoch: the next hit re-plans
     // whatever the footprint says, and serves that statement correctly.
-    run(&mut conn, "CREATE INDEX user_id FOR (n:User) ON (n.id)");
+    run(&mut conn, "CREATE INDEX user_name FOR (n:User) ON (n.name)");
     let (outcome, name) = read_user(&mut conn, 4);
     assert_eq!(outcome, PlanCacheOutcome::Replan, "DDL advances the epoch");
     assert_eq!(name, Value::String("dee".into()));

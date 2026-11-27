@@ -602,6 +602,12 @@ mod tests {
         // No entry yet: the first run of the template compiles and inserts.
         let (first, _) = read(&mut conn, "a");
         assert_eq!(first, PlanCacheOutcome::Miss);
+        // The unindexed equality priced from the per-key statistics
+        // (ADR-0696), which were not built yet: the consult requested the
+        // build and the publication moved the statistics epoch, so the
+        // entry replans once (ADR-0700) and stamps the settled epoch.
+        let (settled, _) = read(&mut conn, "a");
+        assert_eq!(settled, PlanCacheOutcome::Replan);
         // The same text again: stage 1, the raw fast path — no normalizer.
         let (again, _) = read(&mut conn, "a");
         assert_eq!(again, PlanCacheOutcome::HitRawFastPath);

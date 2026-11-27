@@ -365,9 +365,9 @@ pub fn walk_cost<'a>(
     match estimate {
         Estimate::Measured(rows) => degree_walk(rows, hops, stats),
         // the compound: the degree-scaled walk floored at the scan
-        Estimate::SampleScan { rows, scan } | Estimate::Defaulted { rows, scan } => {
-            degree_walk(rows, hops, stats).max(scan)
-        }
+        Estimate::SampleScan { rows, scan }
+        | Estimate::Defaulted { rows, scan }
+        | Estimate::Statistic { rows, scan, .. } => degree_walk(rows, hops, stats).max(scan),
         Estimate::Rank(rows) => rows,
     }
 }
