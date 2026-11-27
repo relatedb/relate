@@ -20,12 +20,11 @@ use relate_feedback::report::Category;
 use relate_feedback::sender;
 use relate_feedback::state;
 
-use crate::agent_mode::FeedbackSurface;
 use crate::config_dir::env_var as env;
 use crate::parse_error::{flag_value, set_once, ParseError};
 
 /// The command word, also the config-dir error's command prefix.
-const WORD: &str = "feedback";
+pub(crate) const WORD: &str = "feedback";
 
 /// The two action words. They are always actions: text equal to one is sent
 /// through `--observed` (ADR-0069's lifecycle-verb grammar).
@@ -188,23 +187,11 @@ pub fn run(action: FeedbackAction) -> i32 {
     }
 }
 
-/// The absent surface's one-line hint: a mode-gated command typed in the
-/// other mode is an unknown command that names the surface this run has and
-/// that the grant is a person's act at a terminal.
-pub(crate) fn refuse_absent_surface(typed: &str, surface: FeedbackSurface) -> i32 {
-    let hint = match surface {
-        FeedbackSurface::Human => {
-            "the person's feedback surface is 'relate feedback'; the agent surface is \
-             'relate agent-feedback', and the grant is managed by a person at a terminal \
-             ('relate feedback enable')"
-        }
-        FeedbackSurface::Agent => {
-            "this run's feedback surface is 'relate agent-feedback'; the grant is managed by \
-             a person at a terminal ('relate feedback enable')"
-        }
-    };
-    crate::print_error(format!("Error: unknown command: {typed}. {hint}"));
-    2
+/// The person's enable invocation — the one spelling the refusals, the
+/// agent hint and the agent-context readout all name, built from this
+/// module's own verb and action words.
+pub(crate) fn enable_invocation() -> String {
+    format!("relate {} {}", WORD, FeedbackAction::Enable.as_str())
 }
 
 /// File a GitHub issue: derive the title and body, build and print the

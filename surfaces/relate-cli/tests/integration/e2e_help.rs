@@ -874,3 +874,31 @@ fn test_command_help_emits_the_help_events_and_no_command_event() {
         "per-command help must not emit COMMAND: {events:?}"
     );
 }
+
+/// The agent-mode top-level help ends with the feedback footer; a person's
+/// run has neither the agent surface's rows nor the footer (ADR-0588 §3,
+/// revised).
+#[test]
+fn test_agent_mode_help_carries_the_feedback_footer_and_a_persons_does_not() {
+    let home = tempdir();
+
+    let agent = Opts::new(&["--help"])
+        .in_home(home.path())
+        .with_envs(&[("RELATE_AGENT_MODE", "1")]);
+    let (status, stdout, stderr) = run_cli(agent);
+    assert!(status.success(), "{stderr}");
+    let last = stdout.lines().last().unwrap_or_default();
+    assert!(
+        last.starts_with("Agent runs: report failing or confusing commands before moving on")
+            && last.contains("only after their approval")
+            && last.ends_with("'relate agent-feedback'."),
+        "the agent footer is the help's last line, composed from the one rule: {last}"
+    );
+
+    let (status, stdout, stderr) = run_cli(Opts::new(&["--help"]).in_home(home.path()));
+    assert!(status.success(), "{stderr}");
+    assert!(
+        !stdout.contains("Agent runs: report failing"),
+        "a person's help carries no footer: {stdout}"
+    );
+}

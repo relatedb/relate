@@ -8,9 +8,11 @@
 //! refusal there, not a second check here.
 
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 
 use chrono::Utc;
 use relate_feedback::authorization::{Authorization, FeedbackConsent, DEFAULT_AUTHORIZATION_DAYS};
+use relate_feedback::opt_out;
 use relate_feedback::report::{Category, Context, Input, Invoker};
 use relate_feedback::sender::FeedbackSender;
 use relate_feedback::state;
@@ -20,8 +22,20 @@ use crate::config_dir::env_var as env;
 use crate::parse_error::{flag_value, set_once, ParseError};
 
 /// The command word, also the value a report's `command_id` filter
-/// excludes: a report never names a feedback command.
-const WORD: &str = "agent-feedback";
+/// excludes: a report never names a feedback command. Named by `parse`,
+/// the hint's prefill and the absent-surface refusal (the one place the
+/// two surface words meet).
+pub(crate) const WORD: &str = "agent-feedback";
+
+/// The reporting rule every surface carries (the hint, the agent-context
+/// readout, the skill bundle's shortened form), lead clause included: report
+/// friction before moving on; one sentence each for what was expected and
+/// what happened, nothing sensitive in them; the send waits for the
+/// person's approval. One home for the wording, so the surfaces cannot
+/// drift apart.
+pub(crate) const REPORT_RULE: &str = "report failing or confusing commands before moving on — \
+     draft one sentence each for --expected and --observed (no secrets, hosts, paths, Cypher, \
+     or pasted output), show the person, and send only after their approval";
 
 /// Parse the argument tail after the `agent-feedback` verb. Pure — the
 /// grammar is unit-testable; `main` turns `Err` into the usage-error exit.
@@ -112,8 +126,9 @@ fn run_in(dir: &std::path::Path, input: &Input) -> i32 {
     ) {
         crate::print_error(format!(
             "Error: agent feedback is not enabled (not_enabled): the grant is a person's, \
-             made at a terminal with 'relate feedback enable' ({DEFAULT_AUTHORIZATION_DAYS} days \
-             per grant), or answered at the install/upgrade ask"
+             made at a terminal with '{}' ({DEFAULT_AUTHORIZATION_DAYS} days \
+             per grant), or answered at the install/upgrade ask",
+            crate::feedback_cmd::enable_invocation()
         ));
         return 1;
     }
@@ -205,20 +220,100 @@ fn arch_label() -> Option<String> {
 static AGENT_RUN: AtomicBool = AtomicBool::new(false);
 static HINT_SHOWN: AtomicBool = AtomicBool::new(false);
 
+/// The run's command word, recorded once by the dispatch (`main`'s two
+/// surface resolutions — the lifecycle table's own word, or `"query"` for a
+/// statement run) and prefilled into the hint — run-scoped state like
+/// [`AGENT_RUN`]: the dispatch owns the fact, the emission reads it. The
+/// CLI's own `&'static` word, never raw argv — [`hint_text`] still refuses
+/// to print a word that is not a visible command, so the closed set is
+/// enforced at the one interpolation site. The error code is *not* stored:
+/// each report path holds it and passes it to [`write_hint`], so a path
+/// that forgets it fails to compile instead of silently dropping the
+/// prefill.
+static RUN_COMMAND: Mutex<Option<&'static str>> = Mutex::new(None);
+
 /// Record the run's surface for the pointer gate — called once, from `main`,
 /// from the one surface resolution.
 pub(crate) fn set_agent_run(on: bool) {
     AGENT_RUN.store(on, Ordering::Relaxed);
 }
 
-/// The once-per-run hint line, `None` when this run has had it or is a
-/// person's. The decision is pure over its inputs (testable without
-/// process-global state); the latch is the process's.
-fn error_hint() -> Option<&'static str> {
-    hint_line(
-        AGENT_RUN.load(Ordering::Relaxed),
-        HINT_SHOWN.swap(true, Ordering::Relaxed),
-    )
+/// Record the run's command word for the hint's prefill — the dispatch's
+/// one call per process, with the CLI's own word.
+pub(crate) fn set_run_command(word: &'static str) {
+    *RUN_COMMAND
+        .lock()
+        .expect("the run-command slot is never poisoned") = Some(word);
+}
+
+/// The grant state the hint varies on (ADR-0588 §3): an opted-out
+/// telemetry ladder emits nothing at all; a live grant gets the full
+/// report-first instruction with the prefilled command; anything else
+/// points at the person's `relate feedback enable` and never tells the
+/// agent to draft a report it cannot send.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HintGrant {
+    /// The telemetry ladder is off (`DO_NOT_TRACK`, `RELATE_TELEMETRY`, or
+    /// the config file): no hint, not even once.
+    OptedOut,
+    /// The person's live standing grant.
+    Granted,
+    /// No grant, an expired one, or a recorded decline.
+    NotGranted,
+}
+
+/// The grant state the process's next hint would carry: the telemetry
+/// ladder first (an opted-out run shows nothing), then the consent record.
+/// The same closed decisions the submit pipeline reads — the ladder through
+/// `opt_out::resolve`, the grant through `FeedbackConsent::authorization`
+/// plus the recorded decline — so the hint's promise can never disagree
+/// with what `agent-feedback` would actually do.
+fn hint_grant() -> HintGrant {
+    let dir = crate::config_dir::config_dir();
+    let ladder = opt_out::resolve(
+        &env,
+        dir.as_deref()
+            .map(state::load_config_telemetry)
+            .unwrap_or(state::ConfigTelemetry::Missing),
+    );
+    if !ladder.enabled() {
+        return HintGrant::OptedOut;
+    }
+    let consent = dir
+        .as_deref()
+        .map(FeedbackConsent::load)
+        .unwrap_or_default();
+    // The one canonical grant verdict: `FeedbackConsent::authorization`,
+    // exactly as `run_in` above and the crate's submit pipeline read it —
+    // so the hint's promise can never disagree with what `agent-feedback`
+    // would actually do.
+    if matches!(
+        consent.authorization(Utc::now()),
+        Authorization::Authorized { .. }
+    ) {
+        HintGrant::Granted
+    } else {
+        HintGrant::NotGranted
+    }
+}
+
+/// The once-per-run hint line, `None` when this run has had it, is a
+/// person's, or is opted out. The cheap gate and the latch come first — a
+/// person's run and a spent latch pay no config reads — then the grant
+/// verdict and the run's command word. `error_code` is the report path's
+/// own fact, passed in.
+fn error_hint(error_code: Option<&'static str>) -> Option<String> {
+    if !AGENT_RUN.load(Ordering::Relaxed) || HINT_SHOWN.swap(true, Ordering::Relaxed) {
+        return None;
+    }
+    let grant = hint_grant();
+    if grant == HintGrant::OptedOut {
+        return None;
+    }
+    let command = *RUN_COMMAND
+        .lock()
+        .expect("the run-command slot is never poisoned");
+    hint_text(grant, command, error_code)
 }
 
 /// The pointer's one emission: gate, latch, line and write in this one
@@ -226,19 +321,81 @@ fn error_hint() -> Option<&'static str> {
 /// — the lifecycle sink (`print_error`), the connect-failure and
 /// store-open reports, and the statement run — so the emission exists once
 /// and a new report path can neither re-spell it nor silently omit it.
-pub(crate) fn write_hint(sink: &mut dyn std::io::Write) {
-    if let Some(hint) = error_hint() {
+pub(crate) fn write_hint(sink: &mut dyn std::io::Write, error_code: Option<&'static str>) {
+    if let Some(hint) = error_hint(error_code) {
         crate::write_error(sink, hint);
     }
 }
 
-/// [`Self::error_hint`]'s pure decision: an agent run's first diagnostic
-/// carries the pointer, the second does not, a person's never does.
-pub(crate) fn hint_line(agent_run: bool, already_shown: bool) -> Option<&'static str> {
-    (agent_run && !already_shown).then_some(
-        "hint: agents can report Relate friction to its developers — draft it, ask \
-         the person, then run 'relate agent-feedback'",
-    )
+/// Append one prefill fact as ` <word> <value>`, or nothing when the fact is
+/// absent — the one spelling of the granted hint's append idiom (every part
+/// of the line, the command word included, is appended through it).
+fn push_fact(line: &mut String, flag: &str, value: Option<&'static str>) {
+    if let Some(value) = value {
+        line.push(' ');
+        line.push_str(flag);
+        line.push(' ');
+        line.push_str(value);
+    }
+}
+
+/// [`Self::error_hint`]'s pure renderer: the granted line carries the
+/// prefilled command — every interpolated value is a closed-set one (the
+/// command word is printed only when it names a visible command, the code
+/// only when it names a nonzero exit-table row), so no user text can ride
+/// the hint — and the report-first, approval-gated wording: the agent
+/// drafts and shows the person, and sends only after a yes (ADR-0588 §3;
+/// the wording is about reporting, never about sending without the
+/// person's approval). The gate, the latch and the opted-out verdict are
+/// [`Self::error_hint`]'s; `HintGrant::OptedOut` never reaches here.
+fn hint_text(
+    grant: HintGrant,
+    command: Option<&'static str>,
+    error_code: Option<&'static str>,
+) -> Option<String> {
+    match grant {
+        // The gate resolves this before the renderer; a direct caller gets
+        // the handled no-hint answer, never a panic.
+        HintGrant::OptedOut => None,
+        HintGrant::NotGranted => Some(format!(
+            "hint: agent feedback is not enabled — ask the person to run \
+             '{}' before drafting a report",
+            crate::feedback_cmd::enable_invocation()
+        )),
+        HintGrant::Granted => {
+            // The rule sentence is the shared constant, the command word
+            // the module's own, and the category the crate's typed
+            // vocabulary (`Category::as_str`, the one wire-spelling author)
+            // — the remaining flags are the descriptor's, and the e2e pins
+            // this exact line, so a rename fails loudly.
+            let mut line = format!("hint: {REPORT_RULE}:");
+            push_fact(&mut line, "relate", Some(WORD));
+            push_fact(
+                &mut line,
+                "--category",
+                Some(Category::UnclearError.as_str()),
+            );
+            // The one append idiom: each fact filters itself against its own
+            // closed set; the helper owns the spelling of the appended pair.
+            push_fact(
+                &mut line,
+                "--command",
+                command.filter(|word| visible_commands().iter().any(|candidate| candidate == word)),
+            );
+            push_fact(
+                &mut line,
+                "--error-code",
+                error_code.filter(|code| {
+                    crate::errors::error_code_names()
+                        .iter()
+                        .any(|candidate| candidate == code)
+                }),
+            );
+            push_fact(&mut line, "--expected", Some("\"...\""));
+            push_fact(&mut line, "--observed", Some("\"...\""));
+            Some(line)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -363,6 +520,52 @@ mod tests {
         for word in ["feedback", "agent-feedback"] {
             assert!(commands.iter().all(|name| name != word), "{word}");
         }
+    }
+
+    /// The granted hint prefills from the closed sets only: the visible
+    /// command word and the exit-table code name ride it; a word outside
+    /// `visible_commands()` or an unknown code is dropped, never echoed
+    /// (the wording is report-first and approval-gated).
+    #[test]
+    fn the_granted_hint_prefills_from_the_closed_sets_only() {
+        let line = hint_text(
+            HintGrant::Granted,
+            Some("query"),
+            Some(crate::errors::USAGE_ERROR_CODE),
+        )
+        .unwrap();
+        assert!(
+            line.contains(&format!(
+                "relate {WORD} --category unclear_error --command query --error-code {}",
+                crate::errors::USAGE_ERROR_CODE
+            )),
+            "{line}"
+        );
+        assert!(
+            line.contains("show the person") && line.contains("only after their approval"),
+            "the consent framing is report-first, approval-gated: {line}"
+        );
+        // Closed sets: an unknown command word and an unknown code name are
+        // dropped from the prefill, not echoed.
+        let line = hint_text(HintGrant::Granted, Some("feedback"), Some("nope")).unwrap();
+        assert!(
+            !line.contains("--command") && !line.contains("--error-code"),
+            "unknown words never ride the hint: {line}"
+        );
+    }
+
+    /// Without a live grant the hint points at the person's enable and
+    /// never tells the agent to draft a report it cannot send (the
+    /// not_enabled nudge, REL8-1735; the once-per-process gate and the
+    /// person's-run silence are pinned by `e2e_feedback`).
+    #[test]
+    fn a_missing_grant_nudges_the_persons_enable_and_never_a_draft() {
+        let line = hint_text(HintGrant::NotGranted, Some("query"), None).unwrap();
+        assert!(line.contains("relate feedback enable"), "{line}");
+        assert!(
+            !line.contains("agent-feedback --"),
+            "the not-granted hint must not advertise a sendable command: {line}"
+        );
     }
 
     #[test]

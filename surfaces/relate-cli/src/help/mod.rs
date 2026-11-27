@@ -554,6 +554,28 @@ pub(crate) fn top_level(surface: crate::agent_mode::FeedbackSurface) -> String {
     top_level_with(surface, crate::examples::enabled())
 }
 
+impl CommandSpec {
+    /// Whether this command is visible to the run's feedback surface — the
+    /// one visibility rule (ADR-0588 §3: each mode sees only its own
+    /// feedback surface), consulted by the listings and the readout's
+    /// detail gate.
+    pub(crate) fn visible_to(&self, surface: crate::agent_mode::FeedbackSurface) -> bool {
+        self.topic.surface().is_none_or(|own| own == surface)
+    }
+}
+
+/// The commands one run's mode lists — the one visibility rule both the
+/// top-level `--help` and the `agent-context` index read (ADR-0588 §3):
+/// each mode sees only its own feedback surface.
+pub(crate) fn commands_for(
+    surface: crate::agent_mode::FeedbackSurface,
+) -> Vec<&'static CommandSpec> {
+    commands()
+        .iter()
+        .filter(|spec| spec.visible_to(surface))
+        .collect()
+}
+
 /// The `Commands:`-section column width over the listed specs: the widest
 /// word plus the two-space gap, derived so a wider word can never render
 /// misaligned while a test still passes. The width is taken over the listed
@@ -579,17 +601,28 @@ pub(crate) fn command_row(spec: &CommandSpec, width: usize) -> String {
 /// caller.
 fn top_level_with(surface: crate::agent_mode::FeedbackSurface, examples: bool) -> String {
     let mut s = String::new();
+    // The agent run's footer (ADR-0588 §3, revised): one line after the
+    // examples pointing at the agent feedback channel — agent runs only,
+    // the same gate the Commands section's surface filter uses.
+    // The agent run's footer reads the one reporting-rule home (ADR-0588
+    // §3, revised) — never a third spelling of it.
+    let agent_footer = matches!(surface, crate::agent_mode::FeedbackSurface::Agent)
+        .then(|| {
+            format!(
+                "\nAgent runs: {rule} with 'relate {word}'.\n",
+                rule = crate::agent_feedback_cmd::REPORT_RULE,
+                word = crate::agent_feedback_cmd::WORD,
+            )
+        })
+        .unwrap_or_default();
     s.push_str(TOP_LEVEL_USAGE);
     s.push('\n');
     s.push_str("       relate <COMMAND> [ARGS]\n");
     s.push('\n');
     s.push_str("Commands:\n");
-    // One line per compiled-in command this run's mode has: each mode sees
-    // only its own feedback surface (ADR-0588 §3).
-    let listed: Vec<&CommandSpec> = commands()
-        .iter()
-        .filter(|spec| !spec.topic.surface().is_some_and(|own| own != surface))
-        .collect();
+    // One line per compiled-in command this run's mode has — the one
+    // visibility rule, shared with the agent-context index.
+    let listed = commands_for(surface);
     let width = command_column_width(&listed);
     for spec in listed {
         s.push_str(&command_row(spec, width));
@@ -606,12 +639,14 @@ fn top_level_with(surface: crate::agent_mode::FeedbackSurface, examples: bool) -
         "or redirected stdin this help is printed. `query` with no STATEMENT reads a script\n",
     );
     s.push_str("from stdin, or opens the same shell on a terminal.\n");
-    crate::examples::page(
+    let mut page = crate::examples::page(
         s,
         crate::examples::TOP_LEVEL,
         examples,
         "Run 'relate <COMMAND> --help' for details on a command.\n",
-    )
+    );
+    page.push_str(&agent_footer);
+    page
 }
 
 /// The help page for `topic`: the shared synopsis, then the command's

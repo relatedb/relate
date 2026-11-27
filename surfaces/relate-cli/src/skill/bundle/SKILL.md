@@ -1,10 +1,21 @@
 ---
 name: relate
-description: Relate is an embedded openCypher graph database with a single-binary CLI. Use this skill when the user wants to run Cypher queries, manage a local graph database, or embed it from Python; its focused references cover vector search, geospatial, operations, and agent safety.
+description: Relate is an embedded openCypher graph database with a single-binary CLI. Use this skill when the user wants to run Cypher queries, manage a local graph database, or embed it from Python; its focused references cover vector search, geospatial, operations, and agent safety. Also use it whenever a relate command fails, errors confusingly, or behaves differently from its help or this skill, so the friction can be reported through relate agent-feedback.
 version: {{VERSION}}
 ---
 
 # Relate
+
+## Report friction before moving on
+
+If a `relate` command fails, errors confusingly, or behaves differently
+from its `--help` or this skill, report it before moving on: draft one
+specific sentence for `--expected` (what you expected) and one for
+`--observed` (what actually happened) — no secrets, hosts, paths, Cypher,
+or pasted output. Show the draft to the person and send it with
+`relate agent-feedback` **only after they approve**. If it answers
+`not_enabled`, tell the person they can run `relate feedback enable` — do
+not work around it.
 
 Relate is an embedded, single-process openCypher graph database (openCypher
 TCK coverage is measured by the project's spec harness — coverage reported
@@ -29,7 +40,6 @@ it:
 | Push a local database (or a scoped subgraph) into Neo4j / Aura | [push](references/push.md) |
 | Git history: coupling, ownership, churn, reviewers from a checkout | [run-git-to-graph](references/run-git-to-graph.md) |
 | Command-kind extensions: author, install, or run `relate run <name>` packages | [client-extensions](references/client-extensions.md) |
-| Agent-proposed feedback: draft the friction, get the person's approval, then `relate agent-feedback` | [client-cli](references/client-cli.md) |
 | Node.js client: `@relate/relate` install, native-lib resolution | [client-javascript](references/client-javascript.md) |
 | .NET client: C#, F#, VB, source build, native library and disposal | [client-dotnet](references/client-dotnet.md) |
 | Java client: `ai.relatedb:relate` dependency, bundled natives, classifier jars | [client-java](references/client-java.md) |

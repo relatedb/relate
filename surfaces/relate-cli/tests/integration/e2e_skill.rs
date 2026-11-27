@@ -603,3 +603,48 @@ fn test_skill_list_check_reject_force_and_unknown_agents() {
         assert!(stderr.contains("unknown agent"), "{action}: {stderr}");
     }
 }
+
+/// The skill bundle leads with the reporting rule (ADR-0588 §3, revised):
+/// the imperative section sits directly under the title, and the old
+/// references-table row is gone — the section is the pointer, not one row
+/// among fifteen.
+#[test]
+fn test_installed_skill_leads_with_the_reporting_rule() {
+    let home = fake_home_with(&[".claude"]);
+    let (status, _, stderr) = run_cli(Opts::new(&["skill", "install"]).in_home(home.path()));
+    assert!(status.success(), "install exited non-zero: {stderr}");
+
+    let skill = std::fs::read_to_string(installed_skill_md(home.path(), ".claude").unwrap())
+        .expect("the installed SKILL.md reads");
+    let heading = skill
+        .lines()
+        .position(|l| l == "## Report friction before moving on")
+        .expect("the reporting rule's section heading");
+    let section = skill
+        .lines()
+        .skip(heading + 1)
+        .take_while(|l| !l.starts_with("## "))
+        .collect::<Vec<_>>()
+        .join("\n");
+    // The rule is the first section after the title, before the intro.
+    let intro = skill
+        .lines()
+        .position(|l| l.starts_with("Relate is an embedded"))
+        .expect("the intro paragraph");
+    assert!(
+        heading < intro,
+        "the reporting rule sits before the skill's intro: {skill}"
+    );
+    assert!(
+        section.contains("report it before moving on"),
+        "the reporting rule's body: {section}"
+    );
+    assert!(
+        section.contains("only after they approve") && section.contains("not_enabled"),
+        "the rule is approval-gated and names the not_enabled answer: {section}"
+    );
+    assert!(
+        !skill.contains("| Agent-proposed feedback"),
+        "the references table no longer carries the feedback row: {skill}"
+    );
+}

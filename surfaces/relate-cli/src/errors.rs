@@ -74,7 +74,7 @@ pub(crate) const EXIT_CODES: &[(i32, &str, &str)] = &[
     ),
     (
         2,
-        "usage_error",
+        USAGE_ERROR_CODE,
         "unknown flag, bad or missing value, extra positional",
     ),
     (
@@ -100,6 +100,27 @@ pub(crate) fn error_code_names() -> Vec<String> {
         .map(|(_, code, _)| code.to_string())
         .collect()
 }
+
+/// The classified code name of `e` — the agent-feedback hint's prefill
+/// fact, read by this module's process-stderr report and by the statement
+/// path's own error arm (whose injected-writer report never writes the
+/// hint; the outer process-stderr wrapper does).
+pub(crate) fn classified_code_name(e: &relate::Error) -> &'static str {
+    classify(e).class.code()
+}
+
+/// The timeout row's own code name — the statement path's timeout branch
+/// records it as the hint's prefill fact, derived from the one
+/// classification (never a second spelling of the table's string).
+pub(crate) fn timeout_code_name() -> &'static str {
+    Classified::timeout().class.code()
+}
+
+/// The usage-error row's own code name (exit 2) — the hint's prefill fact
+/// for a usage rejection. The `EXIT_CODES` row below names it through this
+/// constant, so the string has one home and no test is needed to keep a
+/// second spelling honest.
+pub(crate) const USAGE_ERROR_CODE: &str = "usage_error";
 
 /// The envelope's `kind`: the engine-error family, one variant per
 /// [`classify`] row. A type rather than a string so the open-site override
@@ -525,8 +546,10 @@ pub(crate) fn report_query_error(
     // LABS-1736: the process-stderr report path carries the agent feedback
     // pointer exactly as `print_error` does — the injected-writer form
     // below never does, so a test's captured sinks stay clean. The hint is
-    // the agent channel's own gate (`agent_feedback_cmd::error_hint`).
-    crate::agent_feedback_cmd::write_hint(&mut std::io::stderr());
+    // the agent channel's own gate (`agent_feedback_cmd::error_hint`), and
+    // the prefill fact rides the call: this error's classified code name
+    // (the exit table's own, a closed-set value).
+    crate::agent_feedback_cmd::write_hint(&mut std::io::stderr(), Some(classified_code_name(e)));
     code
 }
 
@@ -571,8 +594,9 @@ pub(crate) fn report_open_error(prefix: &str, e: &relate::Error, mode: &Mode) ->
     let error = envelope_map_for(&classified, e, None);
     let code = report_envelope(&classified, error, mode, None, &mut out, &mut diagnostics);
     // LABS-1736: the store-open path's process-stderr binding carries the
-    // same one pointer emission as every other path.
-    crate::agent_feedback_cmd::write_hint(&mut diagnostics);
+    // same one pointer emission as every other path, with this path's own
+    // classified code as the prefill fact.
+    crate::agent_feedback_cmd::write_hint(&mut diagnostics, Some(classified.class.code()));
     code
 }
 

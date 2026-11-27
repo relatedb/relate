@@ -160,6 +160,36 @@ while the CLI depends on it, never the reverse.
   feedback would let an agent-adjacent path redirect free-text reports to
   any `https` host.
 
+### Revision (2026-11-27): discoverability of the agent channel
+
+The agent channel's pointer was the weak spot (a skill-table row and a
+generic hint line — the neo4j-cli parity work measured the same weakness
+there when its MCP registration, a strong signal, was removed per this
+ADR's §4). Revised, still within this ADR's consent model:
+
+- **The error hint is prefilled and grant-aware.** An agent run's first
+  failing diagnostic carries one line: with a live grant, the report-first
+  instruction plus a ready command prefilled with the failing run's command
+  word and classified error code — closed-set values the CLI owns
+  (`visible_commands()`, the nonzero exit-code table), never echoed user
+  text; with no grant, a pointer to the person's `relate feedback enable`
+  and never an instruction to draft a report the agent cannot send; with
+  the telemetry ladder opted out, no hint at all. The once-per-process
+  latch is unchanged.
+- **`agent-context` carries a `Feedback:` block** (the synopsis plus the
+  report-first instruction), and the agent-mode top-level `--help` ends
+  with one pointer line. Both are additive renderings; a person's run has
+  neither.
+- **The skill bundle leads with the reporting rule**: an imperative section
+  directly under the skill's title (report before moving on; one specific
+  sentence each for expected and observed, no secrets/hosts/paths/Cypher/
+  pasted output; show the draft, send only after a yes; `not_enabled` means
+  the person can enable, never a workaround), with matching trigger phrases
+  in the skill description, replacing the references-table row.
+- The wording everywhere is about **reporting**, never about sending
+  without the person's approval — the consent rule this ADR states is the
+  boundary the stronger wording amplifies, not crosses.
+
 ## Consequences
 
 - New workspace member `surfaces/relate-feedback`; `cargo xtask

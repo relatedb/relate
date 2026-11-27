@@ -6,7 +6,7 @@
 
 use crate::support;
 
-use support::{run_cli, CliRunOptions as Opts};
+use support::{run_cli, tempdir, CliRunOptions as Opts};
 
 #[test]
 fn test_agent_context_index_lists_commands_flags_and_exit_codes() {
@@ -98,4 +98,56 @@ fn test_agent_context_output_stays_compact() {
         "agent-context index grew to {} bytes",
         stdout.len()
     );
+}
+
+/// The agent-context index obeys the run's surface: the Feedback block and
+/// the agent command row appear in an agent run only — the same mode gate
+/// the top-level help applies (ADR-0588 §3, revised).
+#[test]
+fn test_agent_context_feedback_block_is_agent_mode_only() {
+    let home = tempdir();
+
+    let agent = Opts::new(&["agent-context"])
+        .in_home(home.path())
+        .with_envs(&[("RELATE_AGENT_MODE", "1")]);
+    let (status, stdout, stderr) = run_cli(agent);
+    assert!(status.success(), "{stderr}");
+    assert!(stdout.contains("Feedback:"), "{stdout}");
+    assert!(
+        stdout.contains("relate agent-feedback") && stdout.contains("only after their approval"),
+        "the block carries the synopsis and the report-first instruction: {stdout}"
+    );
+
+    let (status, stdout, stderr) = run_cli(Opts::new(&["agent-context"]).in_home(home.path()));
+    assert!(status.success(), "{stderr}");
+    assert!(
+        !stdout.contains("Feedback:") && !stdout.contains("agent-feedback"),
+        "a person's index carries neither the block nor the agent row: {stdout}"
+    );
+}
+
+/// The other mode's feedback surface is not reachable through the detail
+/// path either: a person's run asking for `agent-feedback` gets the same
+/// absent-surface refusal the command dispatch gives, not the agent page
+/// (ADR-0588 §3, revised).
+#[test]
+fn test_agent_context_detail_refuses_the_other_modes_surface() {
+    let home = tempdir();
+    let (status, stdout, stderr) =
+        run_cli(Opts::new(&["agent-context", "agent-feedback"]).in_home(home.path()));
+    assert_eq!(status.code(), Some(2), "{stderr}");
+    assert!(
+        stderr.contains("unknown command: agent-feedback"),
+        "the absent surface is the dispatch's refusal: {stderr}"
+    );
+    assert!(!stdout.contains("Feedback:"), "{stdout}");
+
+    // The agent's own run prints the detail page as usual.
+    let (status, stdout, stderr) = run_cli(
+        Opts::new(&["agent-context", "agent-feedback"])
+            .in_home(home.path())
+            .with_envs(&[("RELATE_AGENT_MODE", "1")]),
+    );
+    assert!(status.success(), "{stderr}");
+    assert!(stdout.contains("agent-feedback"), "{stdout}");
 }

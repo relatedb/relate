@@ -4,6 +4,7 @@
 //! [`EXIT_CODES`] table (in `errors`, beside the classes that produce the
 //! codes), so the readout cannot drift from the parser.
 
+use crate::agent_mode;
 use crate::errors::EXIT_CODES;
 use crate::help::{self, CommandSpec};
 use crate::parse_error::ParseError;
@@ -33,25 +34,40 @@ pub fn parse_agent_context_args(
     }
 }
 
-/// Run the parsed command and return the process exit code. The readout is
-/// read-only and cannot fail once the arguments parsed, so it is always 0.
-pub fn run(command: Option<&'static CommandSpec>) -> i32 {
+/// Run the parsed command and return the process exit code: 0 for the index
+/// and a run's own detail page, and the absent-surface refusal's 2 when the
+/// word names the other mode's feedback surface (the same refusal the
+/// command dispatch gives). `surface` is the run's feedback surface: the
+/// index lists the commands this run's mode owns, the same rule the
+/// top-level help reads.
+pub fn run(command: Option<&'static CommandSpec>, surface: agent_mode::FeedbackSurface) -> i32 {
     match command {
-        None => print_index(),
-        Some(spec) => print_detail(spec),
+        None => {
+            print_index(surface);
+            0
+        }
+        // The run's own commands print their detail; the other mode's
+        // feedback surface is the same absent-surface refusal the command
+        // dispatch gives (the index never listed it either).
+        Some(spec) if spec.visible_to(surface) => {
+            print_detail(spec);
+            0
+        }
+        Some(spec) => crate::lifecycle::refuse_absent_surface(spec.word, surface),
     }
-    0
 }
 
 /// The no-argument index: version, one line per compiled-in command, the
-/// query-run flag names, and the exit-code table.
-fn print_index() {
+/// query-run flag names, the exit-code table, and the feedback block.
+fn print_index(surface: agent_mode::FeedbackSurface) {
     println!("relate v{} — agent context", crate::VERSION);
     println!();
     println!("Commands (detail: relate agent-context <COMMAND>):");
-    let listed: Vec<&CommandSpec> = help::commands().iter().collect();
+    // The one visibility rule, shared with the top-level help: this run's
+    // mode lists only the commands it owns (ADR-0588 §3).
+    let listed = help::commands_for(surface);
     let width = help::command_column_width(&listed);
-    for spec in help::commands() {
+    for spec in listed {
         println!("{}", help::command_row(spec, width));
     }
     println!();
@@ -59,6 +75,34 @@ fn print_index() {
     println!("  {}", help::session_flags().join(" "));
     println!();
     print_exit_codes();
+    // The Feedback block advertises the agent channel, so it rides the same
+    // mode gate the command rows above and the top-level help apply: a
+    // person's run neither lists nor can call `agent-feedback`.
+    if surface == agent_mode::FeedbackSurface::Agent {
+        println!();
+        print_feedback();
+    }
+}
+
+/// The feedback block (ADR-0588 §3, revised): the agent channel's synopsis
+/// and its one instruction line — report first, the person's approval
+/// before any send. Additive after the readout's earlier sections, so a
+/// harness that parses by section heading is unaffected.
+fn print_feedback() {
+    println!("Feedback:");
+    // The canonical synopsis, straight off the descriptor table — the same
+    // `usage` the help page and usage errors print, so a new flag cannot
+    // reach one and miss this readout.
+    let usage = &help::find_command("agent-feedback")
+        .expect("agent-feedback is compiled into every bundle")
+        .usage;
+    println!("  {usage}");
+    println!(
+        "  {} — without the person's grant it answers not_enabled (the person can \
+         run '{}').",
+        crate::agent_feedback_cmd::REPORT_RULE,
+        crate::feedback_cmd::enable_invocation()
+    );
 }
 
 /// One command's detail: synopsis, one-liner, flags, examples, exit codes.

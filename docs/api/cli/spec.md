@@ -984,6 +984,32 @@ relate agent-feedback --category unclear_error \
   --observed "it printed help instead" --command info
 ```
 
+### The agent-mode error hint
+
+An agent-mode run's diagnostics carry the feedback pointer: one line on
+stderr, exactly once per process, after the first failing diagnostic (a
+success or notice announcement never spends it). The line is prefilled and
+grant-aware (ADR-0588 §3, revised):
+
+- **telemetry opted out** (`DO_NOT_TRACK`, `RELATE_TELEMETRY`, or the config
+  file): no hint at all — the channel does not exist for that run;
+- **a live grant**: the report-first instruction — draft one sentence each
+  for `--expected` and `--observed` (no secrets, hosts, paths, Cypher, or
+  pasted output), show the person, send only after their approval — with the
+  prefilled command `relate agent-feedback --category unclear_error
+  --command <word> [--error-code <code>] --expected "..." --observed "..."`,
+  where `<word>` is the failing run's command and `<code>` its classified
+  error code (both closed-set values the CLI itself owns; a value outside
+  `visible_commands()` or the nonzero exit-code table is dropped, never
+  echoed);
+- **no grant, an expired one, or a recorded decline**: the pointer names the
+  person's `relate feedback enable` and never tells the agent to draft a
+  report it cannot send.
+
+The same pointer shape rides `relate agent-context` (its `Feedback:` block
+carries the synopsis and the report-first instruction) and the agent-mode
+top-level `--help` (one footer line; a person's run has neither).
+
 See the [executable feedback example](examples/feedback.md).
 
 `pull` runs a shape query against Neo4j or Aura over HTTP Query API v2 and
@@ -2200,10 +2226,10 @@ naming the trigger (`relate agent mode on: --agent-mode
 (--no-agent-mode to turn off)`);
 detection never announces — a per-command CLI would repeat a banner on
 every one-shot run. Agent-mode error output carries one extra hint line
-exactly once per run, after the mode has resolved: the diagnostic is
-followed by `hint: agents can report Relate friction to its developers —
-draft it, ask the person, then run 'relate agent-feedback'` (ADR-0588 §4)
-— the flag-parse diagnostics that precede the resolution never carry it.
+exactly once per run, after the mode has resolved — prefilled with the
+failing run's command and error code and worded by the grant (see
+[The agent-mode error hint](#the-agent-mode-error-hint)) — the flag-parse
+diagnostics that precede the resolution never carry it.
 An invalid `RELATE_AGENT_MODE` exits 2 before any
 statement runs.
 

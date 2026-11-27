@@ -58,7 +58,13 @@ entirely. Never try to grant it yourself: the agent-mode command does not
 exist, and a piped `enable` is refused.
 
 Agent-mode error output also points here: an agent run's diagnostics carry a
-one-line hint to this flow, exactly once per run.
+one-line hint to this flow, exactly once per run — prefilled with the failing
+command and its error code when the CLI knows them (closed-set values only),
+worded by the grant (a live grant gets the draft → ask → send instruction
+with that command; no grant gets the `relate feedback enable` pointer, never
+a draft it cannot send), and suppressed entirely when the telemetry ladder is
+opted out. `relate agent-context` carries the same synopsis in its `Feedback:`
+block, and agent-mode `relate --help` ends with one pointer line.
 
 ## Gotchas
 

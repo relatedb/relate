@@ -9,7 +9,6 @@ use std::borrow::Cow;
 
 use crate::help::{CommandSpec, HelpScope, HelpTopic};
 use crate::parse_error::ParseError;
-use crate::print_error;
 use crate::suggest;
 
 /// The one suggestion a usage error can carry: flag text (ADR-0192) or a
@@ -78,11 +77,14 @@ pub(super) fn unknown_flag_suggestion(
 /// flag spelling (ADR-0192) or, for a pending statement that looks like
 /// a mistyped command, the ADR-0230 command line — blank line first,
 /// exactly as the engine fallback renders it, so the two copies cannot
-/// drift. Every interpolated line goes through `print_error` — the
-/// message and suggestion by this body, the usage/hint pair by contract
-/// (static synopses for the `HelpScope` entry, already-sanitized
+/// drift. Every interpolated line goes through the sanitized `write_error`
+/// sink — the message and suggestion by this body, the usage/hint pair by
+/// contract (static synopses for the `HelpScope` entry, already-sanitized
 /// manifest text for the `run` mount's entry) — so no caller can bypass
-/// the sink by construction.
+/// the sink by construction. The body deliberately does not call
+/// `print_error`: that sink would spend the agent-feedback hint's
+/// once-per-run latch per line, so the one hint emission happens at the
+/// tail with this path's own `usage_error` row.
 ///
 /// `pub(crate)` as the manifest-scope entry: the `run` mount passes its
 /// action's own usage and hint (ADR-0430 §5) instead of a `HelpScope`
@@ -93,14 +95,23 @@ pub(crate) fn render_usage_error(
     hint: &str,
     suggestion: Option<UsageSuggestion>,
 ) -> ! {
-    print_error(format!("Error: {msg}"));
+    // Every line of the one usage diagnostic routes through the sanitized
+    // writer — one stderr binding, like every sibling report path — and the
+    // latch is spent exactly once, at the hint emission below (a
+    // `print_error` here would spend it with no code and the prefill could
+    // never carry the usage_error row).
+    let mut diagnostics = std::io::stderr();
+    crate::write_error(&mut diagnostics, format!("Error: {msg}"));
     match suggestion {
         Some(UsageSuggestion::Flag(flag)) => {
-            print_error(format!("Did you mean '{flag}'?"));
+            crate::write_error(&mut diagnostics, format!("Did you mean '{flag}'?"));
         }
         Some(UsageSuggestion::Command(spec)) => {
-            eprintln!();
-            print_error(suggest::command_line(spec));
+            // The blank separator is a CLI-generated report line, not a
+            // diagnostic: the sibling report path routes exactly this
+            // separator through the report writer.
+            crate::write_report(&mut diagnostics, "");
+            crate::write_error(&mut diagnostics, suggest::command_line(spec));
         }
         None => {}
     }
@@ -111,8 +122,13 @@ pub(crate) fn render_usage_error(
     // the block's shape and still routes every line, static or manifest,
     // through the sanitizer.
     for line in usage.lines().chain(hint.lines()) {
-        print_error(line);
+        crate::write_error(&mut diagnostics, line);
     }
+    // The usage rejection's own classified code rides the one hint
+    // emission — the exit table's usage_error row — so the granted hint
+    // prefills the row this path exists for (the generic `print_error`
+    // sink holds no code).
+    crate::agent_feedback_cmd::write_hint(&mut diagnostics, Some(crate::errors::USAGE_ERROR_CODE));
     std::process::exit(2);
 }
 

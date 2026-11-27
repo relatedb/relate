@@ -400,3 +400,64 @@ fn test_usage_errors_exit_2() {
         assert!(stderr.contains(usage), "{args:?}: {stderr}");
     }
 }
+
+/// The agent-mode error hint (ADR-0588 §3, revised): one line on the first
+/// failing diagnostic, prefilled with the failing run's own command and
+/// classified code (closed-set values), worded by the grant, and suppressed
+/// entirely by an opted-out telemetry ladder or a person's run.
+#[test]
+fn test_agent_error_hint_is_prefilled_and_grant_aware() {
+    let home = tempdir();
+    // One deterministic failing statement: an unknown function is a
+    // syntax-level rejection the run reports as validation_error.
+    let failing = &["query", "RETURN no_such_function_1()"][..];
+
+    // No grant: the pointer names the person's enable and never tells the
+    // agent to draft a report it cannot send (REL8-1735: the not_enabled
+    // nudge, now pinned).
+    // The harness forces telemetry off by default; these runs keep the
+    // product's default ladder so the grant state is what varies.
+    let (status, _, stderr) = run_cli(agent(home.path(), failing).with_default_telemetry());
+    assert_eq!(status.code(), Some(6), "{stderr}");
+    assert!(
+        stderr.contains("hint: agent feedback is not enabled"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("relate feedback enable"), "{stderr}");
+    assert!(
+        !stderr.contains("agent-feedback --category"),
+        "the not-granted hint must not advertise a sendable command: {stderr}"
+    );
+
+    // A live grant: the report-first instruction with the prefilled
+    // command — the failing run's own word and its classified code, both
+    // closed-set values the CLI itself owns.
+    write_grant(home.path(), "https://api.mixpanel.com/track");
+    let (status, _, stderr) = run_cli(agent(home.path(), failing).with_default_telemetry());
+    assert_eq!(status.code(), Some(6), "{stderr}");
+    assert!(
+        stderr.contains(
+            "relate agent-feedback --category unclear_error --command query --error-code validation_error"
+        ),
+        "the hint is prefilled with the failing run's facts: {stderr}"
+    );
+    assert!(
+        stderr.contains("show the person") && stderr.contains("only after their approval"),
+        "the consent framing is report-first, approval-gated: {stderr}"
+    );
+    // Once per process: the whole run's stderr carries exactly one hint.
+    assert_eq!(stderr.matches("hint:").count(), 1, "{stderr}");
+
+    // An opted-out telemetry ladder: no hint at all — the channel does not
+    // exist for that run.
+    let opted = Opts::new(failing)
+        .in_home(home.path())
+        .with_envs(&[("RELATE_AGENT_MODE", "1"), ("DO_NOT_TRACK", "1")])
+        .with_default_telemetry();
+    let (_, _, stderr) = run_cli(opted);
+    assert!(!stderr.contains("hint:"), "{stderr}");
+
+    // A person's run (the harness scrubs the ambient markers): never.
+    let (_, _, stderr) = run_cli(human(home.path(), failing));
+    assert!(!stderr.contains("hint:"), "{stderr}");
+}

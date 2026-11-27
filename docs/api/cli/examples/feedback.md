@@ -75,7 +75,11 @@ exception: a documentation link to this project's own docs or repository, by
 path (`relatedb.ai/<path>`, `github.com/relatedb/relate/<path>`), or to the
 Neo4j Cypher manual (`neo4j.com/docs/`) is kept; a bare host URL with no path
 (`relatedb.ai`, `github.com/relatedb/relate`) is refused. An agent drafts the
-report, shows the person the draft, and sends only after their approval.
+report, shows the person the draft, and sends only after their approval. The
+CLI helps you start: an agent run's first failing diagnostic carries a
+one-line hint with the prefilled command (the failing command and its error
+code filled in), and `relate agent-context` prints the same synopsis in its
+`Feedback:` block.
 
 See the [CLI spec](../spec.md#feedback-reports) for the full flag tables,
 mode gating, exit codes, and environment overrides.
