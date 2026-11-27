@@ -5,12 +5,14 @@
 //! generator (`unwind.rs`).
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
-use relate_core::{Result, Value};
-use relate_ir::{Expr, MatchMode};
+use relate_core::{NodeId, Result, Value};
+use relate_ir::{Expr, LabelsFunctionOp, MatchMode};
 
 use crate::ctx::ExecCtx;
 use crate::eval::eval;
+use crate::graph::EntityId;
 use crate::metrics::ParkedRecord;
 use crate::overlay::ExecGraph;
 use crate::row::Row;
@@ -24,7 +26,10 @@ use super::match_clause::match_paths;
 use super::one_path::ResolvedPatterns;
 use super::pushdown::Residual;
 use super::scope::refresh_rows;
-use super::write::{apply_resolved_removes, apply_sets, delete_values, resolve_removes};
+use super::write::{
+    apply_resolved_removes, apply_resolved_sets, apply_sets, delete_values, resolve_removes,
+    resolve_sets, ResolvedSet,
+};
 
 /// The CREATE clause's input policy — the one owner of the graph-sensitive
 /// decision: a graph-sensitive pattern set must resolve every row's
@@ -128,7 +133,9 @@ pub(super) fn exec_create(
 }
 
 /// The MERGE clause arm: match the pattern per row, create-and-set on a
-/// miss, set on a hit, then refresh the bindings.
+/// miss (the `ON CREATE` arm's `labels(n) = …` overwrites keep the
+/// pattern's own labels for the node it created, ADR-0695), set on a
+/// hit, then refresh the bindings.
 pub(super) fn exec_merge(
     graph: &ExecGraph<'_>,
     rows: Vec<Row>,
@@ -166,7 +173,10 @@ pub(super) fn exec_merge(
         if matched.is_empty() {
             let mut created = row;
             create_patterns(graph, &mut created, std::slice::from_ref(pattern), params)?;
-            apply_sets(graph, &mut created, on_create, params)?;
+            // ADR-0695: the ON CREATE arm's SET application — the merge
+            // arm owns the anchored-overwrite policy whole (the generic
+            // SET path stays merge-free).
+            apply_sets_on_create(graph, &mut created, on_create, params, pattern)?;
             next.push(created);
         } else {
             for mut m in matched {
@@ -178,6 +188,111 @@ pub(super) fn exec_merge(
     rows = next;
     refresh_rows(graph, &mut rows);
     Ok(rows)
+}
+
+/// ADR-0695: the birth label sets of the nodes this merge created, read
+/// from the row's just-created bindings before the `ON CREATE` items
+/// apply — an `ON CREATE` `labels(n) = …` overwrite unions them back
+/// into its written set, because the pattern anchors the identity of the
+/// node it created. Only fresh, named node patterns carry an anchor: a
+/// bare node beside a relationship reuses an earlier clause's binding
+/// (it was not created here), and an anonymous node cannot be an
+/// `ON CREATE SET` target. The row's just-created bindings are the one
+/// source of the fact — `create_patterns` inserts each carrying the
+/// created node's labels — read before the arm's items apply. The anchor
+/// holds the binding's own `Arc` (a refcount bump, never a copy); the
+/// names are cloned once, at the union, only for the node an overwrite
+/// actually targets.
+fn merge_create_label_anchors(
+    row: &Row,
+    pattern: &relate_ir::PathPattern,
+) -> Vec<(NodeId, Arc<Vec<String>>)> {
+    pattern
+        .nodes
+        .iter()
+        .filter(|np| !pattern.node_reuses_binding(np))
+        .filter_map(|np| {
+            let name = np.variable.as_ref()?;
+            // The binding always exists — `create_patterns` binds every
+            // fresh, named pattern to the node it created — so a miss is
+            // an invariant violation, not an anchor decision.
+            let binding = row
+                .get_name(name)
+                .expect("create_patterns binds every fresh, named node pattern");
+            // A binding that is no longer a node is not an anchor: a
+            // same-named relationship can clobber it, because the dynamic
+            // rel type reuse `MERGE (r:Person)-[r:$(t)]->(m)` leaves the
+            // rel pattern's shape undeclared and `create_rel` rebinds `r`
+            // to the relationship it just created. The arm's own target
+            // resolution owns that rejection (the typed
+            // `SET labels() requires a node` error); the anchor scan
+            // skips what is not a node.
+            match binding {
+                Value::Node(node) => Some((node.id, Arc::clone(&node.labels))),
+                _ => None,
+            }
+        })
+        .collect()
+}
+
+/// ADR-0695: the `ON CREATE` arm's SET application — [`apply_sets`]'s own
+/// halves with the one merge-anchored overwrite patched between them: a
+/// `labels(n) = …` item whose target is a node this merge created gets
+/// that node's birth labels prepended to its written set, because the
+/// pattern anchors the identity of the node it created, so the overwrite
+/// replaces everything else. Every other item, and an overwrite whose
+/// target the merge did not create, applies exactly as [`apply_sets`]
+/// does. The seam is the removes' own resolve/apply pair, so this arm
+/// and [`merge_create_label_anchors`] hold the whole policy and the
+/// generic SET path stays merge-free.
+fn apply_sets_on_create(
+    graph: &ExecGraph<'_>,
+    row: &mut Row,
+    items: &[relate_ir::SetItem],
+    params: &BTreeMap<String, Value>,
+    pattern: &relate_ir::PathPattern,
+) -> Result<()> {
+    let mut resolved = resolve_sets(graph, row, items, params)?;
+    // The anchors are built only when the resolved arm holds a
+    // `labels(n) = …` overwrite — the one item that can read them
+    // (REL8-2243's perf note). The gate reads the same resolved
+    // vocabulary the loop below consumes, so the fact is discriminated
+    // once; a plain ON CREATE SET (properties, static labels, `+=` /
+    // `-=`) pays nothing.
+    let anchors = if resolved.iter().any(|item| {
+        matches!(
+            item,
+            ResolvedSet::LabelsFunction(_, _, LabelsFunctionOp::Overwrite)
+        )
+    }) {
+        merge_create_label_anchors(row, pattern)
+    } else {
+        Vec::new()
+    };
+    for item in &mut resolved {
+        if let ResolvedSet::LabelsFunction(
+            EntityId::Node(id),
+            labels,
+            LabelsFunctionOp::Overwrite,
+        ) = item
+        {
+            let Some((_, anchor)) = anchors.iter().find(|(birth, _)| *birth == *id) else {
+                continue;
+            };
+            // The anchor's names come first: the pattern's carried names
+            // read back before the written ones — the write-order
+            // contract — even when an earlier item removed a name the
+            // overwrite re-adds. The extend is unconditional: the
+            // overwrite primitive's add half owns membership (a repeat,
+            // or a name the node already carries, is added once, in
+            // first-occurrence order).
+            let mut unioned = Vec::with_capacity(anchor.len() + labels.len());
+            unioned.extend(anchor.iter().cloned());
+            unioned.append(labels);
+            *labels = unioned;
+        }
+    }
+    apply_resolved_sets(graph, resolved)
 }
 
 /// The DELETE clause arm: resolve the expressions, delete the values, and
