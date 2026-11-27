@@ -581,3 +581,64 @@ fn a_space_separator_is_rejected_for_datetime_kinds() {
         );
     }
 }
+
+/// REL8-2289: the ISO quarter date form — `±YYYYQn` names the first day of
+/// that quarter, in a `date` literal and as the date part of a datetime
+/// body (live 2026.10.1: sign optional, four year digits, uppercase `Q`,
+/// quarter 1-4; lowercase and short years are rejections).
+#[test]
+fn the_quarter_date_form_names_the_quarters_first_day() {
+    assert_eq!(
+        parse_iso("date", "2022Q2").unwrap().iso_string(),
+        "2022-04-01"
+    );
+    assert_eq!(
+        parse_iso("date", "+2022Q4").unwrap().iso_string(),
+        "2022-10-01"
+    );
+    assert_eq!(
+        parse_iso("localdatetime", "2022Q2T12:00")
+            .unwrap()
+            .iso_string(),
+        "2022-04-01T12:00"
+    );
+    for rejected in ["2022q2", "22Q2", "2022Q5", "2022Q"] {
+        assert!(
+            parse_iso("date", rejected).is_err(),
+            "date('{rejected}') parsed"
+        );
+    }
+}
+
+/// REL8-2289: a `,` is the ISO decimal separator wherever a `.` fraction
+/// goes — time-of-day texts (bare and inside datetime bodies) and duration
+/// components (live 2026.10.1).
+#[test]
+fn a_comma_is_the_decimal_separator_in_time_and_duration_texts() {
+    assert_eq!(
+        parse_iso("time", "12:01:01,12345643").unwrap().iso_string(),
+        "12:01:01.12345643Z"
+    );
+    assert_eq!(
+        parse_iso("localdatetime", "2022-04-01T12:01:01,5")
+            .unwrap()
+            .iso_string(),
+        "2022-04-01T12:01:01.5"
+    );
+    // The compact spelling with a comma fraction keeps its negative
+    // offset — the offset split sees the comma exactly like the dot
+    // spelling (a silent fraction/offset fold is the regression this
+    // pins).
+    assert_eq!(
+        parse_iso("time", "120101,5-05:00").unwrap().iso_string(),
+        "12:01:01.5-05:00"
+    );
+    // The `seconds` component is the whole-second field (Neo4j's own
+    // decomposition); the fraction lands in `nanosecondsOfSecond`.
+    let dur = parse_iso("duration", "PT1,5S").unwrap();
+    assert_eq!(dur.component("seconds").unwrap(), Value::Int(1));
+    assert_eq!(
+        dur.component("nanosecondsOfSecond").unwrap(),
+        Value::Int(500_000_000)
+    );
+}

@@ -1,6 +1,7 @@
 //! Instant-pattern resolution: the collected [`Fields`] to a date or a
 //! time of day, with CIP-228's cross-field rules.
 
+use super::super::field::first_month_of_quarter;
 use chrono::{Datelike, Duration as ChronoDur, NaiveDate, NaiveTime, Offset, Weekday};
 
 use crate::Result;
@@ -83,10 +84,11 @@ pub(super) fn resolve_date(fields: &Fields) -> Result<NaiveDate> {
         return Ok(date);
     }
     if let (Some(year), Some(quarter)) = (year, fields.quarter) {
-        if !(1..=4).contains(&quarter) {
-            return Err(invalid_value("quarter out of range"));
-        }
-        return ymd(year, (quarter - 1) * 3 + 1, 1);
+        let month =
+            first_month_of_quarter(quarter).ok_or_else(|| invalid_value("quarter out of range"))?;
+        let date = ymd(year, month, 1)?;
+        check_day_of_week(fields, date)?;
+        return Ok(date);
     }
     Err(invalid_value("incomplete date"))
 }

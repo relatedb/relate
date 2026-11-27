@@ -13,6 +13,20 @@ use super::exact;
 /// same constant instead of restating the literal.
 pub(super) const MONTHS_PER_YEAR: i128 = 12;
 pub(super) const MONTHS_PER_QUARTER: i128 = 3;
+
+/// The first month of `quarter` (1-4) — the one derivation of the
+/// quarter→month relation from [`MONTHS_PER_QUARTER`], shared by the
+/// quarter date form's parser and any consumer naming a quarter's start.
+pub(super) fn first_month_of_quarter(quarter: u32) -> Option<u32> {
+    if !(1..=4).contains(&quarter) {
+        return None;
+    }
+    // The constant's u32 view, cast once like the f64 sites above; the
+    // range gate above is the function's only `None`.
+    const MPQ: u32 = MONTHS_PER_QUARTER as u32;
+    Some((quarter - 1) * MPQ + 1)
+}
+
 pub(super) const DAYS_PER_WEEK: i128 = 7;
 pub(super) const NANOS_PER_DAY: i128 = 24 * NANOS_PER_HOUR;
 pub(super) const NANOS_PER_HOUR: i128 = 3_600_000_000_000;
