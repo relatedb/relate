@@ -44,6 +44,7 @@ pub mod profile;
 pub mod report;
 pub mod run;
 pub mod schema;
+pub mod shape;
 pub mod suite;
 pub mod workload;
 

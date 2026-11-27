@@ -1076,6 +1076,52 @@ loader <nodes> nodes <rels> rels: <seconds> s (<micros> us/element) nodes_new=<n
 cargo run --release -p relate-graph-examples --example pull_rca
 ```
 
+## Shape matrix (REL8-2242)
+
+`shape_matrix` (`testing/relate-query-latency`, a dev tool, not CI-gated)
+times one variable-length / quantified-path statement over a matrix of
+graph and query shapes, so a walker change (the QPP memo) is judged on more
+than the social-network Q3/Q4. It builds small synthetic graphs in
+`:memory:` (driver rows `:P` reach a start `:C` over `AT`; the walk under
+test runs over `E`), runs each cell's statement in interleaved rounds, and
+reports the median, a noise spread and the statement's heap peak per cell.
+
+The matrix is a baseline cell (tree, out-degree 3, 10 distinct starts,
+`*1..3`, typed, directed, `count(*)`) varied along one axis at a time, plus
+crossings of start distinctness against fan-out. Axes: start distinctness
+(1, 10, 1k, one per driver row), out-degree (1, 3, 10, 50), hops (`*1..2`,
+`*1..3`, `*2..4`, a QPP `{1,3}` with inner nodes), typing (typed, untyped,
+far-end label alternation), topology (divergent trees, a dense cycle core,
+the core with cubic-skewed start frequency), direction, and consumer (full
+rows, `LIMIT 10`, `count(*)`). A cell's id (`tree.f3.d10.h1-3.typed.dir.count`)
+names every axis. A cell's driver rows are cut to `--budget` divided by its
+path visits per start; a cell left under 4 rows is reported `skipped`.
+Memory is the counting allocator's peak over the live bytes before the
+statement (per cell); the process peak RSS only grows, so it is reported
+once per graph group.
+
+```bash
+cargo run --release -p relate-query-latency --bin shape_matrix -- --label baseline
+cargo run --release -p relate-query-latency --bin shape_matrix -- --filter qpp --list
+cargo run --release -p relate-query-latency --bin shape_matrix -- --compare \
+  target/query-latency/shape-matrix/baseline.json target/query-latency/shape-matrix/memo.json
+```
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `--label <NAME>` | `baseline` | Name of the run; the report is `<OUT>/<NAME>.json` and `<OUT>/<NAME>.md` |
+| `--out <DIR>` | `target/query-latency/shape-matrix` | Report directory |
+| `--persons <N>` | 2000 | Most driver rows a statement fans out from |
+| `--rounds <N>` | 9 | Interleaved timed rounds per cell (at least 5) |
+| `--budget <V>` | 600000 | Path visits one statement may cost; cuts a cell's driver rows |
+| `--filter <TEXT>` | unset | Run only cells whose id contains the text |
+| `--list` | off | Print the cell ids and statements, run nothing |
+| `--compare <BEFORE> <AFTER>` | unset | Compare two report JSONs instead of running: ratio per cell, `SLOWER` beyond max(5%, half the larger spread), `ANSWER DIFFERS` on a changed answer |
+
+Exit 0 on success, 1 on a failed run, report write or compare read. Time it
+in a quiet window (the repo's measurement protocol); the full matrix takes
+about a minute. The report JSON carries every round's time (`times_ms`).
+
 ## Query latency: graph-benchmark-ldbc workload (ADR-0243)
 
 `testing/relate-query-latency` runs the 30 Cypher queries of

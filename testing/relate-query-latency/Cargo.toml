@@ -74,6 +74,13 @@ path = "src/bin/pokec_profile.rs"
 name = "phase_bench"
 path = "src/bin/phase_bench.rs"
 
+# The QPP memo's shape matrix (REL8-2242 step 3): one variable-length
+# query timed over many graph and query shapes, median + spread + heap
+# peak per cell. Dev tool, not CI-gated.
+[[bin]]
+name = "shape_matrix"
+path = "src/bin/shape_matrix.rs"
+
 # Research-only gap-measurement harness (ADR-0476): compiled only under
 # `--features research`.
 [[example]]

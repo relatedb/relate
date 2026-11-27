@@ -132,6 +132,19 @@ mode serves inline. The mix's known classes are printed with the
 report. Time it in a quiet window — the figures are wall-clock medians
 at microsecond scale.
 
+## shape_matrix — variable-length shape matrix
+
+`relate-query-latency` also ships `shape_matrix`, a dev tool (not
+CI-gated) that times one variable-length / QPP statement over a matrix
+of synthetic graph and query shapes (start distinctness, fan-out, hops,
+typing, topology, direction, consumer), reporting the median, a noise
+spread and the heap peak per cell, and comparing two runs. Flags and the
+matrix are in [`docs/datasets.md`](../datasets.md#shape-matrix-rel8-2242):
+
+```bash
+cargo run --release -p relate-query-latency --bin shape_matrix -- --label baseline
+```
+
 ## External samplers
 
 `--sampler none` runs the same checked loop without the in-process
