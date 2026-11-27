@@ -312,6 +312,18 @@ impl PartialOrd for Ranked {
     }
 }
 
+/// What [`TopWindow`] does with a candidate: the admission decision
+/// (`None` drops it), so [`TopWindow::push`] enacts the decision instead
+/// of re-deriving it, and a scan can pre-gate per-candidate work on
+/// [`TopWindow::admits`] (ADR-0705's filter reads).
+enum Admission {
+    /// Room in the window: append.
+    Append,
+    /// Window full and the candidate beats the worst retained entry:
+    /// replace it.
+    Replace,
+}
+
 /// ADR-0256: the bounded top-k collector for the indexed scans — the one
 /// CIP-225 result window (score descending, element id ascending,
 /// `SKIP`/`LIMIT`). Retains only the best `offset + limit` candidates —
@@ -343,25 +355,48 @@ impl TopWindow {
         }
     }
 
-    /// Retain `candidate` if it beats the current worst retained entry.
-    /// Equal (score, id) pairs never displace each other; ids are unique per
-    /// candidate so an equal-ranked push is always the same candidate.
-    pub(crate) fn push(&mut self, score: f64, id: i64) {
-        if self.window == 0 {
-            return;
-        }
-        let candidate = Ranked { score, id };
+    /// The admission decision for `(score, id)`: what the window would do
+    /// with it — `None` drops it. The window has room, or the candidate
+    /// beats the worst retained entry; equal `(score, id)` pairs never
+    /// displace each other, and ids are unique per candidate so an
+    /// equal-ranked push is always the same candidate. The one spelling
+    /// of the decision: [`push`] enacts it, and a scan can pre-gate
+    /// per-candidate work on [`admits`] without re-deriving anything.
+    fn admission_for(&self, score: f64, id: i64) -> Option<Admission> {
         if self.worst_first.len() < self.window {
-            self.worst_first.push(Reverse(candidate));
-        } else {
-            // A retained entry exists exactly when the window is full.
-            let mut worst = self
-                .worst_first
-                .peek_mut()
-                .expect("a full window has a worst entry");
-            if candidate > worst.0 {
-                *worst = Reverse(candidate);
+            return Some(Admission::Append);
+        }
+        self.worst_first
+            .peek()
+            .is_some_and(|worst| Ranked { score, id } > worst.0)
+            .then_some(Admission::Replace)
+    }
+
+    /// Whether the window would retain `(score, id)`: the pre-gate for a
+    /// scan that can skip per-candidate work (a filter's property reads,
+    /// ADR-0705) for a candidate that cannot place — the answer is the
+    /// same either way.
+    pub(crate) fn admits(&self, score: f64, id: i64) -> bool {
+        self.admission_for(score, id).is_some()
+    }
+
+    /// Enact the admission decision: append into room, or replace the
+    /// worst of a full window. A window with no room and no worst entry
+    /// admits nothing (a zero window), which `admission_for` already
+    /// decided.
+    pub(crate) fn push(&mut self, score: f64, id: i64) {
+        let candidate = Ranked { score, id };
+        match self.admission_for(score, id) {
+            Some(Admission::Append) => self.worst_first.push(Reverse(candidate)),
+            Some(Admission::Replace) => {
+                // A retained entry exists exactly when the window is full,
+                // which is why this arm is Replace.
+                *self
+                    .worst_first
+                    .peek_mut()
+                    .expect("a full window has a worst entry") = Reverse(candidate);
             }
+            None => {}
         }
     }
 

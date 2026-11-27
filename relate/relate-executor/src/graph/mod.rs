@@ -101,6 +101,7 @@ mod theater;
 mod token_changes;
 pub use token_changes::AppliedTokenChanges;
 mod unposted;
+mod vector_matrix;
 
 pub(crate) use declared::{spatial_holds, trigram_count, Extremum, RangeSeek, SpatialSeek};
 use declared::{GramIndex, PointIndex, RangeIndex};
@@ -119,6 +120,11 @@ pub use query_stats::QueryStats;
 #[cfg(feature = "test-hooks")]
 #[doc(hidden)]
 pub use index::take_index_rebuilds;
+// The vector matrix's served-search count (ADR-0705), read by the facade's
+// differential test.
+#[cfg(feature = "test-hooks")]
+#[doc(hidden)]
+pub use vector_matrix::take_vector_matrix_serves;
 // The adjacency side the `test-hooks` sealed-chunk seam is read by, so the
 // storage open tests can name the direction across the crate boundary.
 #[cfg(feature = "test-hooks")]

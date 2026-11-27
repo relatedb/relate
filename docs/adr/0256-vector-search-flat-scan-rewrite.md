@@ -133,3 +133,11 @@ lookup, which the packed-matrix follow-up below removes:
 Linked: #311 (findings and benchmark tables), [ADR-0040](./0040-create-drop-index.md) (vector indexes out
 of postings scope), [ADR-0063](./0063-lazy-string-index-postings.md) (lazy-materialization contract if a cached
 structure ever ships).
+
+## Later references
+
+[ADR-0705](./0705-vector-search-packed-matrix.md): the f32-cache this ADR deferred ships as a packed
+matrix per `(label, property)`, built lazily by the first search and refreshed
+incrementally by commit timestamp, serving a reader only when exact for its
+snapshot. The `Value` scan above stays the fallback — the decline paths, the
+filtered shape and the score contract are unchanged.

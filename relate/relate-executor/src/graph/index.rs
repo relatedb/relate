@@ -69,6 +69,10 @@ pub(super) struct Indexes {
     /// changes so each node write clones an `Arc` instead of rescanning the
     /// catalog.
     pub(super) charge_cache: Mutex<Arc<crate::memory::IndexCharge>>,
+    /// `(label_id, key_id)` → packed `f32` rows for vector SEARCH
+    /// (ADR-0705, `graph/vector_matrix`). Built by the first search over the
+    /// pair; node writes dirty-mark it.
+    pub(super) vector_matrices: CoreMap<(u32, u32), Arc<super::vector_matrix::VectorMatrixSlot>>,
 }
 
 /// One label-posting reclamation candidate's fate at a drain
@@ -98,6 +102,7 @@ impl Indexes {
             label_suspects: CoreMap::default(),
             key_stats: super::key_stats::KeyStatsState::default(),
             charge_cache: Mutex::new(Arc::new(crate::memory::IndexCharge::default())),
+            vector_matrices: CoreMap::default(),
         }
     }
 
@@ -116,6 +121,7 @@ impl Indexes {
         self.range_pairs.clear();
         self.point_pairs.clear();
         self.key_stats.clear();
+        self.vector_matrices.clear();
     }
 }
 
@@ -177,6 +183,7 @@ impl Graph {
     /// `label_index` guard held, and this call takes neither.
     pub(super) fn suspect_postings(&self, id: NodeId, dying: &[u32]) {
         self.key_stats_note_write(dying);
+        self.vector_matrix_note_write(dying, id);
         for &lid in self.label_buckets(dying) {
             self.indexes
                 .label_suspects
@@ -287,6 +294,7 @@ impl Graph {
         let live = &v.live;
         self.label_index_insert(id, &live.labels);
         self.key_stats_note_write(&live.labels);
+        self.vector_matrix_note_write(&live.labels, id);
         // Equality postings are lazy (ADR-0063 contract): dirty-mark only the
         // `(label, key)` pairs already materialized by a seek. A pair nobody
         // seeks costs nothing on the write path.

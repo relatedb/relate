@@ -134,6 +134,11 @@ pub use metrics::{
 #[cfg(feature = "test-hooks")]
 #[doc(hidden)]
 pub use graph::take_index_rebuilds;
+// The vector matrix's served-search count (ADR-0705), read by the facade's
+// differential test to prove the matrix side of the comparison ran.
+#[cfg(feature = "test-hooks")]
+#[doc(hidden)]
+pub use graph::take_vector_matrix_serves;
 // The adjacency side the `test-hooks` sealed-chunk count takes — the storage
 // open tests' wiring surface across the crate boundary.
 #[cfg(feature = "test-hooks")]

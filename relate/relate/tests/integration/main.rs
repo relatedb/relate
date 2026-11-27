@@ -170,6 +170,7 @@ mod unwind_drain_charge;
 mod unwind_source_memory_bounds;
 mod user_alias_double_underscore;
 mod uuid_label_predicates;
+mod vector_matrix_differential;
 mod vector_quantization_type;
 mod vector_search_candidates;
 mod wal_payload_limit;
