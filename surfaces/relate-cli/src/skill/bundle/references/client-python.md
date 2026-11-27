@@ -72,6 +72,13 @@ memo tables' allocation, never part of `memory_bytes`.
   on the thread that opened it; others get `ProgrammingError`.
 - **One writer process per database**; `read_only=True` opens are
   unlimited. `:memory:` vanishes on close.
+- **Experimental Vortex store (ADR-0703)** — set
+  `os.environ["RELATE_PREVIEW"] = "vortex-store"` before the **first**
+  open: the variable is process-global, so every `relate.connect` /
+  `relate.Database` in the process attaches the store. Needs a build with
+  the `vortex-store` feature enabled (a default build fails the open
+  closed naming the feature); there is no per-open Python switch yet.
+  Answers, the dialect and the checkpoint format are unchanged.
 - **Dicts are always maps** — pass `relate.Point(srid, x, y)` for a
   point; a missing `$param` fails the statement, never binds `null`.
 - **Library skill in the wheel** — `relate/.agents/skills/relate/SKILL.md`

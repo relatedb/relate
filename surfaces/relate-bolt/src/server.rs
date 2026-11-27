@@ -88,6 +88,11 @@ impl Args {
             // in serve_cmd's own open. A host embedding this server opts in
             // through `OpenOptions::safe_mode` directly.
             safe_mode: false,
+            // ADR-0703: the experimental store's opt-in for a Bolt-served
+            // store is the environment row (RELATE_PREVIEW=vortex-store) —
+            // the standalone Args carries no flag of its own, like the
+            // product serve path's `--vortex-store` does.
+            vortex_store: false,
             follow_gap: Default::default(),
         }
     }

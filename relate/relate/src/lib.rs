@@ -370,6 +370,17 @@ pub struct OpenOptions {
     /// aggregate). Default `false`; never auto-detected. A policy, not a
     /// database limit.
     pub safe_mode: bool,
+    /// The experimental Vortex columnar property store (ADR-0665, the
+    /// gate is ADR-0703): `true` attaches the store at this open — point
+    /// reads and the equality/aggregate lookups route to it, writes
+    /// publish through its delta overlay, answers unchanged. `false`
+    /// (the default) keeps the compact records FOR THIS OPEN — the
+    /// `RELATE_PREVIEW=vortex-store` row outranks it: with the row set,
+    /// every open in the process attaches, whatever this field says.
+    /// Served only by a build carrying the `vortex-store` cargo feature —
+    /// the opt-in on any other build fails the open closed naming the
+    /// feature, never silently ignored.
+    pub vortex_store: bool,
     /// Snapshot codec for an empty URI (ADR-0050). `None` uses
     /// `RELATE_SNAPSHOT_FORMAT` or the build's default,
     /// [`SnapshotCodecKind::default`] (Parquet with the `parquet` feature,
@@ -557,6 +568,20 @@ impl Database {
     #[doc(hidden)]
     pub fn sol_graph(&self) -> &relate_executor::Graph {
         &self.inner.graph
+    }
+
+    /// ADR-0703: whether this open attached the experimental Vortex
+    /// property store — the opt-in resolved at open (the typed field or
+    /// the `vortex-store` preview row), served only by a feature build.
+    /// The CLI's store-info note is the reader; doc-hidden like the seam
+    /// it asks.
+    #[doc(hidden)]
+    pub fn vortex_store_attached(&self) -> bool {
+        // The executor's predicate is compiled unconditionally (the
+        // attach cell exists in every build) and answers false wherever
+        // nothing attached — no second feature-gated path for one
+        // boolean.
+        self.inner.graph.has_attached_prop_store()
     }
 
     /// Checkpoint when this handle can write. A read-only or follow handle

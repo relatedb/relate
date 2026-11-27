@@ -8,6 +8,13 @@ license.workspace = true
 repository.workspace = true
 
 [features]
+# EXPERIMENTAL, default off (ADR-0703): the Vortex columnar property store
+# of ADR-0665 — the engine adapter (graph/vortex_store.rs) behind the
+# PropStore seam, with the Vortex dependency the adapter decodes through.
+# The runtime opt-in is the `vortex-store` preview row / the
+# `OpenOptions::vortex_store` field; a build without this feature fails
+# the open closed when the opt-in is set.
+vortex-store = ["dep:vortex"]
 # Research-only speed-of-light kernels (graph/sol.rs) and their
 # re-exports: quarantined behind this non-default feature (ADR-0476) —
 # off in every bundle and the WASM build, absent from every default
@@ -46,6 +53,13 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 dashmap = { workspace = true }
 rustc-hash = { workspace = true }
+# The Vortex array machinery the experimental columnar store (ADR-0665)
+# decodes through: `files` for the vortex file format reader/writer;
+# zstd (default) stays off so no native C++ build rides the feature —
+# the same shape the experiment crate measured. The mmap open path is
+# the experiment crate's own (its VFS prototype), never this crate's —
+# no memmap2 here. Optional: the vortex-store feature alone turns it on.
+vortex = { version = "0.95", default-features = false, features = ["files"], optional = true }
 xxhash-rust = { workspace = true }
 # ADR-0549: the POINT index's R*-tree backend.
 rstar = { workspace = true }

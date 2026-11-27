@@ -48,6 +48,28 @@ const result = conn.query("RETURN 1 AS n");
 and checkpoints (ADR-0136) — a missing store is an error. Omitting the
 options keeps the writable open, which creates a missing store at open.
 
+## Experimental storage preview (ADR-0703)
+
+The Vortex columnar property store (ADR-0665) is experimental: an
+alternative storage representation behind the engine's property-store
+seam — point reads and the equality and aggregate lookups route to it,
+writes publish through its delta overlay; answers, the Cypher dialect and
+the checkpoint format are unchanged. The client has no per-open switch;
+set the environment spelling before the **first** open:
+
+```js
+process.env.RELATE_PREVIEW = "vortex-store";
+```
+
+`RELATE_PREVIEW` is process-global and read once, so **every**
+`Database.open` in that process attaches the store, not one open. It
+needs a build of the native library with the `vortex-store` cargo feature
+enabled (the default builds do not carry it); any opt-in on another build
+fails the open with `vortex property store is not compiled into this build
+(enable the "vortex-store" cargo feature)`, never silently ignored. A
+typed per-open opt-in is a recorded follow-up needing a new C ABI options
+entry point. See ADR-0703.
+
 `query(cypher, params?)` — `params` is a plain object lowered into the
 typed params builder (the parameters section below). Auto-commit unless
 `begin()` is open. `begin()` / `commit()` / `rollback()` are an explicit

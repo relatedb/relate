@@ -23,9 +23,9 @@ use relate_test_support::rng::Rng;
 
 use crate::bench::{measure, Measured};
 
+const VISITED: usize = 1_000_000; // seen-set size in kernel 1
 const LEVELS: usize = 100; // BFS levels simulated
 const FRONTIER: usize = 10_000; // frontier size per level
-const VISITED: usize = LEVELS * FRONTIER; // seen-set size: one id per BFS node
 const SPACE: u64 = 7 * VISITED as u64; // id space: 1M visited as every 7th id
 
 /// Dense bitset: 1 bit per node id, ascending iteration by construction.

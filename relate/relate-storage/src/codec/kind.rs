@@ -90,7 +90,16 @@ impl SnapshotCodecKind {
     /// so one vocabulary row carries both ways a build gets the codec.
     const fn provenance(self) -> Option<&'static str> {
         match self {
-            Self::Vortex => Some("link the relate-vortex-lab experiment crate to install it"),
+            Self::Vortex => {
+                // The missing step depends on the build: a feature-less
+                // build needs the feature; a feature build has the codec
+                // compiled and only the open opt-in is missing.
+                if cfg!(feature = "vortex-store") {
+                    Some("open with the vortex-store opt-in (--vortex-store / RELATE_PREVIEW=vortex-store)")
+                } else {
+                    Some("build with the \"vortex-store\" cargo feature; the open wiring installs it")
+                }
+            }
             Self::Parquet | Self::Rkyv | Self::Json | Self::Markdown => None,
         }
     }

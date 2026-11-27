@@ -272,6 +272,15 @@ pub(crate) fn reload(shared: &Shared) -> Result<()> {
         shared.resolved.load_threads,
     )?;
     crate::check_loaded_graph(&graph)?;
+    // ADR-0703: a reload builds a fresh graph — the resolved opt-in
+    // re-attaches the store here, or the banner's attached claim would
+    // silently stop being true after the first gap the follower reloads
+    // through. The quiescence is the reload's own (queries keep reading
+    // the installed graph until the swap). A refusal degrades —
+    // [`reattach_resolved_store`] owns that policy and its note.
+    if let Some(note) = crate::open::reattach_resolved_store(&graph, shared.resolved.vortex_store) {
+        eprintln!("note: {note}");
+    }
     // An open statement or explicit transaction holds a pin after it has
     // dropped `read_guard`. Wait until those pins are gone, and hold the
     // publication write lock across the swap so a new pin cannot start.

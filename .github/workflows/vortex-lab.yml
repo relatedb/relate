@@ -37,6 +37,29 @@ permissions:
   contents: read
 
 jobs:
+  product-tests:
+    # The cargo feature is default-off in every bundle, so the
+    # feature-gated product tests (the executor's dispatch suites, the
+    # storage codec's, the open-wiring integration test) run nowhere else
+    # in CI. Their own job, on their own runner: the measurement job's
+    # 90-minute budget stays the measurement's.
+    name: Product vortex-store tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - name: Run the product's vortex-store suites
+        # Scoped targets, not whole-crate suites: `relate`'s tests/ is
+        # one binary per file, and linking all of them in debug exhausts a
+        # hosted runner's disk (a linker bus error, seen on this job's
+        # first run). The feature suites live in the libs; the open-wiring
+        # test is the one integration target the feature owns.
+        run: |
+          cargo test --locked -p relate-executor --features vortex-store --lib
+          cargo test --locked -p relate-storage --features vortex-store --lib
+          cargo test --locked -p relate --features vortex-store --test vortex_store_open
+
   vortex-lab:
     runs-on: ubuntu-latest
     timeout-minutes: 90

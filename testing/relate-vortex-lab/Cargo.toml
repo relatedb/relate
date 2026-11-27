@@ -36,10 +36,6 @@ vortex = { version = "0.95", default-features = false, features = ["files", "mem
 # needs one Mmap construction on our side of the VFS seam.
 csv = "1"
 memmap2 = "0.9.11"
-# The engine's FxHash for the store's kid-keyed maps: the profiled point-read
-# hit path pays its locate here, and SipHash (std RandomState) showed up at
-# ~2-3% of query-worker CPU. Already in the tree via the engine path deps.
-rustc-hash = "2"
 # The A/B driver's `run` subcommand flags: the CLI crate the query-latency
 # suite (a path dependency here) already carries, so no new crate enters the
 # tree; only the derive feature is declared beside it.
@@ -47,13 +43,15 @@ clap = { version = "4", features = ["derive"] }
 
 # The engine and harness the lab drives (ADR-0665): the property-store seam
 # and its live graph, the storage codec's shard registry, the query suite and
-# the pokec groups. `research` carries `Database::sol_graph`. Path deps point
-# outward into the workspace; nothing in the workspace names this crate.
+# the pokec groups. `research` carries `Database::sol_graph`; `vortex-store`
+# carries the store (executor) and the codec (storage) the lab measures
+# (ADR-0703). Path deps point outward into the workspace; nothing in the
+# workspace names this crate.
 relate = { path = "../../relate/relate", features = ["research"] }
 relate-core = { path = "../../relate/relate-core" }
 relate-engine-api = { path = "../../relate/relate-engine-api" }
-relate-executor = { path = "../../relate/relate-executor" }
-relate-storage = { path = "../../relate/relate-storage" }
+relate-executor = { path = "../../relate/relate-executor", features = ["vortex-store"] }
+relate-storage = { path = "../../relate/relate-storage", features = ["vortex-store"] }
 relate-query-latency = { path = "../relate-query-latency" }
 # The workspace's one seeded PRNG (`rng::Rng`), so the kernels' streams match
 # relate-test-support's instead of the lab re-deriving them.

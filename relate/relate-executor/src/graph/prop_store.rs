@@ -32,7 +32,10 @@ pub enum PropFold {
 
 /// The property-read contract the executor's read boundary dispatches to.
 pub trait PropStore: Send + Sync + std::fmt::Debug {
-    /// Point read: the value of `kid` on `id`, visible at `ts`.
+    /// Point read: the value of `kid` on `id`, visible at `ts`. `None` is
+    /// a miss, not a final answer: the compact records answer every
+    /// store miss (the store is additive — its worst case is the default
+    /// engine's every case).
     fn point(&self, ts: u64, id: NodeId, kid: u32) -> Option<Value>;
 
     /// Whether the store carries a column for interned key `kid`. A store
@@ -113,17 +116,40 @@ pub struct PublishedRow {
     pub deleted: bool,
 }
 
+/// The seam's one point-read resolution, stated once beside the trait it
+/// governs (ADR-0665 A/B): a store that carries `kid` answers first; a
+/// miss — a key it does not carry, or the store's own `None` — falls to
+/// the compact records. A store miss is not a final answer: the store is
+/// additive, so the attached engine's worst case is the default engine's
+/// every case (a broken column, a delta the base tier cannot see, or a
+/// genuinely absent property all resolve through the fallback, one
+/// version-chain probe). Both read boundaries — the graph's own `point`
+/// and the statement-resolved overlay — resolve through this one shape,
+/// so a miss can only ever mean the fallback.
+impl Graph {
+    pub(crate) fn point_through(
+        &self,
+        store: Option<&dyn PropStore>,
+        ts: u64,
+        id: NodeId,
+        kid: u32,
+    ) -> Option<Value> {
+        store
+            .filter(|store| store.carries(kid))
+            .and_then(|store| store.point(ts, id, kid))
+            .or_else(|| self.node_prop_row(id, ts, kid))
+    }
+}
+
 /// The default store: the compact live records in the MVCC version chains.
 impl PropStore for Graph {
     fn point(&self, ts: u64, id: NodeId, kid: u32) -> Option<Value> {
-        // ADR-0665 A/B: an attached experimental store answers for the keys
-        // its columns carry at its own snapshot; every other read stays on
-        // the compact records (a store may promote only some types, so
-        // untyped and unpromoted properties fall through unchanged).
-        if let Some(store) = self.serving_store(ts).filter(|store| store.carries(kid)) {
-            return store.point(ts, id, kid);
-        }
-        self.node_prop_row(id, ts, kid)
+        self.point_through(
+            self.serving_store(ts).map(|store| store.as_ref()),
+            ts,
+            id,
+            kid,
+        )
     }
 
     // The compact records carry every interned key and answer every
@@ -208,6 +234,13 @@ impl Graph {
     #[doc(hidden)]
     pub fn interned_id(&self, name: &str) -> Option<u32> {
         self.interner.get_id(name)
+    }
+
+    /// Whether a store is attached — the CLI's experimental store-info note
+    /// reads this without reaching the store.
+    #[doc(hidden)]
+    pub fn has_attached_prop_store(&self) -> bool {
+        self.attached_prop_store().is_some()
     }
 
     /// The store attached to this graph, if any.

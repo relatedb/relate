@@ -167,6 +167,10 @@ pub(crate) struct ServeCmd {
     /// opt-in safe mode. `None` defers to `RELATE_SAFE_MODE` (`1`/`0`),
     /// then off. Last flag wins.
     pub safe: Option<bool>,
+    /// `--vortex-store` (ADR-0703): the experimental columnar property
+    /// store's opt-in — `false` unless the flag was given; the parse arm
+    /// exists only in `vortex-store` feature builds.
+    pub vortex_store: bool,
     /// `--logical-graph-size-limit SIZE`: the served store's live graph + index cap,
     /// the storage flag the memory-shape loadtest's bolt cases pass
     /// (ADR-0390, the ADR-0368 follow-up). Same value grammar as the
@@ -346,6 +350,12 @@ pub(crate) fn parse_serve_args(rest: &[String]) -> Result<ServeCmd, ParseError> 
     let mut concurrent_logical_workspace_limit = None;
     let mut max_traversal_depth = None;
     let mut safe = None;
+    // ADR-0703: mutated only by the feature-gated parse arm below, so the
+    // binding is plain without the feature.
+    #[cfg(feature = "vortex-store")]
+    let mut vortex_store = false;
+    #[cfg(not(feature = "vortex-store"))]
+    let vortex_store = false;
     let mut logical_graph_size_limit = None;
     let mut expression_memory_limit = None;
     let mut durability_mode = None;
@@ -523,6 +533,13 @@ pub(crate) fn parse_serve_args(rest: &[String]) -> Result<ServeCmd, ParseError> 
                 // LABS-680 (ADR-0477): value-less, last one wins.
                 safe = Some(arg == "--safe");
             }
+            #[cfg(feature = "vortex-store")]
+            "--vortex-store" => {
+                // ADR-0703: the experimental Vortex columnar property
+                // store — value-less, no negation; the arm exists only in
+                // feature builds (an unknown flag elsewhere).
+                vortex_store = true;
+            }
             "--logical-graph-size-limit" => {
                 value_flag(
                     &mut logical_graph_size_limit,
@@ -616,6 +633,7 @@ pub(crate) fn parse_serve_args(rest: &[String]) -> Result<ServeCmd, ParseError> 
         concurrent_logical_workspace_limit,
         max_traversal_depth,
         safe,
+        vortex_store,
         logical_graph_size_limit,
         expression_memory_limit,
         durability_mode,

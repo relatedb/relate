@@ -1,8 +1,11 @@
-//! Engine-side Vortex property store (ADR-0665, experimental).
+//! The Vortex property store (ADR-0665), behind the default-off
+//! `vortex-store` gate (ADR-0703). This is the store ADR-0665 measured; the
+//! measurement harness — the kernels, the A/B driver, the epoch probes —
+//! stays in `testing/relate-vortex-lab` and drives this module.
 //!
 //! A node-major nullable-column store: the row index is the node id, one
 //! column per promoted property, read through the executor's
-//! [`PropStore`](relate_executor::PropStore) seam for point reads, and
+//! [`PropStore`](super::prop_store::PropStore) seam for point reads, and
 //! dispatched to by the executor for two lookup shapes:
 //!
 //! - the equality seek — the sorted `(key,row)` side-file that replaces the
@@ -27,36 +30,78 @@
 //! there. The store is `Send + Sync`; the reader runtime is the fork's
 //! [`CurrentThreadRuntime`] (`Arc<SmolExecutor>`, `Send` by construction).
 //!
-//! This module lived in `relate-executor` behind the `vortex-store` feature
-//! until the Vortex fork had to leave the publish closure: it now implements
-//! the executor's public seam from outside, and the executor keeps only the
-//! trait.
+//! The store lived in the lab while the Vortex dependency sat outside the
+//! workspace (ADR-0677); with the dependency vetted, the store is product
+//! code behind the gate, and the lab is the harness that measures it.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering as AtomicOrdering};
 use std::sync::{Arc, OnceLock, RwLock};
 
 use relate_core::{Error, NodeId, Result, Value};
-use relate_executor::{Graph, PropFold, PropStore, PublishedRow};
-
-use vortex::array::arrays::primitive::PrimitiveArray;
-use vortex::array::arrays::struct_::StructArray;
-use vortex::array::arrays::varbin::VarBinArray;
-use vortex::array::validity::Validity;
-use vortex::array::{ArrayRef, IntoArray, VortexSessionExecute};
-use vortex::buffer::{Buffer, ByteBuffer};
-use vortex::file::{OpenOptionsSessionExt, VortexFile, WriteOptionsSessionExt};
-use vortex::io::runtime::current::CurrentThreadRuntime;
-use vortex::io::runtime::BlockingRuntime;
-use vortex::io::session::RuntimeSessionExt;
-use vortex::session::VortexSession;
-use vortex::VortexSessionDefault;
-
-use crate::seam::{equal_range, member_rows, promoted_val, scalar_to_val, to_value, Val};
-use crate::store;
 use rustc_hash::FxHashMap;
 
-/// The row-position column projected to recover surviving rows from a scan.
-const ROW_COLUMN: &str = "__row";
+use vortex::array::VortexSessionExecute;
+use vortex::file::VortexFile;
+use vortex::io::runtime::current::CurrentThreadRuntime;
+use vortex::scalar::{PValue, Scalar, ScalarValue};
+use vortex::session::VortexSession;
+
+use super::prop_store::{PropFold, PropStore, PublishedRow};
+use super::Graph;
+
+mod build;
+mod columns;
+mod side;
+
+use build::{columnar_table, gather, row_space, seal_table, Gathered};
+use columns::{chunks, projected};
+use side::{equal_range, member_rows, side_index};
+
+/// One property value the store carries. The derived order is the sort
+/// total the side-file needs: Null first, then ints, then strings (the
+/// variant list is already in that order).
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub(crate) enum Val {
+    Null,
+    Int(i64),
+    Str(String),
+}
+
+/// The engine value for a stored one (`Val::Null` = absent).
+pub(crate) fn to_value(val: Val) -> Option<Value> {
+    match val {
+        Val::Null => None,
+        Val::Int(int) => Some(Value::Int(int)),
+        Val::Str(string) => Some(Value::String(std::sync::Arc::from(string))),
+    }
+}
+
+/// A lookup value in the store's `Val` shape; `None` for a type the store
+/// does not promote (the lookup then falls through to the index route).
+pub(crate) fn promoted_val(value: &Value) -> Option<Val> {
+    match value {
+        Value::Int(int) => Some(Val::Int(*int)),
+        Value::String(string) => Some(Val::Str(string.to_string())),
+        _ => None,
+    }
+}
+
+/// A decoded scalar in the store's `Val` shape. The columns carry only
+/// ints and strings (the promoted set [`promoted_val`] admits), so any
+/// other scalar is a broken column — a typed error, never a panic on the
+/// read path and never silently answered as null: a null here is a live
+/// property disappearing from results (the no-silent-fallbacks rule).
+pub(crate) fn decoded_val(scalar: &Scalar) -> Result<Val> {
+    match scalar.value() {
+        None => Ok(Val::Null),
+        Some(ScalarValue::Primitive(PValue::I64(v))) => Ok(Val::Int(*v)),
+        Some(ScalarValue::Primitive(PValue::I32(v))) => Ok(Val::Int(*v as i64)),
+        Some(ScalarValue::Utf8(text)) => Ok(Val::Str(text.as_str().to_owned())),
+        Some(other) => Err(Error::storage(format!(
+            "a decoded {other:?} is outside the promoted column set — a broken column"
+        ))),
+    }
+}
 
 /// A dense row-id set — the per-label filter and the visibility set.
 #[derive(Clone)]
@@ -106,10 +151,12 @@ type ColumnValues = Arc<Vec<Option<Value>>>;
 
 /// One column's fill-once decoded state, shared across reader threads
 /// (memory table 2). The hit path is one acquire load and a cold race
-/// decodes once — no lock ever reaches a reader.
+/// decodes once — no lock ever reaches a reader. The cached value is a
+/// `Result`: a decode failure is cached as the column's decline (the
+/// compact records keep answering) instead of retrying per read.
 #[derive(Default)]
 struct ColumnCache {
-    values: OnceLock<ColumnValues>,
+    values: OnceLock<Result<ColumnValues>>,
 }
 
 /// One key's gathered column before the file is sealed. The variant is the
@@ -246,15 +293,15 @@ impl std::fmt::Debug for VortexStore {
     }
 }
 
-/// What one graph walk collects: the visible rows, the per-label bitsets and
-/// the gathered columns — all from the same `all_node_ids_at` sweep.
-struct Gathered {
-    visible: BitSet,
-    label_bits: FxHashMap<u32, BitSet>,
-    columns: FxHashMap<u32, Column>,
-}
-
 impl VortexStore {
+    /// Step 1's one decline gate: once a delta version exists, the
+    /// side-file and columns reflect the base tier alone — every set and
+    /// aggregate arm declines (merging the overlay's contributions into
+    /// them is the design's next rung, ADR-0665).
+    fn declines_step_one(&self) -> bool {
+        self.delta_present.load(AtomicOrdering::Acquire)
+    }
+
     /// The lookup arms served so far — the dispatch test's assertion seam:
     /// `(seek, member, folds, grouped)`, one counter per rung.
     pub fn served(&self) -> (u64, u64, u64, u64) {
@@ -267,15 +314,16 @@ impl VortexStore {
     }
 
     /// Encode the graph at `ts` node-major and open it, building the label
-    /// bitsets and the sorted side-file in the same pass.
+    /// bitsets and the sorted side-file in the same pass. Admits the
+    /// graph's row space first — [`row_space`] owns that refusal.
     pub fn from_graph(graph: &Graph, ts: u64) -> Result<Self> {
         let ids = graph.all_node_ids_at(ts);
-        let row_count = ids.iter().copied().max().map_or(0, |id| id + 1) as usize;
+        let row_count = row_space(&ids)?;
         let Gathered {
             visible,
             label_bits,
             mut columns,
-        } = gather(graph, ts, ids, row_count);
+        } = gather(graph, ts, ids, row_count)?;
         // A poisoned key (an unpromotable value, or two promoted kinds) is not
         // a faithful column: reading it from the store would answer null for
         // the skipped values, so it stays off the store entirely and
@@ -304,7 +352,7 @@ impl VortexStore {
     /// snapshot. One relaxed-path load when nothing has, else one lock
     /// acquisition and one `Arc` clone — the read never locks twice.
     fn delta(&self) -> Option<Arc<Delta>> {
-        if !self.delta_present.load(AtomicOrdering::Acquire) {
+        if !self.declines_step_one() {
             return None;
         }
         Some(self.delta.read().unwrap().clone())
@@ -361,10 +409,19 @@ impl VortexStore {
 
     /// One column's decoded values, filling the cache once on first touch —
     /// the one lazy-decode resolve every read goes through, so a key the
-    /// store does not carry answers `None` in one place.
+    /// store does not carry answers `None` in one place. A cached decode
+    /// failure answers `None` here; `carries` reads the same cached
+    /// `Result` non-initializing, so the key stops being carried from the
+    /// next read on, and the discovering read falls through to the
+    /// compact records (`Graph::point`'s miss path).
     fn column_values(&self, kid: u32) -> Option<&ColumnValues> {
         let cache = self.columns.get(&kid)?;
-        Some(cache.cache.values.get_or_init(|| self.decode_column(kid)))
+        cache
+            .cache
+            .values
+            .get_or_init(|| self.decode_column(kid))
+            .as_ref()
+            .ok()
     }
 
     /// The aggregate arms' shared resolve: the decoded column and the
@@ -391,138 +448,43 @@ impl VortexStore {
     /// pays the `Val`→`Option<Value>` conversion, so no hit ever converts
     /// (first-touch cost: the column's compressed projections materialize
     /// and every chunk runs `repeated_probe` — read-heavy columns pay it
-    /// once and hit forever).
-    fn decode_column(&self, kid: u32) -> ColumnValues {
+    /// once and hit forever). A decode failure — the store's own file
+    /// unreadable, or a scalar outside the promoted set — is cached as
+    /// the column's decline: the read falls through to the compact
+    /// records (the poisoned-key policy's read-side twin), never a
+    /// panic on the user read path.
+    fn decode_column(&self, kid: u32) -> Result<ColumnValues> {
         let name = column_name(kid);
-        // The crate's one single-column read; a failure here is a broken
-        // build, never a runtime condition.
-        let field = store::projected(&self.rt, &self.vfile, &name)
-            .expect("the store's own vortex column decodes");
-        let chunks = store::chunks(&field);
+        // The crate's one single-column read.
+        let field = projected(&self.rt, &self.vfile, &name)?;
+        let chunks = chunks(&field);
         let total: usize = chunks.iter().map(|chunk| chunk.len()).sum();
         let mut values = Vec::with_capacity(total);
         for chunk in &chunks {
             let mut ctx = self.session.create_execution_ctx();
             let mut probe = chunk.repeated_probe();
             for row in 0..chunk.len() {
-                let scalar = probe
-                    .execute_scalar(row, &mut ctx)
-                    .expect("the store's own vortex chunk decodes");
-                values.push(to_value(scalar_to_val(&scalar)));
+                let scalar = probe.execute_scalar(row, &mut ctx).map_err(vortex_error)?;
+                values.push(to_value(decoded_val(&scalar)?));
             }
         }
-        Arc::new(values)
+        Ok(Arc::new(values))
     }
 }
 
-/// Walk the graph once: visible rows, per-label bitsets, gathered columns.
-fn gather(graph: &Graph, ts: u64, ids: Vec<NodeId>, row_count: usize) -> Gathered {
-    let mut visible = BitSet::new(row_count);
-    let mut label_bits: FxHashMap<u32, BitSet> = FxHashMap::default();
-    let mut columns: FxHashMap<u32, Column> = FxHashMap::default();
-    for id in ids {
-        let row = id as usize;
-        visible.set(row);
-        let Some(node) = graph.node_at(id, ts) else {
-            continue;
-        };
-        for label in node.labels.iter() {
-            if let Some(lid) = graph.interned_id(label) {
-                label_bits
-                    .entry(lid)
-                    .or_insert_with(|| BitSet::new(row_count))
-                    .set(row);
-            }
-        }
-        for (name, value) in node.properties.iter() {
-            let Some(kid) = graph.interned_id(name) else {
-                continue;
-            };
-            columns
-                .entry(kid)
-                .or_default()
-                .state
-                .push(row, value, row_count);
-        }
+/// Build the columnar store from `graph` at its commit timestamp and install
+/// it through [`Graph::attach_prop_store`]. The graph must be quiescent: the
+/// store is built from its state at attach time. First attach wins, so an
+/// already-attached graph is an explicit error, never a silent drop.
+#[doc(hidden)]
+pub fn attach_vortex_store(graph: &Graph) -> Result<()> {
+    let store: Arc<dyn PropStore> = Arc::new(VortexStore::from_graph(graph, graph.commit_ts())?);
+    if !graph.attach_prop_store(store) {
+        return Err(Error::storage(
+            "a property store is already attached to this graph",
+        ));
     }
-    Gathered {
-        visible,
-        label_bits,
-        columns,
-    }
-}
-
-/// Build the row column and one child per surviving key, in kid order. The
-/// child builder is chosen by the column's own state, so a value of the
-/// wrong type has no path into it.
-fn columnar_table(columns: &FxHashMap<u32, Column>, row_count: usize) -> Result<ArrayRef> {
-    let mut kids: Vec<u32> = columns.keys().copied().collect();
-    kids.sort_unstable();
-    let mut names: Vec<String> = vec![ROW_COLUMN.to_string()];
-    let mut children: Vec<ArrayRef> = vec![PrimitiveArray::new(
-        Buffer::from((0..row_count as i64).collect::<Vec<_>>()),
-        Validity::NonNullable,
-    )
-    .into_array()];
-    for kid in &kids {
-        names.push(column_name(*kid));
-        children.push(match &columns[kid].state {
-            ColumnState::Int(values) => int_column(values),
-            ColumnState::Str(values) => str_column(values),
-            ColumnState::Empty | ColumnState::Poisoned => {
-                return Err(vortex_error(format!(
-                    "key {kid} reached the table without a faithful column state"
-                )))
-            }
-        });
-    }
-    let name_refs: Vec<&str> = names.iter().map(String::as_str).collect();
-    let array = StructArray::try_new(name_refs.into(), children, row_count, Validity::NonNullable)
-        .map_err(vortex_error)?;
-    Ok(array.into_array())
-}
-
-/// Write the table to an in-memory file and open it.
-fn seal_table(array: ArrayRef) -> Result<(VortexSession, CurrentThreadRuntime, VortexFile)> {
-    let rt = CurrentThreadRuntime::new();
-    let session = VortexSession::default().with_handle(rt.handle());
-    let mut bytes = Vec::new();
-    session
-        .write_options()
-        .blocking(&rt)
-        .write(&mut bytes, array.to_array_iterator())
-        .map_err(vortex_error)?;
-    let vfile = session
-        .open_options()
-        .open_buffer(ByteBuffer::copy_from(&bytes))
-        .map_err(vortex_error)?;
-    Ok((session, rt, vfile))
-}
-
-/// Move the gathered values into per-key `(value, row)` entries in value
-/// order. The column arrays are already built, so the values have no other
-/// reader.
-fn side_index(columns: &mut FxHashMap<u32, Column>) -> FxHashMap<u32, Vec<(Val, NodeId)>> {
-    let mut side: FxHashMap<u32, Vec<(Val, NodeId)>> = FxHashMap::default();
-    for (kid, column) in columns.iter_mut() {
-        let mut entries: Vec<(Val, NodeId)> =
-            match std::mem::replace(&mut column.state, ColumnState::Empty) {
-                ColumnState::Int(values) => values
-                    .into_iter()
-                    .enumerate()
-                    .filter_map(|(row, value)| value.map(|value| (Val::Int(value), row as NodeId)))
-                    .collect(),
-                ColumnState::Str(values) => values
-                    .into_iter()
-                    .enumerate()
-                    .filter_map(|(row, value)| value.map(|value| (Val::Str(value), row as NodeId)))
-                    .collect(),
-                ColumnState::Empty | ColumnState::Poisoned => Vec::new(),
-            };
-        entries.sort_by(|a, b| a.0.cmp(&b.0));
-        side.insert(*kid, entries);
-    }
-    side
+    Ok(())
 }
 
 impl PropStore for VortexStore {
@@ -551,7 +513,13 @@ impl PropStore for VortexStore {
     }
 
     fn carries(&self, kid: u32) -> bool {
-        self.columns.contains_key(&kid)
+        // Lock-free, from the one cell that holds the fact: an unpopulated
+        // cell is carried (nothing has failed yet), a cached `Ok` is
+        // carried, a cached `Err` — a broken column — is not, so every
+        // later read of the key falls through to the compact records.
+        self.columns
+            .get(&kid)
+            .is_some_and(|column| column.cache.values.get().is_none_or(Result::is_ok))
     }
 
     fn serves_at(&self, ts: u64) -> bool {
@@ -569,10 +537,8 @@ impl PropStore for VortexStore {
         values: &[Value],
         cap: Option<usize>,
     ) -> Option<Vec<NodeId>> {
-        // Step 1 declines the set arms once a delta version exists (the
-        // side-file reflects the base tier alone; the overlay complement
-        // is the design's next rung).
-        if self.delta_present.load(AtomicOrdering::Acquire) {
+        // The set arms decline behind step 1's one gate.
+        if self.declines_step_one() {
             return None;
         }
         // A value the store does not promote cannot be answered: fall through
@@ -596,14 +562,16 @@ impl PropStore for VortexStore {
     }
 
     fn folds(&self, labels: &[u32], kid: u32, wants: &[PropFold]) -> Option<Vec<Value>> {
-        // Step 1 declines the aggregate arms once a delta version exists
-        // (the one-pass fold would need the delta's contributions
-        // merged — the next rung).
-        if self.delta_present.load(AtomicOrdering::Acquire) {
+        // The aggregate arms decline behind step 1's one gate (the
+        // one-pass fold would need the delta's contributions merged).
+        if self.declines_step_one() {
             return None;
         }
-        self.served.folds.fetch_add(1, AtomicOrdering::Relaxed);
         let (values, rows) = self.fold_inputs(labels, kid)?;
+        // Bumped where the arm commits to an answer — a decline (the
+        // step-one gate or a key the store does not carry) never counts
+        // as served.
+        self.served.folds.fetch_add(1, AtomicOrdering::Relaxed);
         // One pass: the label's rows over the flat column — count the
         // present values, track both extrema. The extrema use the ORDER BY
         // order, the engine's own min/max policy (`order_by_cmp`), never
@@ -635,25 +603,23 @@ impl PropStore for VortexStore {
     }
 
     fn grouped_counts(&self, labels: &[u32], kid: u32) -> Option<Vec<(Value, u64)>> {
-        // Step 1 declines once a delta version exists (see `folds`).
-        if self.delta_present.load(AtomicOrdering::Acquire) {
+        // The grouped arm declines behind the same gate (see `folds`).
+        if self.declines_step_one() {
             return None;
         }
-        self.served.grouped.fetch_add(1, AtomicOrdering::Relaxed);
         let (values, rows) = self.fold_inputs(labels, kid)?;
+        // Bumped where the arm commits to an answer (see `folds`).
+        self.served.grouped.fetch_add(1, AtomicOrdering::Relaxed);
         // The dict-native distinct: one pass, the counts landing per
         // distinct value (keyed by the store's own `Val`, the first
         // carried `Value` kept for the answer) — the absent-value group
         // stays the engine's.
         let mut counts: FxHashMap<Val, (Value, u64)> = FxHashMap::default();
         for value in present_values(values, &rows) {
-            // `values` is the store's own decoded column (`from_graph` keeps
-            // only Int/Str columns and drops every poisoned key), so every
-            // present cell promotes: a third shape here is a broken column,
-            // never a shape to decline.
-            let Some(key) = promoted_val(value) else {
-                panic!("column k{kid} decoded an unpromotable value: {value:?}");
-            };
+            // The decoded column carries only the promoted kinds (the
+            // gather drops poisoned keys), so the re-promote is total —
+            // an invariant, not a filter that could drop rows silently.
+            let key = promoted_val(value).expect("a decoded column value is always promoted");
             let entry = counts.entry(key).or_insert_with(|| (value.clone(), 0));
             entry.1 += 1;
         }
@@ -731,19 +697,11 @@ fn present_values<'a>(
         .filter_map(|(_, value)| value.as_ref())
 }
 
-fn column_name(kid: u32) -> String {
+/// The wire name of one key's column (`k{kid}`) — the one file-schema
+/// fact both phases share: the builder names the struct's children with
+/// it, the decode projects the column back by the same call.
+pub(crate) fn column_name(kid: u32) -> String {
     format!("k{kid}")
-}
-
-fn int_column(values: &[Option<i64>]) -> ArrayRef {
-    let data: Vec<i64> = values.iter().map(|value| value.unwrap_or(0)).collect();
-    let valid: Vec<bool> = values.iter().map(Option::is_some).collect();
-    PrimitiveArray::new(Buffer::from(data), Validity::from_iter(valid)).into_array()
-}
-
-fn str_column(values: &[Option<String>]) -> ArrayRef {
-    let data: Vec<Option<&str>> = values.iter().map(|value| value.as_deref()).collect();
-    VarBinArray::from_nullable_strs(data).into_array()
 }
 
 fn vortex_error(error: impl std::fmt::Display) -> Error {

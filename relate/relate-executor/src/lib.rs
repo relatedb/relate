@@ -123,6 +123,16 @@ pub use graph::{
 // evaluation seam, not a stable public API.
 #[doc(hidden)]
 pub use graph::{PropFold, PropStore, PublishedRow};
+// The experimental columnar store (ADR-0665) behind the default-off
+// `vortex-store` gate (ADR-0703): the store, and the one call that builds it
+// from a graph and attaches it. Doc-hidden — an evaluation seam, not a stable
+// public API.
+#[cfg(feature = "vortex-store")]
+#[doc(hidden)]
+pub use graph::attach_vortex_store;
+#[cfg(feature = "vortex-store")]
+#[doc(hidden)]
+pub use graph::VortexStore;
 pub use metrics::{
     BatchFacts, ClauseMetricsRecord, FrontierCounters, InTxBatches, KernelRung, MemoCounters,
     PhaseTimes, PlanMetricsSink, StartReason, StatementMemoRecord, StoreReads, WalkStart,

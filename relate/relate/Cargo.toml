@@ -19,6 +19,11 @@ rkyv-codec = ["relate-storage/rkyv-codec"]
 # `Database::sol_graph` compile only under it. The `qpp` re-export
 # retired with the prototype (ADR-0478).
 research = ["relate-executor/research"]
+# EXPERIMENTAL, default off (ADR-0703): the Vortex columnar property store
+# (ADR-0665) wired at open — forwards to the executor's store adapter and
+# the storage codec's shard serialization. The runtime opt-in is the
+# `vortex-store` preview row or `OpenOptions::vortex_store`.
+vortex-store = ["relate-executor/vortex-store", "relate-storage/vortex-store"]
 
 [dependencies]
 # ADR-0509 §4: the facade reads IR name fields (SmallName).

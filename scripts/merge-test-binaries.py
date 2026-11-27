@@ -101,6 +101,11 @@ KEEP_ALWAYS = {
     "relate/relate": {
         "golden_stores": "copied into an old release checkout and compiled "
         "standalone there (testdata/stores/README.md)",
+        "vortex_store_open": "the negative control depends on the process-global "
+        "preview Once staying unset for its process (RELATE_PREVIEW is read once "
+        "per open and other tests in the shared binary set it) — a reason no "
+        "text scan can see, the preview-Once rule in "
+        "docs/testing/test-binaries.md",
     },
 }
 

@@ -2566,6 +2566,7 @@ dependencies = [
  "serde",
  "serde_json",
  "unicode-normalization",
+ "vortex",
  "web-time",
  "xxhash-rust",
 ]
@@ -2713,6 +2714,7 @@ dependencies = [
  "relate-ontology",
  "serde",
  "serde_json",
+ "vortex",
  "web-time",
 ]
 
@@ -2748,7 +2750,6 @@ dependencies = [
  "relate-query-latency",
  "relate-storage",
  "relate-test-support",
- "rustc-hash",
  "tempfile",
  "vortex",
 ]

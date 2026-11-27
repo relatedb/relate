@@ -26,6 +26,14 @@ use crate::exec_query::{self, RenderOpts};
 use crate::VERSION;
 use crate::{errors, exit_flushed, print_error, repl, telemetry, zero_effect};
 
+/// The experimental-store attachment fact, spelled once for the whole
+/// CLI: every surface that announces it (the query session's stderr
+/// note, the serve banner) prefixes this one text. This module is
+/// always compiled, so the fact reaches every bundle.
+pub(crate) const VORTEX_STORE_NOTE: &str = "the experimental Vortex property store is attached \
+     (--vortex-store / RELATE_PREVIEW=vortex-store); answers and \
+     the Cypher dialect are unchanged";
+
 /// The final-checkpoint policy shared by [`exit_closed`] and the extension
 /// persist path: a persistent database checkpoints before exit; a
 /// checkpoint failure is reported and forces a non-zero exit code.
@@ -323,6 +331,13 @@ pub(crate) fn run_relate(opts: RunOpts<'_>) -> ! {
     // on the mode this run opened with — the same key `serve`'s post-open
     // site uses.
     crate::load::release_source_after_open(open_mode);
+    // ADR-0703 §4: an open that attached the experimental vortex store
+    // says so — stderr, so the row streams (jsonl, timings) stay pure.
+    // The fact is spelled once (below); the serve banner prefixes the
+    // same text.
+    if db.vortex_store_attached() {
+        eprintln!("note: {VORTEX_STORE_NOTE}");
+    }
     let namespace = opts.namespace.unwrap_or(relate::Namespace::Neo4j);
     let conn = match db.connect_typed(namespace) {
         Ok(c) => c,

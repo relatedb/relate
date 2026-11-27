@@ -9,8 +9,7 @@ use std::sync::Arc;
 
 use relate::Database;
 use relate_core::Value;
-use relate_executor::Graph;
-use relate_vortex_lab::engine::VortexStore;
+use relate_executor::{Graph, VortexStore};
 
 /// Ten `N` nodes, `x` 1..=10: an equality or a two-value `IN` selects a
 /// tenth of the label, so the seek funnel serves it rather than scanning.
