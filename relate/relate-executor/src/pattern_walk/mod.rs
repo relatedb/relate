@@ -126,7 +126,7 @@ pub(crate) use candidates::{
     admitted, id_fn_conversion, leaf_seek, node_candidates, node_candidates_capped,
     point_candidates_capped, Admitted, Capped, IdConversion, Seek, ServedIds,
 };
-pub(crate) use ladder::{Selection, WalkLadder};
+pub(crate) use ladder::{LadderArm, Selection, WalkLadder};
 pub(crate) use probe::resolved_endpoints_exist;
 
 /// The unbounded var-length hop cap: the default `max_hops` when a

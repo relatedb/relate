@@ -68,7 +68,6 @@ use crate::row::Row;
 
 use super::agg_fold::is_pred_op;
 use super::pattern_policies::node_occurrence_counts;
-use super::pushdown::Residual;
 
 #[cfg(test)]
 use std::cell::Cell;
@@ -314,7 +313,7 @@ impl PathVars {
 }
 
 /// The per-walk compiled scan predicates, keyed by node variable. Built
-/// once per `match_resolved_path` (per row per path), carried by
+/// once per (pattern, entry schema) by the pattern's walk-plan memo, carried by
 /// [`super::expand::PathMatch`], and consulted by the three walk loops'
 /// candidate gates. `settled` names the residual conjuncts (by their
 /// index in the walk's `Residual::conjuncts` slice) the gates already
@@ -350,7 +349,7 @@ impl WalkSpec {
         graph: &ExecGraph<'_>,
         path: &PathPattern,
         params: &BTreeMap<String, Value>,
-        residual: &Residual<'_>,
+        conjuncts: &[Expr],
         entry_bound: Bound<'_>,
     ) -> Self {
         #[cfg(test)]
@@ -380,7 +379,7 @@ impl WalkSpec {
                     np,
                     &path_vars,
                     params,
-                    residual,
+                    conjuncts,
                     entry_bound,
                     &mut settled,
                 )
@@ -421,7 +420,7 @@ impl WalkSpec {
         np: &NodePattern,
         path_vars: &PathVars,
         params: &BTreeMap<String, Value>,
-        residual: &Residual<'_>,
+        conjuncts: &[Expr],
         entry_bound: Bound<'_>,
         settled: &mut Vec<usize>,
     ) -> Option<(String, VarSpec)> {
@@ -448,7 +447,7 @@ impl WalkSpec {
         if !np.has_static_labels() {
             return None;
         }
-        let (preds, mine) = Self::gate_conjuncts(graph, var, path_vars, params, residual)?;
+        let (preds, mine) = Self::gate_conjuncts(graph, var, path_vars, params, conjuncts)?;
         // Published only on success — a declined variable leaves no
         // settled claim behind.
         settled.extend(mine);
@@ -479,7 +478,7 @@ impl WalkSpec {
         var: &SmallName,
         path_vars: &PathVars,
         params: &BTreeMap<String, Value>,
-        residual: &Residual<'_>,
+        conjuncts: &[Expr],
     ) -> Option<(Vec<InlinePred>, Vec<usize>)> {
         // The classification's three outcomes, stated once — each
         // conjunct is exactly one of them.
@@ -511,7 +510,7 @@ impl WalkSpec {
         // Set once a `Breaks` conjunct precedes any of this variable's
         // compiled conjuncts: the evaluation order the gate would flip.
         let mut gate_order_broken = false;
-        for (index, conjunct) in residual.conjuncts.iter().enumerate() {
+        for (index, conjunct) in conjuncts.iter().enumerate() {
             named.clear();
             expr_vars(conjunct, &mut named);
             // `named` is the expr_vars String sink; the IR variable

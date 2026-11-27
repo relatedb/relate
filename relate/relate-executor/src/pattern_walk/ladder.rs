@@ -22,12 +22,36 @@ pub(crate) enum Selection {
     Cheapest(usize),
 }
 
+/// The walk shape a ladder is built for, normalized: no selection (the
+/// plain forward walk) and a pivot at element 0 are both `Cheapest(0)`
+/// (a pivot at element 0 has no prefix to bind backward, and its row-bound
+/// node 0 appends nothing to the entry schema). The one place the rule is
+/// stated: [`WalkLadder::new`] builds from it, and a memo of built ladders
+/// keys on it, so the two cannot disagree about which walks share a ladder.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum LadderArm {
+    /// Pivot at element `k` (`k > 0`) onto the row-bound node.
+    Pivot(usize),
+    /// Cheapest free start at element `k`; `0` is the forward walk.
+    Cheapest(usize),
+}
+
+impl LadderArm {
+    pub(crate) fn of(selection: Option<&Selection>) -> Self {
+        match selection {
+            None | Some(Selection::Pivot((0, _))) => LadderArm::Cheapest(0),
+            Some(Selection::Pivot((k, _))) => LadderArm::Pivot(*k),
+            Some(Selection::Cheapest(k)) => LadderArm::Cheapest(*k),
+        }
+    }
+}
+
 /// A walk's precomputed binding-schema ladder: one rung per binding
 /// point the chosen walk arm reaches, indexed by element — `node[i]`
 /// the schema the row holds after the walk binds node `i` (whichever
 /// direction it reached it from), `rel[j]` the schema after it binds
 /// rel `j`, plus `complete`, the finished row's schema (the last
-/// element's names plus the pattern's path names). Built once per walk,
+/// element's names plus the pattern's path names). Built once per (entry schema, start arm) by the pattern's walk-plan memo,
 /// after the start selection and before the candidate loop it
 /// dispatches to; every per-candidate bind stamps a rung
 /// ([`Row::stamp`]) instead of rebuilding a schema per row. The one
@@ -46,7 +70,8 @@ pub(crate) struct WalkLadder {
 }
 
 impl WalkLadder {
-    /// Build the ladder for the walk `selection` chose:
+    /// Build the ladder for the walk `arm` names (the normalized start
+    /// selection, [`LadderArm::of`]):
     ///
     /// - **Forward** (no selection — normalized onto **Cheapest `0`**,
     ///   the k=0 arm): elements bind left to right from node 0, every
@@ -71,19 +96,20 @@ impl WalkLadder {
     /// both walkers bind the [`super::binds::anon_rel_name`] stub on
     /// a named path.
     ///
-    /// The builder encodes its preconditions: a **Pivot `k == 0`**
-    /// normalizes onto the forward/Cheapest(0) arm (a pivot at element
-    /// 0 has no prefix to bind backward and node 0 row-bound, which the
-    /// k=0 arm's start bind encodes exactly — a row-bound name appends
-    /// nothing), and the compact-shape indexing invariant — the rungs
-    /// are indexed by element, so `nodes` and `rels` must alternate
-    /// node, rel, node — is pinned once at the top, before any arm
-    /// indexes into them.
+    /// The builder encodes its preconditions: a **Pivot `k == 0`** is
+    /// unrepresentable by construction ([`LadderArm::of`] normalizes it
+    /// onto the forward/Cheapest(0) arm, and the pivot arm below asserts
+    /// `k > 0`: a pivot at element 0 has no prefix to bind backward, and
+    /// its row-bound node 0 appends nothing, which the k=0 arm's start
+    /// bind encodes exactly), and the compact-shape indexing invariant —
+    /// the rungs are indexed by element, so `nodes` and `rels` must
+    /// alternate node, rel, node — is pinned once at the top, before any
+    /// arm indexes into them.
     pub(crate) fn new(
         seats: &SeatPrefixes,
         entry: &Row,
         path: &PathPattern,
-        selection: Option<&Selection>,
+        arm: LadderArm,
         named: bool,
     ) -> Self {
         debug_assert_eq!(
@@ -94,19 +120,8 @@ impl WalkLadder {
         let mut names: Vec<String> = entry.keys().cloned().collect();
         let mut node: Vec<RowRung> = Vec::with_capacity(path.nodes.len());
         let mut rel: Vec<RowRung> = Vec::with_capacity(path.rels.len());
-        // No selection is the forward walk from node 0, and so is a
-        // pivot at element 0 — `Cheapest(0)` is exactly that walk (a
-        // cheapest start at element 0 has no prefix to bind backward,
-        // and a pivot's row-bound node 0 appends nothing to the entry
-        // schema): both normalize onto the k=0 arm here instead of the
-        // match duplicating it.
-        let forward = Selection::Cheapest(0);
-        let selection = match selection.unwrap_or(&forward) {
-            Selection::Pivot((0, _)) => &forward,
-            other => other,
-        };
-        match selection {
-            Selection::Cheapest(k) => {
+        match arm {
+            LadderArm::Cheapest(k) => {
                 // k=0 is the forward walk: node 0, then rel j + node
                 // j+1 onward (the backward prefix binds nothing).
                 // Otherwise the cheapest start binds node k from the
@@ -115,21 +130,22 @@ impl WalkLadder {
                 // the name).
                 push_bind_name(
                     &mut names,
-                    node_bind_name(seats, &path.nodes[*k], *k, named, |n| n.to_string()).as_deref(),
+                    node_bind_name(seats, &path.nodes[k], k, named, |n| n.to_string()).as_deref(),
                 );
                 let start = RowRung::from_names(&names);
-                backward_prefix(seats, &mut names, &mut node, &mut rel, path, named, *k);
+                backward_prefix(seats, &mut names, &mut node, &mut rel, path, named, k);
                 node.push(start);
-                forward_suffix(seats, &mut names, &mut node, &mut rel, path, named, *k);
+                forward_suffix(seats, &mut names, &mut node, &mut rel, path, named, k);
             }
-            Selection::Pivot((k, _)) => {
-                backward_prefix(seats, &mut names, &mut node, &mut rel, path, named, *k);
+            LadderArm::Pivot(k) => {
+                debug_assert!(k > 0, "a pivot at element 0 normalizes onto Cheapest(0)");
+                backward_prefix(seats, &mut names, &mut node, &mut rel, path, named, k);
                 // The suffix hand-off: match_node(pivot) rebinds nothing
                 // (node k is the row-bound pivot), so its schema is the
                 // completed prefix's — node rung 0's content, one shared
                 // Arc with the rung the last backward bind stamped.
                 node.push(node[0].clone());
-                forward_suffix(seats, &mut names, &mut node, &mut rel, path, named, *k);
+                forward_suffix(seats, &mut names, &mut node, &mut rel, path, named, k);
             }
         }
         // The finished row: the walk's last schema plus the pattern's

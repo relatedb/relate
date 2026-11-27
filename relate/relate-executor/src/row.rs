@@ -153,6 +153,20 @@ impl RowSchema {
     }
 }
 
+/// An owned handle on a row's shared schema, compared by allocation
+/// identity: the key a per-pattern memo uses for "the same entry schema".
+/// It holds the `Arc`, so the allocation cannot be freed and its address
+/// reused while the handle lives — pointer equality stays a sound identity.
+#[derive(Clone)]
+pub(crate) struct SchemaKey(Arc<RowSchema>);
+
+impl SchemaKey {
+    /// Whether `row` carries the very schema allocation this key holds.
+    pub(crate) fn is(&self, row: &Row) -> bool {
+        std::ptr::eq(Arc::as_ptr(&self.0) as *const (), row.schema_ptr())
+    }
+}
+
 /// The shared column names of one projected batch.
 #[derive(Clone)]
 pub struct RowNames(Arc<RowSchema>);
@@ -306,6 +320,11 @@ impl Row {
     #[cfg(test)]
     pub(crate) fn values_capacity(&self) -> usize {
         self.values.capacity()
+    }
+
+    /// An owned identity handle on this row's schema (see [`SchemaKey`]).
+    pub(crate) fn schema_key(&self) -> SchemaKey {
+        SchemaKey(Arc::clone(&self.schema))
     }
 
     /// Identity of the shared schema allocation. Rows from one clause

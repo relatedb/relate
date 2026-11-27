@@ -39,6 +39,7 @@ use super::predicate_spec;
 use super::pushdown::Residual;
 use super::rel_seek::{first_rel_seek, RelSeek};
 use super::rider::BindingSink;
+use super::walk_plans::WalkPlans;
 
 /// Per-path matching context shared by the node/relationship expansion
 /// recursion: graph view, the path pattern, parameters, residuals, the
@@ -52,7 +53,8 @@ pub(crate) struct PathMatch<'a, 'data> {
     pub residual: &'a Residual<'a>,
     pub probe: &'a FarProbe,
     /// The scan-predicate specialization (predicate_spec.rs): compiled
-    /// once per row per path in `match_resolved_path`, gated by every
+    /// once per (pattern, entry schema) by the pattern's walk-plan memo
+    /// ([`super::walk_plans::WalkPlans`]), gated by every
     /// walk loop before a candidate pays the binding work.
     pub spec: &'a predicate_spec::WalkSpec,
     /// LABS-801: the path's relationship-type filters resolved once per
@@ -65,8 +67,9 @@ pub(crate) struct PathMatch<'a, 'data> {
     /// the walk seeks that rel instead of enumerating the adjacency.
     pub rel_seek: Option<RelId>,
     /// The walk's precomputed binding-schema ladder — built by
-    /// `match_resolved_path` once per walk, after the start selection
-    /// picked the arm and before the candidate loop it dispatches to.
+    /// the pattern's walk-plan memo ([`super::walk_plans::WalkPlans`]) once per
+    /// (entry schema, start arm), after the start selection picked the arm
+    /// and before the candidate loop it dispatches to.
     /// Total over every pattern shape: no walk keeps an insert path.
     pub ladder: &'a WalkLadder,
     /// The walk's hop/walk tallies (LABS-805): the admission funnels
@@ -137,10 +140,12 @@ fn entity_type_error(variable: &str, value: &Value, expected: &str) -> Error {
 /// nothing; `RelSeek::Decline` declines the seek and the adjacency scan
 /// runs), then
 /// the walk from node 0 into `sink`.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn match_resolved_path(
     ctx: ExecCtx<'_>,
     path: &PathPattern,
     rel_filters: &[RelFilter],
+    plans: &WalkPlans,
     residual: &Residual<'_>,
     row: Row,
     used: UsedSet,
@@ -182,18 +187,13 @@ pub(crate) fn match_resolved_path(
         RelSeek::Gone => return Ok(()),
         RelSeek::Decline => (None, None),
     };
-    // The per-walk scan-predicate specialization (predicate_spec.rs),
-    // compiled once per row per path and carried by the `PathMatch` every
-    // walk loop reads. The entry row's bindings are the compile's one
-    // row-dependent input: a variable the row already owns never takes a
-    // gate, so none of its conjuncts settle. The bound-name predicate is
-    // the row tier's one spelling ([`crate::row::row_bound`]); its borrow
-    // of the entry row ends with the compile, before the row moves into
-    // the walk.
-    let spec = {
-        let entry_bound = crate::row::row_bound(&row);
-        predicate_spec::WalkSpec::compile(graph, path, params, residual, &entry_bound)
-    };
+    // The scan-predicate specialization (predicate_spec.rs), carried by
+    // the `PathMatch` every walk loop reads. Its one row-dependent input
+    // is which names the entry row already owns (a variable the row owns
+    // never takes a gate, so none of its conjuncts settle) — a fact of
+    // the entry *schema*, so the pattern's memo compiles it once per
+    // schema and every later driving row of the call reuses it.
+    let spec = plans.spec(graph, path, params, residual.conjuncts, &row);
     // The start selection — eligibility, the bound pivot, its estimate
     // gate, and the cheapest-start fallback — in one place
     // (exec/pivot.rs, beside the two selections it orchestrates):
@@ -203,18 +203,13 @@ pub(crate) fn match_resolved_path(
     // wins; `pivot::walk_start` owns the metric-vocabulary mapping).
     super::record_walk_start(pivot::walk_start(selection.as_ref(), &seek));
     // The walk's binding-schema ladder — the schema the row holds after
-    // each bind, precomputed once per walk: after the start selection
-    // picked the arm (the arm decides the backward prefix's rungs),
-    // before the candidate loop the dispatch enters. The one ladder
-    // build (pattern_walk), the classic walker's node-named policy,
-    // total over every pattern shape — no insert path anywhere.
-    let ladder = WalkLadder::new(
-        &graph.seat_prefixes(),
-        &row,
-        path,
-        selection.as_ref(),
-        path.has_path_name(),
-    );
+    // each bind, precomputed after the start selection picked the arm
+    // (the arm decides the backward prefix's rungs), before the candidate
+    // loop the dispatch enters. The one ladder build (pattern_walk), the
+    // classic walker's node-named policy, total over every pattern shape
+    // — no insert path anywhere. It reads the entry row's names and the
+    // arm only, so the pattern's memo builds it once per (schema, arm).
+    let ladder = plans.ladder(graph, path, &row, selection.as_ref());
     // The walk's per-edge counts tally here through the whole dispatch
     // and flush on drop at the walk's end (LABS-805).
     let tallies = super::WalkTallies::default();

@@ -619,7 +619,7 @@ fn a_declined_variable_leaves_no_settled_conjunct_behind() {
         &view,
         &patterns[0],
         &BTreeMap::new(),
-        &residual,
+        residual.conjuncts,
         &|_: &str| false,
     );
     assert!(
@@ -647,7 +647,7 @@ fn a_declined_variable_leaves_no_settled_conjunct_behind() {
         &view,
         &patterns[0],
         &BTreeMap::new(),
-        &residual,
+        residual.conjuncts,
         &|_: &str| false,
     );
     assert_eq!(spec.settled_conjuncts(), &[0]);

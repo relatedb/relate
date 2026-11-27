@@ -116,6 +116,7 @@ pub(crate) mod top_k;
 pub(crate) mod union;
 pub(crate) mod unwind;
 pub(crate) mod vector;
+pub(crate) mod walk_plans;
 pub(crate) mod write;
 
 pub use catalog_show::catalog_create_statements;
@@ -927,5 +928,7 @@ mod subquery_eval_tests;
 pub(crate) mod test_support;
 #[cfg(test)]
 mod text_seek_tests;
+#[cfg(test)]
+mod walk_plans_tests;
 #[cfg(test)]
 mod write_tests;

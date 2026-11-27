@@ -24,6 +24,7 @@ use super::gpm::{match_gpm_path, GpmFilters, RouteCaches};
 use super::pattern_policies::{MatchTail, Matched};
 use super::pushdown::Residual;
 use super::rider::{PathSink, Rider};
+use super::walk_plans::WalkPlans;
 
 /// A pattern's tier state, built once per pattern by the caller's widest
 /// loop (the clause's pattern loop in `match_paths`, the join's one side-B
@@ -37,8 +38,13 @@ use super::rider::{PathSink, Rider};
 /// life is the one `match_clause` call that built it (one input batch) and
 /// never spans a write; only the GPM arm reads it.
 pub(crate) enum PathFilters {
-    /// One filter per `path.rels` entry, in order.
-    Classic(Vec<RelFilter>),
+    /// One filter per `path.rels` entry, in order, and the pattern's
+    /// walk-setup memo (REL8-841): the per-row-invariant products of
+    /// `match_resolved_path`'s setup, built on the first driving row.
+    Classic {
+        rels: Vec<RelFilter>,
+        plans: WalkPlans,
+    },
     /// The GPM engine's element-order table and the route's caches.
     Gpm {
         table: GpmFilters,
@@ -58,12 +64,14 @@ impl PathFilters {
                 caches: RouteCaches::default(),
             }
         } else {
-            PathFilters::Classic(
-                path.rels
+            PathFilters::Classic {
+                rels: path
+                    .rels
                     .iter()
                     .map(|rp| RelFilter::resolve(graph, rp))
                     .collect(),
-            )
+                plans: WalkPlans::default(),
+            }
         }
     }
 }
@@ -134,7 +142,7 @@ pub(crate) fn match_one_path(
                 ctx, path, table, caches, row, used, match_mode, tail, residual, rider,
             )
         }
-        PathFilters::Classic(table) => {
+        PathFilters::Classic { rels, plans } => {
             // The classic walk's sink follows the rider — the one rider→sink
             // decision (`PathSink::for_rider`, exec/rider.rs): a probe rides the
             // classic walk exactly as it rides the GPM one (the probe IS the
@@ -147,7 +155,7 @@ pub(crate) fn match_one_path(
             // LABS-161: an elementId()/id() equality (or a row-bound variable) on
             // the first rel seeks the rel directly instead of scanning every
             // node's adjacency; a Gone seek matches nothing (zero rows).
-            match_resolved_path(ctx, path, table, residual, row, used, &mut sink)?;
+            match_resolved_path(ctx, path, rels, plans, residual, row, used, &mut sink)?;
             Ok(out)
         }
     }

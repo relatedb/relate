@@ -12,7 +12,7 @@ use crate::ctx::ExecCtx;
 use crate::overlay::ExecGraph;
 use crate::pattern_walk::{
     bind_reconstructed_path, bind_rung_name, binding, pattern_node_ok, rel_list_binding, Binding,
-    PathRow, RelFilter, RelHop, UsedRels, VarWalk, WalkLadder,
+    LadderArm, PathRow, RelFilter, RelHop, UsedRels, VarWalk, WalkLadder,
 };
 use crate::row::{Row, RowRung};
 
@@ -81,7 +81,13 @@ fn walk_collect(
     // The eval walk's ladder: the forward (k=0) arm of the one ladder
     // build (pattern_walk), node-named false — the eval walk binds no
     // anonymous `__node{idx}` stubs.
-    let ladder = WalkLadder::new(&graph.seat_prefixes(), row, path, None, false);
+    let ladder = WalkLadder::new(
+        &graph.seat_prefixes(),
+        row,
+        path,
+        LadderArm::Cheapest(0),
+        false,
+    );
     // LABS-801: the path's rel filters resolve once per walk, beside the
     // ladder — the frames below index them by rel position, never
     // re-resolve per arrival.
