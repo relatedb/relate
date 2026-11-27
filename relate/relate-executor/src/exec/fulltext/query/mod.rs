@@ -95,19 +95,20 @@ pub(super) struct Clause {
 
 /// The position a query's words have reached — the one operator-placement
 /// state: no word yet, a term last, or an operator last (with the occurrence
-/// it imposes on the next term).
-enum Position {
+/// it imposes on the next term, and the word it was spelled as, which the
+/// refusals quote).
+enum Position<'w> {
     Nothing,
     Term,
-    Operator(Occur),
+    Operator { occur: Occur, word: &'w str },
 }
 
-struct Parser<'q> {
+struct Parser<'q, 'w> {
     /// The query text, for the refusals that name it.
     query: &'q str,
     analyzer: Analyzer,
     clauses: Vec<Clause>,
-    position: Position,
+    position: Position<'w>,
 }
 
 impl Word {
@@ -154,24 +155,24 @@ fn operator(word: &str) -> Option<Occur> {
 /// module docs list as unsupported are typed syntax errors, never a stray
 /// term or a flat OR.
 pub(super) fn parse(query: &str, analyzer: Analyzer) -> Result<Vec<Clause>> {
+    let words = lex(query)?;
+    if words.is_empty() {
+        return Err(query_error(query, "the query is empty"));
+    }
+    let words = attach_suffixes(words);
     let mut parser = Parser {
         query,
         analyzer,
         clauses: Vec::new(),
         position: Position::Nothing,
     };
-    let words = lex(query)?;
-    if words.is_empty() {
-        return Err(query_error(query, "the query is empty"));
-    }
-    let words = attach_suffixes(words);
     for word in &words {
         parser.word(word)?;
     }
     // Every operator-placement refusal is word-level, quoting the operator:
-    // the last word is the trailing operator when the query ends on one.
-    if let (Position::Operator(_), Some(last)) = (&parser.position, words.last()) {
-        return Err(malformed(&last.text, "an operator needs a term after it"));
+    // the position carries the operator word when the query ends on one.
+    if let Position::Operator { word, .. } = parser.position {
+        return Err(malformed(word, "an operator needs a term after it"));
     }
     Ok(parser.clauses)
 }
@@ -198,17 +199,17 @@ fn attach_suffixes(words: Vec<Word>) -> Vec<Word> {
     out
 }
 
-impl Parser<'_> {
+impl<'w> Parser<'_, 'w> {
     /// One operator word's placement: `AND`/`OR` need a term on both sides,
     /// `NOT` a term after it, and the only operator that may follow another
     /// is `NOT` after `AND`/`OR` (`alpha AND NOT beta`).
-    fn operator(&mut self, occur: Occur, word: &str) -> Result<()> {
+    fn operator(&mut self, occur: Occur, word: &'w str) -> Result<()> {
         match self.position {
             // A doubled operator has no operand between the two; the one
             // operator that may follow another is `NOT` after `AND`/`OR`.
-            Position::Operator(previous)
-                if occur != Occur::MustNot || previous == Occur::MustNot =>
-            {
+            Position::Operator {
+                occur: previous, ..
+            } if occur != Occur::MustNot || previous == Occur::MustNot => {
                 return Err(malformed(
                     word,
                     "an operator needs a term between it and the previous operator",
@@ -232,27 +233,27 @@ impl Parser<'_> {
                 last.occur = Occur::Must;
             }
         }
-        self.position = Position::Operator(occur);
+        self.position = Position::Operator { occur, word };
         Ok(())
     }
 
-    fn word(&mut self, word: &Word) -> Result<()> {
+    fn word(&mut self, word: &'w Word) -> Result<()> {
         if let Some(occur) = word.operator() {
             return self.operator(occur, &word.text);
         }
         let mut occur = match std::mem::replace(&mut self.position, Position::Term) {
-            Position::Operator(occur) => occur,
+            Position::Operator { occur, .. } => occur,
             Position::Nothing | Position::Term => Occur::Should,
         };
-        // The optional `field:` prefix: an empty name is malformed, and `*:`
-        // names every field, like no prefix at all.
-        // The word's own start, then its `field:` term, then every term the
-        // suffix grammar mints.
-        refuse_leading_form(&word.text, word.literal)?;
+        // Every term start is judged for a leading form in the loop below;
+        // a `field:` word also judges its own start, which the field name
+        // hides from the term.
         let (property, mut text) = split_field(&word.text);
         if property.is_some() {
-            refuse_leading_form(text, word.literal)?;
+            refuse_leading_form(&word.text, word.literal)?;
         }
+        // The optional `field:` prefix: an empty name is malformed, and `*:`
+        // names every field, like no prefix at all.
         let mut property = match property {
             Some("") => return Err(malformed(&word.text, "a `:` needs a field name before it")),
             Some("*") | None => None,
@@ -263,21 +264,22 @@ impl Parser<'_> {
         // not a `^` boost starts a new word (`term~1x` is a bare `~` plus the
         // term `1x`, as Lucene's lexer reads it): it is its own implicit-OR
         // clause, with no field.
+        // Each term keeps the word's provenance (any quoted or escaped
+        // character marks the whole scanned word literal). `split_suffix`
+        // never returns an empty term, so only a `field:` with nothing after
+        // it can reach the loop empty.
+        if text.is_empty() {
+            return Err(malformed(
+                &word.text,
+                "a `:` field prefix needs a term after it",
+            ));
+        }
         let literal = word.literal;
         loop {
+            refuse_leading_form(text, literal)?;
             let (term, suffix, remainder) = split_suffix(text)?;
-            if term.is_empty() {
-                return Err(malformed(
-                    &word.text,
-                    "a `:` field prefix needs a term after it",
-                ));
-            }
             self.push_target(occur, property, term, &suffix, literal)?;
             let Some(rest) = remainder else { return Ok(()) };
-            // The remainder is a term of its own: it starts a new leading-form
-            // judgement, and it keeps the word's provenance (any quoted or
-            // escaped character marks the whole scanned word literal).
-            refuse_leading_form(rest, literal)?;
             occur = Occur::Should;
             property = None;
             text = rest;
@@ -533,12 +535,7 @@ mod tests {
                 .collect::<Vec<_>>()
                 .join(" ")
         };
-        assert_eq!(
-            parse(&words(MAX_QUERY_CLAUSES), Analyzer::Standard)
-                .expect("at the cap")
-                .len(),
-            MAX_QUERY_CLAUSES
-        );
+        assert_eq!(clauses(&words(MAX_QUERY_CLAUSES)).len(), MAX_QUERY_CLAUSES);
         assert_syntax_error(&words(MAX_QUERY_CLAUSES + 1));
     }
 
