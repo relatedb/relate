@@ -1,12 +1,9 @@
 use std::collections::BTreeMap;
-use std::fmt;
 use std::ops::ControlFlow;
 use std::sync::Arc;
 
 pub use relate_model::value::PointValue;
 pub use relate_model::VectorCoordKind;
-
-use relate_model::identifier::quote_identifier_shaped;
 
 use crate::temporal::Temporal;
 use crate::{Error, NodeId, RelId};
@@ -15,7 +12,8 @@ mod depth;
 mod json;
 mod ordering;
 mod props;
-pub(crate) use depth::{descends, DEPTH_LIMIT_MARKER};
+mod render;
+pub(crate) use depth::descends;
 pub use depth::{next_depth, value_depth_exceeded, MAX_VALUE_DEPTH};
 pub use json::{tagged_str, TaggedStr};
 pub use props::PropertyMap;
@@ -398,129 +396,7 @@ impl Value {
             _ => None,
         }
     }
-
-    pub fn to_cypher_literal(&self) -> String {
-        self.to_cypher_literal_at(0)
-    }
-
-    /// [`Value::to_cypher_literal`] with the ADR-0462 depth guard: a
-    /// container past [`MAX_VALUE_DEPTH`] renders
-    /// [`DEPTH_LIMIT_MARKER`] instead of recursing. `depth` is the number of
-    /// containers enclosing `self`, so a root is 0 and its children 1.
-    fn to_cypher_literal_at(&self, depth: u32) -> String {
-        match self {
-            Value::Null => "null".into(),
-            Value::Bool(true) => "true".into(),
-            Value::Bool(false) => "false".into(),
-            Value::Int(i) => i.to_string(),
-            Value::Float(f) => relate_model::value::float_text(*f),
-            Value::String(s) => format!("'{}'", escape_cypher_string(s)),
-            Value::Bytes(b) => bytes_as_int_list(b),
-            Value::List(xs) => {
-                let Some(next) = next_depth(depth) else {
-                    return DEPTH_LIMIT_MARKER.into();
-                };
-                let inner: Vec<_> = xs.iter().map(|v| v.to_cypher_literal_at(next)).collect();
-                format!("[{}]", inner.join(", "))
-            }
-            Value::Map(m) => {
-                let Some(next) = next_depth(depth) else {
-                    return DEPTH_LIMIT_MARKER.into();
-                };
-                map_to_cypher_literal(m.iter(), next)
-            }
-            Value::Node(n) => n.to_cypher_literal_at(depth),
-            Value::Relationship(r) => r.to_cypher_literal_at(depth),
-            Value::Path(p) => p.to_cypher_literal_at(depth),
-            Value::Temporal(t) => format!("'{}'", escape_cypher_string(&t.iso_string())),
-            // Round-trippable form like VECTOR: uuid('...') (CIP-246).
-            Value::Uuid(u) => format!("uuid('{}')", uuid_hyphenated(*u)),
-            Value::Point(p) => p.to_string(),
-            Value::Vector { coord, values } => {
-                let Some(next) = next_depth(depth) else {
-                    return DEPTH_LIMIT_MARKER.into();
-                };
-                let inner = values
-                    .iter()
-                    .map(|value| value.to_cypher_literal_at(next))
-                    .collect::<Vec<_>>();
-                vector_text(&inner, *coord)
-            }
-        }
-    }
-
-    /// The CIP-271 `toString()` rendering: the cypher-shell display form
-    /// rather than the round-trippable literal form — strings are unquoted,
-    /// temporals are bare full-precision ISO strings (ADR-0448), and
-    /// maps/lists render recursively with `, ` separators (verified
-    /// against Neo4j 2026.09.0).
-    pub fn to_display_string(&self) -> String {
-        self.to_display_string_at(0)
-    }
-
-    /// [`Value::to_display_string`] with the ADR-0462 `depth` guard (the
-    /// number of containers enclosing `self`); a container past
-    /// [`MAX_VALUE_DEPTH`] renders [`DEPTH_LIMIT_MARKER`].
-    fn to_display_string_at(&self, depth: u32) -> String {
-        match self {
-            Value::Null => "null".into(),
-            Value::Bool(b) => b.to_string(),
-            Value::Int(i) => i.to_string(),
-            Value::Float(f) => relate_model::value::float_text(*f),
-            // Unquoted: Neo4j 2026.09.0 renders toString({a:'x y'}) as
-            // "{a: x y}".
-            Value::String(s) => String::from(&**s),
-            Value::Bytes(b) => bytes_as_int_list(b),
-            Value::List(xs) => {
-                let Some(next) = next_depth(depth) else {
-                    return DEPTH_LIMIT_MARKER.into();
-                };
-                let inner: Vec<_> = xs.iter().map(|v| v.to_display_string_at(next)).collect();
-                format!("[{}]", inner.join(", "))
-            }
-            // A key outside the plain identifier shape is backticked
-            // (CIP-271: `{`123`: digit key, `a.b`: dot, `first name`:
-            // Alice}`); the map's own iteration order is already the
-            // sorted one.
-            Value::Map(m) => {
-                let Some(next) = next_depth(depth) else {
-                    return DEPTH_LIMIT_MARKER.into();
-                };
-                let inner: Vec<_> = m
-                    .iter()
-                    .map(|(k, v)| {
-                        format!(
-                            "{}: {}",
-                            quote_identifier_shaped(k),
-                            v.to_display_string_at(next)
-                        )
-                    })
-                    .collect();
-                format!("{{{}}}", inner.join(", "))
-            }
-            Value::Node(n) => node_display(n),
-            Value::Relationship(r) => relationship_display(r),
-            // No depth: the display walk renders no properties, so it never
-            // recurses and has no ADR-0462 budget to thread.
-            Value::Path(p) => p.display_string(),
-            Value::Temporal(t) => t.full_seconds_string(),
-            // Bare hyphenated string (verified on 2026.09.0).
-            Value::Uuid(u) => uuid_hyphenated(*u),
-            Value::Point(pt) => point_display(pt),
-            Value::Vector { coord, values } => {
-                let Some(next) = next_depth(depth) else {
-                    return DEPTH_LIMIT_MARKER.into();
-                };
-                let inner: Vec<_> = values
-                    .iter()
-                    .map(|v| v.to_display_string_at(next))
-                    .collect();
-                vector_text(&inner, *coord)
-            }
-        }
-    }
 }
-
 /// One component accessor of a point (`p.x`, `p.longitude`, `p.crs`, …) —
 /// the one point-accessor vocabulary, the data-model sibling of the
 /// temporal accessor ([`crate::temporal::Temporal::component`]): a key no
@@ -572,211 +448,6 @@ pub fn point_component(p: &PointValue, key: &str) -> Result<Value, Error> {
     })
 }
 
-/// The Neo4j text form of a point (the CIP-271 display policy `toString()`
-/// and string concatenation use): `point({x: 1.0, y: 2.0, crs:
-/// 'cartesian'})`. Coordinates render through the float-literal policy (so
-/// an integral coordinate keeps its `.0`), a 3D point adds `z`, and the CRS
-/// name comes from [`PointValue::crs_name`]. A srid/dimensionality pair
-/// outside the four `point()` codes — only reachable from a decoder, never
-/// from `point()` — renders the srid spelling rather than claiming a CRS
-/// the value does not have.
-fn point_display(p: &PointValue) -> String {
-    let coord = |value: f64| Value::Float(value).to_cypher_literal();
-    match (p.crs_name(), p.z) {
-        (Some(crs), Some(z)) => format!(
-            "point({{x: {}, y: {}, z: {}, crs: '{crs}'}})",
-            coord(p.x),
-            coord(p.y),
-            coord(z)
-        ),
-        (Some(crs), None) => format!(
-            "point({{x: {}, y: {}, crs: '{crs}'}})",
-            coord(p.x),
-            coord(p.y)
-        ),
-        (None, Some(z)) => format!(
-            "point({{srid: {}, x: {}, y: {}, z: {}}})",
-            p.srid,
-            coord(p.x),
-            coord(p.y),
-            coord(z)
-        ),
-        (None, None) => format!(
-            "point({{srid: {}, x: {}, y: {}}})",
-            p.srid,
-            coord(p.x),
-            coord(p.y)
-        ),
-    }
-}
-
-/// The `vector([…], N, COORD)` text shape shared by the literal and
-/// display renderers; `elements` are the already-rendered coordinates.
-/// The round-trippable value-constructor form (CIP-271): a vector VALUE
-/// renders as `vector([1, 2], 2, INTEGER8)` — the coordinate type is the
-/// third argument, not a `NOT NULL`-suffixed type expression (that is the
-/// TYPE rendering's own path, e.g. `valueType()`).
-fn vector_text(elements: &[String], coord: VectorCoordKind) -> String {
-    format!(
-        "vector([{}], {}, {})",
-        elements.join(", "),
-        elements.len(),
-        coord.canonical_name()
-    )
-}
-
-impl Node {
-    pub fn to_cypher_literal(&self) -> String {
-        self.to_cypher_literal_at(0)
-    }
-
-    /// [`Node::to_cypher_literal`] with the ADR-0462 `depth` (the number of
-    /// containers enclosing this node).
-    fn to_cypher_literal_at(&self, depth: u32) -> String {
-        let Some(next) = next_depth(depth) else {
-            return DEPTH_LIMIT_MARKER.into();
-        };
-        let labels: String = self.labels.iter().map(|l| format!(":{l}")).collect();
-        let props = props_suffix(&self.properties, next);
-        format!("({labels}{props})")
-    }
-}
-
-impl Relationship {
-    pub fn to_cypher_literal(&self) -> String {
-        self.to_cypher_literal_at(0)
-    }
-
-    /// [`Relationship::to_cypher_literal`] with the ADR-0462 `depth`.
-    fn to_cypher_literal_at(&self, depth: u32) -> String {
-        let Some(next) = next_depth(depth) else {
-            return DEPTH_LIMIT_MARKER.into();
-        };
-        let props = props_suffix(&self.properties, next);
-        format!("[:{}{}]", self.rel_type, props)
-    }
-}
-
-impl Path {
-    pub fn to_cypher_literal(&self) -> String {
-        self.to_cypher_literal_at(0)
-    }
-
-    /// [`Path::to_cypher_literal`] with the ADR-0462 `depth`.
-    fn to_cypher_literal_at(&self, depth: u32) -> String {
-        // The path itself is the container (`depth + 1`); its embedded
-        // entities are not an extra level, so they get `depth`.
-        if next_depth(depth).is_none() {
-            return DEPTH_LIMIT_MARKER.into();
-        }
-        format!(
-            "<{}>",
-            self.walk(
-                |n| n.to_cypher_literal_at(depth),
-                |r| r.to_cypher_literal_at(depth)
-            )
-        )
-    }
-
-    /// The CIP-271 `toString()` form of a path: no enclosing `<…>` and no
-    /// properties — the same label-only / type-only element rendering a
-    /// standalone node or relationship gets (Neo4j 2026.10.1 renders
-    /// `toString(path)` as `(:A)-[:FIRST]->(:B)<-[:SECOND]-(:C)`). The
-    /// display walk renders no properties, so nothing recurses and no
-    /// depth budget applies — the literal twin's guard bounds its own
-    /// property-rendering recursion, not this walk.
-    fn display_string(&self) -> String {
-        self.walk(node_display, relationship_display)
-    }
-
-    /// The path's element chain — one node then, if the path continues past
-    /// it, the relationship traversed from it, with the arrows of the
-    /// direction actually stored. `node`/`rel` render one element, so the
-    /// literal and display walks share the direction policy.
-    fn walk(
-        &self,
-        node: impl Fn(&Node) -> String,
-        rel: impl Fn(&Relationship) -> String,
-    ) -> String {
-        let mut s = String::new();
-        for (i, n) in self.nodes.iter().enumerate() {
-            s.push_str(&node(n));
-            if let Some(r) = self.rels.get(i) {
-                // `rels[i]` connects `nodes[i]` and `nodes[i+1]`, so the
-                // arrow is the one bit that is always defined: which
-                // endpoint is the current node. A self-loop is outgoing.
-                let (left, right) = if r.start == n.id {
-                    ("-", "->")
-                } else {
-                    ("<-", "-")
-                };
-                s.push_str(&format!("{left}{}{right}", rel(r)));
-            }
-        }
-        s
-    }
-}
-
-/// Labels only, no properties, alphabetically (CIP-271): Neo4j 2026.09.0
-/// renders `toString(node-with-props)` as `(:X)` and a multi-label node as
-/// `(:A:B:C)` whatever the creation order.
-fn node_display(n: &Node) -> String {
-    let mut labels: Vec<&str> = n.labels.iter().map(String::as_str).collect();
-    labels.sort_unstable();
-    let labels: String = labels
-        .iter()
-        .map(|l| format!(":{}", quote_identifier_shaped(l)))
-        .collect();
-    format!("({labels})")
-}
-
-/// Type only, no properties (CIP-271), the relationship half of
-/// [`node_display`].
-fn relationship_display(r: &Relationship) -> String {
-    format!("[:{}]", quote_identifier_shaped(&r.rel_type))
-}
-
-impl fmt::Display for Value {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.to_cypher_literal())
-    }
-}
-
-/// Cypher has no byte-array literal: a [`Value::Bytes`] renders as the list
-/// of its byte values 0-255 (`[0, 1, 255]`), the same shape it crosses the
-/// `value_to_cypher` bridge in (ADR-0327).
-fn bytes_as_int_list(bytes: &[u8]) -> String {
-    let inner: Vec<_> = bytes.iter().map(u8::to_string).collect();
-    format!("[{}]", inner.join(", "))
-}
-
-fn escape_cypher_string(s: &str) -> String {
-    s.replace('\\', "\\\\").replace('\'', "\\'")
-}
-
-/// The ` {…}` property suffix shared by the node and relationship literal
-/// renderers (one owner for the policy and the ADR-0462 depth hand-off);
-/// empty when the entity has no properties. `depth` is the property values'
-/// enclosing-container count.
-fn props_suffix(props: &PropertyMap, depth: u32) -> String {
-    if props.is_empty() {
-        String::new()
-    } else {
-        format!(" {}", map_to_cypher_literal(props.iter(), depth))
-    }
-}
-
-fn map_to_cypher_literal<'a>(
-    m: impl IntoIterator<Item = (&'a String, &'a Value)>,
-    depth: u32,
-) -> String {
-    let inner: Vec<_> = m
-        .into_iter()
-        .map(|(k, v)| format!("{}: {}", k, v.to_cypher_literal_at(depth)))
-        .collect();
-    format!("{{{}}}", inner.join(", "))
-}
-
 /// Render a 128-bit UUID value as the canonical lowercase hyphenated
 /// string (8-4-4-4-12, CIP-246 / RFC 4122).
 pub fn uuid_hyphenated(u: u128) -> String {
@@ -823,5 +494,9 @@ mod depth_tests;
 mod expansion_tests;
 #[cfg(test)]
 mod point_tests;
+#[cfg(test)]
+mod render_tests;
+#[cfg(test)]
+mod test_fixtures;
 #[cfg(test)]
 mod tests;

@@ -7,6 +7,7 @@
 //! `std::mem::forget`: their derived recursive `Drop` is only depth-safe
 //! behind the construction cap, and these fixtures are deliberately past it.
 
+use super::depth::DEPTH_LIMIT_MARKER;
 use super::*;
 use std::sync::Arc;
 
@@ -147,6 +148,40 @@ fn path_walkers_agree_on_the_depth_boundary() {
 
     // Leak: see the module's over-cap fixture policy.
     std::mem::forget(over);
+}
+
+/// REL8-217 regression: the path display form carries no depth guard — it
+/// renders no properties, so it cannot recurse — while the literal form
+/// (which does recurse into properties) saturates past the cap. The
+/// distinguishing input is a *shallow* path nested inside
+/// `MAX_VALUE_DEPTH` raw lists, so the path itself renders at positional
+/// depth `MAX_VALUE_DEPTH` — the exact level a path-arm guard would
+/// charge. (A deep-*property* path does not distinguish: display never
+/// reads properties, and a path at positional depth below the cap admits
+/// its guard, so both shapes render the same.)
+#[test]
+fn path_display_renders_past_the_depth_cap_but_the_literal_saturates() {
+    let path = Value::from_path(Path {
+        nodes: vec![Node {
+            id: 1,
+            labels: Arc::new(vec!["N".to_string()]),
+            properties: PropertyMap::share(BTreeMap::new()),
+        }],
+        rels: Vec::new(),
+    });
+    let mut nested_path = path;
+    for _ in 0..MAX_VALUE_DEPTH {
+        nested_path = Value::List(vec![nested_path].into());
+    }
+    let display = nested_path.to_display_string();
+    assert!(
+        !display.contains(DEPTH_LIMIT_MARKER),
+        "the display walk renders the path's labels, never its properties, so no path-level depth guard applies, got: {display}"
+    );
+    assert!(display.contains("(:N)"));
+    assert!(nested_path.to_cypher_literal().contains(DEPTH_LIMIT_MARKER));
+    // Leak: see the module's over-cap fixture policy.
+    std::mem::forget(nested_path);
 }
 
 /// ADR-0462: `cypher_eq` threads the same depth guard as its sibling
