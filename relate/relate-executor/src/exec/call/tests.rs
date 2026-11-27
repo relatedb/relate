@@ -550,3 +550,65 @@ fn the_in_transactions_output_is_charged_per_batch() {
         vec![vec![Value::Int((BATCHES * PER_BATCH) as i64)]]
     );
 }
+
+/// REL8-2370 / relatedb/relate#921: a unit `CALL (…) { … }` body whose
+/// last clause is another unit `CALL` is itself unit output — the outer
+/// row passes through unchanged, exactly like a write-only tail, instead
+/// of the nested call's pass-through inner rows being merged back (which
+/// dropped the outer row on an empty inner stream and duplicated it on a
+/// two-row one). The nested body's writes still run per inner row.
+#[test]
+fn a_unit_call_body_ending_in_a_nested_unit_call_passes_the_outer_rows_through() {
+    let graph = Graph::default();
+    let empty_inner = exec_autocommit(
+        &graph,
+        "CREATE (t:T {id:1}) WITH t \
+         CALL (t) { UNWIND [] AS x CALL (x) { CREATE (:C) } } \
+         RETURN t.id AS id",
+    )
+    .unwrap();
+    assert_eq!(empty_inner.columns, vec!["id".to_string()]);
+    assert_eq!(empty_inner.rows, vec![vec![Value::Int(1)]]);
+
+    let two_inner = exec_autocommit(
+        &graph,
+        "MATCH (t:T {id:1}) \
+         CALL (t) { UNWIND [1,2] AS x CALL (x) { CREATE (:C) } } \
+         RETURN t.id AS id",
+    )
+    .unwrap();
+    assert_eq!(two_inner.rows, vec![vec![Value::Int(1)]]);
+
+    // The nested unit call still ran its body per inner row: the second
+    // statement's `UNWIND [1,2]` created both `C` nodes.
+    let inner_writes = exec_autocommit(&graph, "MATCH (c:C) RETURN count(*) AS c").unwrap();
+    assert_eq!(inner_writes.rows, vec![vec![Value::Int(2)]]);
+}
+
+/// REL8-2370's conditional twin: a `WHEN` branch body ending in a nested
+/// unit `CALL` is unit output too — the branch classification
+/// (`body_projects_rows`) runs through the same concluding-clause
+/// refinement, so the taken branch passes the driving row through instead
+/// of dropping it on the branch's empty inner stream.
+#[test]
+fn a_when_branch_body_ending_in_a_nested_unit_call_is_unit_output() {
+    let graph = Graph::default();
+    let result = exec_autocommit(
+        &graph,
+        "CREATE (t:T {id:1}) WITH t \
+         CALL (t) { \
+           WHEN t.id = 1 THEN { UNWIND [] AS x CALL (x) { CREATE (:C) } } \
+           ELSE { SET t.seen = true } \
+         } \
+         RETURN t.id AS id",
+    )
+    .unwrap();
+    assert_eq!(result.rows, vec![vec![Value::Int(1)]]);
+
+    // The taken branch's nested body ran (over an empty stream, so it
+    // created nothing); the ELSE arm never did.
+    let inner_writes = exec_autocommit(&graph, "MATCH (c:C) RETURN count(*) AS c").unwrap();
+    assert_eq!(inner_writes.rows, vec![vec![Value::Int(0)]]);
+    let seen = exec_autocommit(&graph, "MATCH (t:T {seen: true}) RETURN count(*) AS c").unwrap();
+    assert_eq!(seen.rows, vec![vec![Value::Int(0)]]);
+}

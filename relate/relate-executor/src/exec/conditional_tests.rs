@@ -306,6 +306,41 @@ fn a_unit_conditional_call_body_passes_the_outer_rows_through() {
     assert_eq!(strings(&b, "m"), vec!["."]);
 }
 
+/// A conditional branch body concluding in `CALL { … } IN TRANSACTIONS`
+/// is NOT unit output: the batched call always spills rows (each batch's
+/// pass-through rows, `REPORT STATUS` rows, `ON ERROR` pads), whatever
+/// its body. REL8-2370's nested-call refinement must never classify the
+/// batched form by its body — its first spelling dropped the branch's
+/// batch rows (c = 1) where main keeps them (c = 2); the planner's
+/// `NestedCallInTransactions` nesting ban covers only `CALL { … }`
+/// bodies, so the branch-body shape is exactly the one that reaches the
+/// classifier.
+#[test]
+fn a_branch_body_concluding_in_call_in_transactions_keeps_the_batch_rows() {
+    let graph = Graph::default();
+    let result = exec_autocommit(
+        &graph,
+        "UNWIND [1] AS i \
+         CALL (i) { \
+           WHEN i = 1 THEN { \
+             UNWIND [1, 2] AS x \
+             CALL (x) { CREATE (:C) } IN TRANSACTIONS OF 1 ROW ON ERROR BREAK \
+           } \
+           ELSE { CREATE (:E) } \
+         } \
+         RETURN i, count(*) AS c",
+    )
+    .unwrap();
+    assert_eq!(integers(&result, "c"), vec![2]);
+
+    // The taken branch's batches committed (two `C` nodes, one per inner
+    // row); the ELSE arm never ran.
+    let cs = exec_cypher(&graph, "MATCH (c:C) RETURN count(*) AS c");
+    assert_eq!(integers(&cs, "c"), vec![2]);
+    let es = exec_cypher(&graph, "MATCH (e:E) RETURN count(*) AS c");
+    assert_eq!(integers(&es, "c"), vec![0]);
+}
+
 /// The gap report's baseline: a plain unit subquery body (a bare `SET`, no
 /// conditional) keeps its pass-through — the unit-conditional refinement
 /// changed no other body shape.

@@ -21,13 +21,14 @@ mod in_tx_profile;
 pub(crate) mod in_tx_strategy;
 mod shared;
 
-pub(crate) use conditional::{conditional_produces_rows, exec_conditional};
+pub(in crate::exec) use conditional::exec_conditional;
 pub(crate) use feed::{call_subquery_feed, exec_call_subquery};
 pub(crate) use in_transactions::exec_call_in_transactions;
 #[cfg(test)]
 pub(crate) use in_transactions::transaction_error_message;
 
 use super::dispatch::{run_nested_clauses, run_nested_clauses_scoped};
+use super::row_production::{body_projects_rows, stage_projects_rows};
 use super::scope::{
     carry_scope_bindings, has_star_item, nested_seed_row, return_columns, star_scope_names,
     terminal_return_items, visible_keys,
@@ -261,11 +262,11 @@ pub(crate) fn call_subquery_row(
     let body = call_body(imported.as_ref());
     let result = execute_query_scoped(graph, query, params, seed, body, qctx)?;
     // A part merges its rows back only when the body's FINAL stage projects
-    // a statement result (`super::part_projects_rows`, read through
-    // `stage_projects_rows` — the same trailing-clause classification the
-    // conditional branch body uses; a schema/admin DDL command's empty
-    // result must not suppress the pass-through).
-    if !stage_projects_rows(&query.final_stage().parts) {
+    // a statement result (`body_projects_rows` — the same trailing-clause
+    // classification the conditional branch body and the nested-call
+    // refinement use; a schema/admin DDL command's empty result must not
+    // suppress the pass-through).
+    if !body_projects_rows(query) {
         return Ok(vec![outer.clone()]);
     }
     let excluded = imported.unwrap_or_default();
@@ -320,16 +321,6 @@ fn project_row<'a>(
         "QueryResult invariant: every row has one value per column"
     );
     columns.iter().cloned().zip(values.iter().cloned())
-}
-
-/// Whether any UNION arm of a stage projects a statement result of its own
-/// — the one "does this body project rows" fact. Both the conditional body's
-/// `body_projects_rows` and the CALL-subquery driver read it over the
-/// body's FINAL stage, like every other trailing-clause classification.
-fn stage_projects_rows(parts: &[relate_ir::SingleQuery]) -> bool {
-    parts
-        .iter()
-        .any(|part| super::part_projects_rows(&part.clauses))
 }
 
 /// The importing scope a body runs under, with the scope clause's import
@@ -481,6 +472,32 @@ impl UnionArmPolicy<'_> {
     }
 }
 
+/// One arm policy for the whole stage: a scope body that projects rows
+/// strips its star-excluded imports and compares; one whose result never
+/// reaches a caller neither strips nor compares. A scope-clause body
+/// whose parts all project no statement rows has no export shape the
+/// caller sees — `call_subquery_row` short-circuits a unit body to the
+/// outer row — so its UNION arms' arbitrary row-derived columns are
+/// never compared. That holds only for the body's FINAL stage: a `NEXT`
+/// stage seeds from these rows (`next_seeds`), which requires a
+/// rectangular result, so the arms must agree there (a mismatch is the
+/// typed `UNION requires same columns` error, never a non-rectangular
+/// fold) — the LABS-712 unit-body case decided in its own arm, not
+/// inline in the seeded core. The naked `CALL { … }` and conditional
+/// callers keep their historical comparison.
+fn union_arm_policy(
+    imports: Option<&HashSet<String>>,
+    projects_rows: bool,
+    next_stage: bool,
+) -> UnionArmPolicy<'_> {
+    match imports {
+        None => UnionArmPolicy::AsIs,
+        Some(imported) if projects_rows => UnionArmPolicy::StripImports(imported),
+        Some(_) if next_stage => UnionArmPolicy::AsIs,
+        Some(_) => UnionArmPolicy::Uncompared,
+    }
+}
+
 /// [`execute_query_scoped`]'s multi-seed core: arbitrary derived `seeds`
 /// and the optionally distinct importing scope. Private to this module's
 /// NEXT-stage recursion (the only caller whose seeds diverge from the
@@ -496,28 +513,11 @@ fn execute_query_seeded_in_scope(
     let mut fold = super::union::UnionFold::new(super::union::union_mode(&query.union_all)?);
     let mut seeds = seeds;
     let part_count = query.parts.len();
-    // A scope-clause body whose parts all project no statement rows has no
-    // export shape the caller sees — `call_subquery_row` short-circuits a
-    // unit body to the outer row — so its UNION arms' arbitrary row-derived
-    // columns are never compared. That holds only for the body's FINAL
-    // stage: a `NEXT` stage seeds from these rows (`next_seeds`), which
-    // requires a rectangular result, so the arms must agree there (a
-    // mismatch is the typed `UNION requires same columns` error, never a
-    // non-rectangular fold). The naked `CALL { … }` and conditional
-    // callers keep their historical comparison.
+    // The arm policy — why a unit body's arms are not compared, why a
+    // NEXT stage's must be rectangular — is [`union_arm_policy`]'s own
+    // record, one derivation for the whole stage.
     let projects_rows = stage_projects_rows(&query.parts);
-    let imports = scope.imports();
-    // One arm policy for the whole stage: a scope body that projects rows
-    // strips its star-excluded imports and compares; one whose result never
-    // reaches a caller neither strips nor compares; a NEXT stage compares
-    // (rectangular arms) but, matching the projection guard, does not strip
-    // a unit body.
-    let arm_policy = match imports {
-        None => UnionArmPolicy::AsIs,
-        Some(imported) if projects_rows => UnionArmPolicy::StripImports(imported),
-        Some(_) if query.next.is_some() => UnionArmPolicy::AsIs,
-        Some(_) => UnionArmPolicy::Uncompared,
-    };
+    let arm_policy = union_arm_policy(scope.imports(), projects_rows, query.next.is_some());
     for (part_index, part) in query.parts.iter().enumerate() {
         // A naked body's imports are per arm (issue 50): the stage seed is
         // the arms' union, so each arm keeps only the names its own leading

@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use relate_core::{CancelToken, Error, QueryClockGuard, Result, Value};
 use relate_ir::{Clause, LabelExpr};
 use relate_names::{SmallName, Token};
-use relate_planner::{clause_mutates_store, clause_projects_rows, plan_any_clause, LogicalPlan};
+use relate_planner::{clause_mutates_store, plan_any_clause, LogicalPlan};
 
 use crate::metrics::{PlanMetricsSink, PlanMetricsSite};
 
@@ -49,6 +49,7 @@ pub(crate) mod chunk;
 pub(crate) mod classification;
 mod clause_arms;
 pub(crate) mod compose;
+mod conditional_branches;
 pub(crate) mod constraint_validation;
 pub(crate) mod create;
 pub(crate) mod ddl;
@@ -102,6 +103,7 @@ pub(crate) mod property_defaults;
 pub(crate) mod pushdown;
 pub(crate) mod rel_seek;
 pub(crate) mod rider;
+mod row_production;
 pub(crate) mod scope;
 pub(crate) mod search;
 pub(crate) mod search_filters;
@@ -756,67 +758,10 @@ pub(crate) fn next_seeds<'p>(
     parts: impl Iterator<Item = &'p [Clause]>,
 ) -> Vec<Row> {
     let mut seeds = result_seed_rows(result);
-    if seeds.is_empty() && parts_have_unit_output(parts) {
+    if seeds.is_empty() && row_production::parts_have_unit_output(parts) {
         seeds.push(Row::new());
     }
     seeds
-}
-
-/// Whether a finished stage seeds the next `NEXT` stage with one unit row
-/// when its own result is empty (ADR-0287). Data-write parts
-/// (`CREATE`/`MERGE`/`DELETE`/`SET`/`REMOVE`/`FOREACH`/`CALL { … }`) and
-/// `FINISH` count, and so do schema/admin DDL parts — the IR-native
-/// index/constraint variants outright, and `Clause::Catalog` exactly when
-/// the canonical `relate-front` predicate says the command is NOT
-/// row-producing. Row-producing catalog commands (the SHOW family and
-/// `TERMINATE TRANSACTIONS`) keep their row semantics: they seed the next
-/// stage from their projected rows, never with a unit row.
-fn parts_have_unit_output<'p>(mut parts: impl Iterator<Item = &'p [Clause]>) -> bool {
-    parts.all(|part| part.last().is_some_and(unit_output_clause))
-}
-
-/// Whether the clause concluding a part makes that part unit output: an
-/// empty result still seeds the next `NEXT` stage with one row (ADR-0287).
-/// [`clause_spills_rows`] decides it, plus the one arm this seeding policy
-/// adds over that classification: `CALL { … }` is a data write in the
-/// ADR-0287 vocabulary, even though its merged rows are a statement result
-/// of its own.
-fn unit_output_clause(clause: &Clause) -> bool {
-    matches!(clause, Clause::CallSubquery { .. }) || !clause_spills_rows(clause)
-}
-
-/// Whether the clause concluding a part spills statement rows when it runs
-/// — the planner's published [`clause_projects_rows`] table plus the one
-/// refinement only this layer can make: a `WHEN`/`ELSE` conditional whose
-/// branch bodies are all unit output spills no rows (the per-row driver's
-/// buckets stay empty), so it projects none. Every concluding-clause
-/// policy reads this one answer — the `CALL { … }` merge policy
-/// ([`part_projects_rows`]), a conditional branch body's row-lessness and
-/// the NEXT-stage seeding policy ([`unit_output_clause`]) — so a unit
-/// conditional body is a unit body everywhere: its caller's outer rows
-/// pass through, never drop, and its `IN TRANSACTIONS` iterations report
-/// their status rows.
-fn clause_spills_rows(clause: &Clause) -> bool {
-    if !clause_projects_rows(clause) {
-        return false;
-    }
-    match clause {
-        Clause::Conditional {
-            branches,
-            else_query,
-        } => call::conditional_produces_rows(branches, else_query.as_deref()),
-        _ => true,
-    }
-}
-
-/// Whether a part (one UNION arm) projects statement rows of its own — the
-/// one classification over the concluding-clause vocabulary
-/// ([`clause_spills_rows`]: the planner table plus the all-unit
-/// conditional refinement), read by the `CALL { … }` merge policy and by a
-/// conditional branch body's row-lessness (and, through
-/// [`unit_output_clause`], by the NEXT-stage seeding policy).
-pub(crate) fn part_projects_rows(clauses: &[Clause]) -> bool {
-    clauses.last().is_none_or(clause_spills_rows)
 }
 
 #[cfg(test)]

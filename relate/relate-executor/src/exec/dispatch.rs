@@ -25,6 +25,7 @@ use super::catalog::{catalog_result, execute_catalog};
 use super::catalog_show::show_indexes_result;
 use super::classification::ProjectionClass;
 use super::clause_arms::{create_from_stream, exec_delete, exec_merge, exec_remove, exec_set};
+use super::conditional_branches::ConditionalBranches;
 use super::ddl::{exec_create_index, exec_drop_index};
 use super::feed::{RowStream, StreamedFeed};
 use super::foreach::exec_foreach;
@@ -407,8 +408,7 @@ fn run_clauses_mode(
                 let (new_rows, result) = exec_conditional(
                     graph,
                     stream.drain()?,
-                    branches,
-                    else_query.as_deref(),
+                    &ConditionalBranches::new(branches, else_query.as_deref()),
                     params,
                     qctx,
                 )?;
