@@ -104,25 +104,11 @@ pub(super) fn run(
     // accumulates through it and the exists mode resolves its counted
     // variable in it — never a second walk of the same vocabulary.
     let projection = Projection::new(star);
-    // The exists mode's counted read, resolved once per run: the parse
-    // and the slot lookup are run-invariant, so only the per-pair node
-    // read is left inside the stream.
-    let landing = match &mode {
-        KernelMode::Rows { .. } => Landing::Rows,
-        KernelMode::Exists { counted } => Landing::Exists(counted.map(|expr| {
-            let (var, key) = var_prop_named(expr)
-                .expect("the engagement proof admits only var.prop counted expressions");
-            let slot = projection
-                .node_slot(var)
-                .expect("the engagement proof checked the counted variable is bound");
-            (slot, key)
-        })),
-    };
-    // The breaker's accumulating bindings: one column per projected slot
-    // — the hub is one of them by construction (the family is defined by
-    // a shared variable), so a pushed binding fills every column.
-    let mut bindings = Bindings::new(&projection, halt);
-    let mut hit = false;
+    // The mode's one landing, resolved once per run: the rows mode's
+    // accumulator, or the exists mode's counted read (parse and slot
+    // lookup are run-invariant, so only the per-pair node read is left
+    // inside the stream).
+    let mut sink = PairSink::new(&projection, mode, halt);
     // LABS-805: the whole hub loop's hop/walk counts tally locally and
     // flush on drop at the run's end — never a thread-local access per
     // edge.
@@ -133,12 +119,12 @@ pub(super) fn run(
         .sides
         .each_ref()
         .map(|hops| hops.iter().map(|hop| graph.rel_types_of(hop.rel)).collect());
-    'hubs: for hub in hubs {
+    for hub in hubs {
         graph.cancel_tick()?;
         // The halt's per-hub guard, the chain kernel's per-row guard's
         // twin: a halt filled at an earlier hub ends the loop before this
         // hub expands either side.
-        if bindings.full() {
+        if sink.full() {
             break;
         }
         side_a.clear();
@@ -151,7 +137,6 @@ pub(super) fn run(
             // circuits the same way — side B never expands for this hub.
             continue;
         }
-        let mut found = false;
         expand_side(ctx, &star.sides[1], &side_types[1], hub, &tallies, |b| {
             // The pairing rule, per B row: a side B row combines with the
             // side A rows whose terminal it lands on (every row, for the
@@ -167,61 +152,15 @@ pub(super) fn run(
                         hub,
                         sides: [*a, b],
                     };
-                    match &landing {
-                        Landing::Rows => {
-                            // The halt, ahead of the push: `want == 0`
-                            // answers zero rows and the checked-ahead form
-                            // keeps the count exact for every `want`; a
-                            // filled halt also ends this hub's B stream.
-                            if bindings.full() {
-                                return Ok(false);
-                            }
-                            bindings.push(graph, &binding);
-                        }
-                        Landing::Exists(counted_read) => {
-                            // Existence needs SOME complete binding to
-                            // pass, and every pairing of this B row is a
-                            // distinct complete binding — a mid node of a
-                            // 2-hop side 0, or side 0's terminal in an
-                            // open star, varies across them — so the
-                            // counted read runs on each pairing until one
-                            // passes (the terminal is the only value the
-                            // pairings share, and only in the
-                            // shared-terminal mode).
-                            if counted_nonnull(ctx, &binding, counted_read) {
-                                found = true;
-                                return Ok(false);
-                            }
-                        }
+                    if !sink.offer(ctx, &binding) {
+                        return Ok(false);
                     }
                 }
             }
             Ok(true)
         })?;
-        if found {
-            hit = true;
-            break 'hubs;
-        }
     }
-    match landing {
-        Landing::Rows => {
-            let (names, columns) = bindings.into_columns();
-            Ok(KernelOutput::Rows(
-                Chunk::from_columns(&names, columns).to_rows(),
-            ))
-        }
-        Landing::Exists(_) => Ok(KernelOutput::Exists(hit)),
-    }
-}
-
-/// What one complete pairing does, resolved once per run from the
-/// [`KernelMode`] — the pairing loop matches this, never the mode per pair.
-enum Landing {
-    /// Accumulate the binding into the answer set.
-    Rows,
-    /// Test the counted read (resolved slot and key) until one pairing
-    /// passes; nothing means every complete binding counts.
-    Exists(Option<(At, NamedToken)>),
+    Ok(sink.finish())
 }
 
 /// One side's walk-invariant state (LABS-805 round 2): the exec context,
@@ -435,11 +374,17 @@ impl Projection {
 
     /// The node position binding variable `var` — the slot's position
     /// itself, so the node-only proof travels with the value.
-    fn node_slot(&self, var: &SmallName) -> Option<At> {
-        self.slots
-            .iter()
-            .find(|slot| slot.var == *var && !matches!(slot.at, At::Rel { .. }))
-            .map(|slot| slot.at)
+    fn node_slot(&self, var: &SmallName) -> Option<NodeAt> {
+        self.slots.iter().find_map(|slot| {
+            if slot.var != *var {
+                return None;
+            }
+            match slot.at {
+                At::Hub => Some(NodeAt::Hub),
+                At::Node { side, hop } => Some(NodeAt::Arrival { side, hop }),
+                At::Rel { .. } => None,
+            }
+        })
     }
 }
 
@@ -459,12 +404,10 @@ impl Binding {
         self.sides[side].rels[hop]
     }
 
-    /// The node at a node position; `None` for a rel position.
-    fn node_at(&self, at: At) -> Option<NodeId> {
+    fn node_of(&self, at: NodeAt) -> NodeId {
         match at {
-            At::Hub => Some(self.hub),
-            At::Node { side, hop } => Some(self.node(side, hop)),
-            At::Rel { .. } => None,
+            NodeAt::Hub => self.hub,
+            NodeAt::Arrival { side, hop } => self.node(side, hop),
         }
     }
 }
@@ -522,23 +465,118 @@ impl<'p> Bindings<'p> {
     }
 }
 
-/// The existence check for one complete binding. `counted` is the run's
-/// resolved counted read — the slot holding the variable and its property
-/// key, parsed once — or nothing (an `EXISTS { MATCH }`, where every
-/// complete binding counts).
-fn counted_nonnull(
-    ctx: ExecCtx<'_>,
-    binding: &Binding,
-    counted: &Option<(At, NamedToken)>,
-) -> bool {
-    let Some((at, key)) = counted else {
-        return true;
-    };
-    let node = binding
-        .node_at(*at)
-        .expect("the engagement proof checked the counted variable is bound to a node");
+/// A node position of a binding: the hub or a side's arrival node — the
+/// positions a counted `<var>.<key>` read can name, so the read needs no
+/// per-pair re-test that its position is a node.
+#[derive(Clone, Copy)]
+enum NodeAt {
+    Hub,
+    Arrival { side: usize, hop: usize },
+}
+
+/// The exists mode's counted read, resolved once per run: the node
+/// position holding the variable and its property key, parsed once.
+struct CountedRead {
+    at: NodeAt,
+    key: NamedToken,
+}
+
+/// Where each complete pairing lands, resolved once per run from the
+/// [`KernelMode`]: the rows mode accumulates the binding, the exists mode
+/// tests the counted read until one pairing passes. It owns the run's
+/// mode-specific state, so the pairing loop never matches the mode.
+enum PairSink<'p> {
+    /// Accumulate bindings into the answer set (halted by `want`).
+    Rows(Bindings<'p>),
+    /// Existence: `counted` is the resolved read, or nothing (an `EXISTS
+    /// { MATCH }`, where every complete binding counts); `hit` records the
+    /// first passing pairing.
+    Exists {
+        counted: Option<CountedRead>,
+        hit: bool,
+    },
+}
+
+impl<'p> PairSink<'p> {
+    fn new(projection: &'p Projection, mode: KernelMode<'_>, halt: Option<usize>) -> Self {
+        match mode {
+            // The breaker's accumulating bindings: one column per projected
+            // slot — the hub is one of them by construction (the family is
+            // defined by a shared variable), so a pushed binding fills every
+            // column.
+            KernelMode::Rows { .. } => PairSink::Rows(Bindings::new(projection, halt)),
+            KernelMode::Exists { counted } => PairSink::Exists {
+                counted: counted.map(|expr| {
+                    let (var, key) = var_prop_named(expr)
+                        .expect("the engagement proof admits only var.prop counted expressions");
+                    let at = projection
+                        .node_slot(var)
+                        .expect("the engagement proof checked the counted variable is bound");
+                    CountedRead { at, key }
+                }),
+                hit: false,
+            },
+        }
+    }
+
+    /// Whether the run is decided: the rows halt is filled, or existence
+    /// has its passing pairing.
+    fn full(&self) -> bool {
+        match self {
+            PairSink::Rows(bindings) => bindings.full(),
+            PairSink::Exists { hit, .. } => *hit,
+        }
+    }
+
+    /// Land one complete pairing; `false` ends the side-B stream.
+    fn offer(&mut self, ctx: ExecCtx<'_>, binding: &Binding) -> bool {
+        match self {
+            PairSink::Rows(bindings) => {
+                // The halt, ahead of the push: `want == 0` answers zero
+                // rows and the checked-ahead form keeps the count exact for
+                // every `want`; a filled halt also ends this hub's B stream.
+                if bindings.full() {
+                    return false;
+                }
+                bindings.push(ctx.graph, binding);
+                true
+            }
+            PairSink::Exists { counted, hit } => {
+                // Existence needs SOME complete binding to pass, and every
+                // pairing of this B row is a distinct complete binding — a
+                // mid node of a 2-hop side 0, or side 0's terminal in an
+                // open star, varies across them — so the counted read runs
+                // on each pairing until one passes (the terminal is the only
+                // value the pairings share, and only in the shared-terminal
+                // mode).
+                if counted
+                    .as_ref()
+                    .is_none_or(|read| counted_nonnull(ctx, binding, read))
+                {
+                    *hit = true;
+                    return false;
+                }
+                true
+            }
+        }
+    }
+
+    fn finish(self) -> KernelOutput {
+        match self {
+            PairSink::Rows(bindings) => {
+                let (names, columns) = bindings.into_columns();
+                KernelOutput::Rows(Chunk::from_columns(&names, columns).to_rows())
+            }
+            PairSink::Exists { hit, .. } => KernelOutput::Exists(hit),
+        }
+    }
+}
+
+/// The counted read's property of one complete binding's node: non-null
+/// passes.
+fn counted_nonnull(ctx: ExecCtx<'_>, binding: &Binding, read: &CountedRead) -> bool {
     matches!(
-        ctx.graph.node_prop_resolved(node, key),
+        ctx.graph.node_prop_resolved(binding.node_of(read.at), &read.key),
         Some(v) if !v.is_null()
     )
 }
