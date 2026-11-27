@@ -1,6 +1,7 @@
 //! Arithmetic precedence levels, unary operators and the postfix chain (property access, subscripts, calls).
 
 use super::*;
+use crate::parser::operators::{CONCAT, DIV, MINUS, MOD, MUL, PLUS, POW};
 
 impl<'a> Parser<'a> {
     pub(in crate::parser) fn parse_add_sub(&mut self) -> ParseResult<Expr> {

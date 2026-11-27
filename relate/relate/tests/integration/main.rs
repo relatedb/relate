@@ -110,6 +110,7 @@ mod pattern_predicate_param_map;
 mod pattern_predicates;
 mod pattern_prop_policy;
 mod pipelined_write_batch;
+mod plan_cache_subscript_literals;
 mod point_index;
 mod pokec_fixture;
 mod predicate_list_coercion;

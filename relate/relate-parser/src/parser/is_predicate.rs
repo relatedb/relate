@@ -1,6 +1,7 @@
 //! The IS-introduced predicate production shared by the general
 //! comparison grammar and the simple-CASE `WHEN IS ...` operand.
 
+use super::operators::{CONTAINS, ENDS_WITH, STARTS_WITH};
 use super::*;
 
 /// The outcome of one optional predicate-suffix production: it either

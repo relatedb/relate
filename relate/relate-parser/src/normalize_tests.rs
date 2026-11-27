@@ -9,11 +9,17 @@ fn norm(src: &str) -> NormalizeOutcome {
     normalize_statement(src, ParseOptions::default())
 }
 
-fn normalized(src: &str) -> Normalized {
-    match norm(src) {
+/// [`normalized`] under explicit options — the one gated-outcome unwrap,
+/// so a preview-gated scenario never re-spells the match and its panic.
+fn normalized_with(src: &str, options: ParseOptions) -> Normalized {
+    match normalize_statement(src, options) {
         NormalizeOutcome::Normalized(n) => n,
         NormalizeOutcome::NotCacheable => panic!("expected {src:?} to normalize"),
     }
+}
+
+fn normalized(src: &str) -> Normalized {
+    normalized_with(src, ParseOptions::default())
 }
 
 fn template(src: &str) -> String {
@@ -120,6 +126,204 @@ fn lists_collapse_to_one_param() {
     assert_eq!(
         template("RETURN [1, 2 + 3]"),
         "RETURN [ $__AUTO_INT_0__ , $__AUTO_INT_1__ + $__AUTO_INT_2__ ]"
+    );
+}
+
+/// A postfix bracket — a subscript or slice on the expression before it —
+/// keeps its brackets and its interior literals normalize individually:
+/// the collapse that serves a list literal (one bare list parameter for
+/// the whole group) would glue the placeholder to the expression with no
+/// brackets (`labels(n)$__AUTO_LIST_0__`, a syntax error), so every such
+/// statement's rewritten compile failed and it was a permanent cache miss
+/// (REL8-1423's bracketed-literal item). The rewritten form is the shape
+/// an explicit parameter subscript already parses as.
+#[test]
+fn subscripts_keep_their_brackets() {
+    // Function result subscripted — the sqlite-gate PR mix's `kinds` shape.
+    let n = normalized("MATCH (n) RETURN labels(n)[0] AS kind");
+    assert_eq!(
+        n.template,
+        "MATCH ( n ) RETURN labels ( n ) [ $__AUTO_INT_0__ ] AS kind"
+    );
+    assert_eq!(
+        n.rewritten,
+        "MATCH (n) RETURN labels(n)[$__AUTO_INT_0__] AS kind"
+    );
+    assert_eq!(n.values, vec![("__AUTO_INT_0__".into(), Int(0))]);
+    assert_eq!(n.spellings, vec!["0".to_string()]);
+
+    // A variable, a property, and a list literal subscripted — all postfix.
+    assert_eq!(template("RETURN xs[0]"), "RETURN xs [ $__AUTO_INT_0__ ]");
+    assert_eq!(
+        template("MATCH (n) RETURN n.tags[1] AS t"),
+        "MATCH ( n ) RETURN n . tags [ $__AUTO_INT_0__ ] AS t"
+    );
+    assert_eq!(
+        template("RETURN [1, 2, 3][0] AS first"),
+        "RETURN $__AUTO_LIST_0__ [ $__AUTO_INT_1__ ] AS first"
+    );
+    // The list literal itself still collapses; only the subscript opens.
+    assert_eq!(
+        values("RETURN [1, 2, 3][0] AS first"),
+        vec![
+            (
+                "__AUTO_LIST_0__".into(),
+                NormalizedValue::List(vec![Int(1), Int(2), Int(3)])
+            ),
+            ("__AUTO_INT_1__".into(), Int(0)),
+        ]
+    );
+
+    // A slice keeps the bounds' own guards: the `..`-following bound stays
+    // (the quantifier-bound guard), the opening bound normalizes.
+    assert_eq!(
+        template("RETURN xs[1..3] AS s"),
+        "RETURN xs [ $__AUTO_INT_0__ .. 3 ] AS s"
+    );
+
+    // A map literal subscripted by a string key: postfix after `}`, the
+    // lookup key normalizes.
+    assert_eq!(
+        template("RETURN {'a': 1}['a'] AS v"),
+        "RETURN { 'a' : $__AUTO_INT_0__ } [ $__AUTO_STR_1__ ] AS v"
+    );
+
+    // A nested list whose element is a subscripted list: the inner list
+    // literal collapses (prefix, inside the outer group's fallback walk),
+    // the subscript keeps its brackets.
+    assert_eq!(
+        template("RETURN [[1, 2][0], 3] AS xs"),
+        "RETURN [ $__AUTO_LIST_0__ [ $__AUTO_INT_1__ ] , $__AUTO_INT_2__ ] AS xs"
+    );
+}
+
+/// The keyword operands: the literal atoms — TRUE/FALSE/NULL/INFINITY/
+/// NaN, one vocabulary at [`is_operand_atom`] — a CASE's END, and the
+/// gated obfuscated literal always end an expression, and a keyword in
+/// property-name position (`n.order`, `n.end` — the dialect keeps keyword
+/// spellings as names, ADR-0169) is an operand because the `.` before it
+/// says so.
+#[test]
+fn keyword_operands_keep_their_brackets() {
+    assert_eq!(
+        template("RETURN true[0]"),
+        "RETURN true [ $__AUTO_INT_0__ ]"
+    );
+    assert_eq!(
+        template("RETURN Infinity[0]"),
+        "RETURN Infinity [ $__AUTO_INT_0__ ]"
+    );
+    assert_eq!(template("RETURN NaN[0]"), "RETURN NaN [ $__AUTO_INT_0__ ]");
+    assert_eq!(
+        template("RETURN CASE WHEN true THEN [1] ELSE [2] END[0] AS x"),
+        "RETURN CASE WHEN true THEN $__AUTO_LIST_0__ ELSE $__AUTO_LIST_1__ END [ $__AUTO_INT_2__ ] AS x"
+    );
+    assert_eq!(
+        template("MATCH (n) RETURN n.order[0] AS o"),
+        "MATCH ( n ) RETURN n . order [ $__AUTO_INT_0__ ] AS o"
+    );
+    assert_eq!(
+        template("RETURN n.end[0] AS e"),
+        "RETURN n . end [ $__AUTO_INT_0__ ] AS e"
+    );
+    // The gated obfuscated literal: an operand like TRUE, so its bracket
+    // is a subscript.
+    assert_eq!(
+        normalized_with(
+            "RETURN ******[0]",
+            ParseOptions {
+                obfuscated_literals: true,
+                ..ParseOptions::default()
+            }
+        )
+        .template,
+        "RETURN ****** [ $__AUTO_INT_0__ ]"
+    );
+}
+
+/// Keyword-spelled VARIABLES: a keyword after an operand-INTRODUCING
+/// token — an operator, an opener, a separator, or an expression-starting
+/// keyword, the one vocabulary at [`introduces_operand`] — is in operand
+/// position, so the `[` after it is a subscript. One case per vocabulary
+/// group, so an omitted entry is a red test: `RETURN` (the
+/// expression-starting keywords), `+` and `AND` (the operators), `<` (the
+/// comparison family), `[` (the openers). The same keywords in
+/// clause/operator position still introduce list literals (the
+/// complements in `list_literals_still_collapse_in_clause_position`).
+#[test]
+fn keyword_variables_in_operand_position_keep_their_brackets() {
+    // After an expression-starting keyword.
+    assert_eq!(
+        template("WITH [1, 2] AS count RETURN count[0] AS c"),
+        "WITH $__AUTO_LIST_0__ AS count RETURN count [ $__AUTO_INT_1__ ] AS c"
+    );
+    // The doubly-ambiguous spelling: the inner `RETURN` is the variable
+    // (ADR-0169), the outer one the clause.
+    assert_eq!(
+        template("RETURN RETURN[0] AS r"),
+        "RETURN RETURN [ $__AUTO_INT_0__ ] AS r"
+    );
+    // After an arithmetic operator.
+    assert_eq!(
+        template("RETURN 1 + count[0] AS c"),
+        "RETURN $__AUTO_INT_0__ + count [ $__AUTO_INT_1__ ] AS c"
+    );
+    // After a boolean operator.
+    assert_eq!(
+        template("MATCH (n) WHERE n.x > 1 AND count[0] < 2 RETURN n"),
+        "MATCH ( n ) WHERE n . x > $__AUTO_INT_0__ AND count [ $__AUTO_INT_1__ ] < $__AUTO_INT_2__ RETURN n"
+    );
+    // After a comparison operator.
+    assert_eq!(
+        template("RETURN 1 < count[0] AS c"),
+        "RETURN $__AUTO_INT_0__ < count [ $__AUTO_INT_1__ ] AS c"
+    );
+    // After a grouping opener.
+    assert_eq!(
+        template("RETURN [count[0], 2] AS xs"),
+        "RETURN [ count [ $__AUTO_INT_0__ ] , $__AUTO_INT_1__ ] AS xs"
+    );
+}
+
+/// The same keyword token in CLAUSE position still starts a list literal —
+/// the `.` before the keyword is the disambiguator, and this is the
+/// collapse the list-literal rule exists for.
+#[test]
+fn list_literals_still_collapse_in_clause_position() {
+    assert_eq!(template("RETURN [1, 2]"), "RETURN $__AUTO_LIST_0__");
+    assert_eq!(
+        template("MATCH (n) WHERE n.x IN [1, 2] RETURN n"),
+        "MATCH ( n ) WHERE n . x IN $__AUTO_LIST_0__ RETURN n"
+    );
+}
+
+/// Brackets after a `-` render as written: the token is a relationship
+/// pattern head or binary subtraction, and the classification cannot tell
+/// them apart — both keep their brackets. The pattern side: the non-empty
+/// interior never scans as literals, and the ANONYMOUS `[]` scans as an
+/// empty — clean — group, so without the exclusion it collapsed and the
+/// rewritten `-$__AUTO_LIST_0__->` could not parse (every anonymous-rel
+/// statement was a permanent cache miss, literals or not). The
+/// subtraction side: the list renders with its brackets and its elements
+/// normalize individually — a coarser template, never a broken one.
+#[test]
+fn brackets_after_a_dash_render_as_written() {
+    assert_eq!(
+        template("MATCH (a)-[r:KNOWS]->(b) RETURN b"),
+        "MATCH ( a ) - [ r : KNOWS ] -> ( b ) RETURN b"
+    );
+    assert_eq!(
+        template("MATCH (a)-[]->(b) RETURN b"),
+        "MATCH ( a ) - [ ] -> ( b ) RETURN b"
+    );
+    assert_eq!(
+        template("MATCH (a)<-[]-(b) RETURN b"),
+        "MATCH ( a ) <- [ ] - ( b ) RETURN b"
+    );
+    // The subtraction half of the ambiguity.
+    assert_eq!(
+        template("RETURN 1 - [1, 2] AS d"),
+        "RETURN $__AUTO_INT_0__ - [ $__AUTO_INT_1__ , $__AUTO_INT_2__ ] AS d"
     );
 }
 
@@ -290,18 +494,19 @@ fn interpolated_strings_bail_the_statement() {
 }
 
 /// The obfuscated literal is a single dummy value: it renders as written,
-/// and every spelling of it shares one template (the same parse).
+/// and every spelling of it shares one template (the same parse). Its
+/// bracket-role classification (an operand, like TRUE) is pinned in
+/// `keyword_operands_keep_their_brackets`.
 #[test]
 fn obfuscated_literal_renders_as_written() {
     let gated = ParseOptions {
         obfuscated_literals: true,
         ..ParseOptions::default()
     };
-    let t = match normalize_statement("RETURN ******", gated) {
-        NormalizeOutcome::Normalized(n) => n.template,
-        NormalizeOutcome::NotCacheable => panic!("expected the gated form to normalize"),
-    };
-    assert_eq!(t, "RETURN ******");
+    assert_eq!(
+        normalized_with("RETURN ******", gated).template,
+        "RETURN ******"
+    );
 }
 
 /// A statement referencing an `$__AUTO_*` parameter bails: the caller can
@@ -352,6 +557,34 @@ fn rewritten_statement_parses() {
         "UNWIND [1, 2] AS x RETURN x",
         "MATCH (n {id: $uid}) RETURN n",
         "match (n:person) return n limit 10",
+        // Subscript positions (REL8-1423): the rewritten form must keep
+        // the brackets — the collapse's bare-placeholder form was the
+        // permanent-miss defect this round-trip property pins.
+        "MATCH (n) RETURN labels(n)[0] AS kind",
+        "RETURN [1, 2, 3][0] AS first",
+        "MATCH (n) RETURN n.tags[1] AS t",
+        "RETURN xs[1..3] AS s",
+        "RETURN {'a': 1}['a'] AS v",
+        "RETURN [[1, 2][0], 3] AS xs",
+        // The keyword-operand positions the preceding-token-only form of
+        // the rule missed (stellar round 1): atoms, a CASE's END, and
+        // keyword-spelled property names.
+        "RETURN true[0]",
+        "RETURN Infinity[0]",
+        "RETURN NaN[0]",
+        "RETURN CASE WHEN true THEN [1] ELSE [2] END[0] AS x",
+        "MATCH (n) RETURN n.order[0] AS o",
+        "RETURN n.end[0] AS e",
+        // Keyword-spelled variables in operand position (stellar round 4).
+        "WITH [1, 2] AS count RETURN count[0] AS c",
+        "MATCH (n) WITH collect(n) AS nodes RETURN nodes[0] AS n0",
+        "RETURN RETURN[0] AS r",
+        // The anonymous relationship pattern: its empty `[]` must not
+        // collapse (stellar round 2) — a statement may carry both.
+        "MATCH (a)-[]->(b) WHERE a.x = 1 RETURN b",
+        // A subtraction's list: the `-` is indistinguishable from a
+        // pattern head, so the bracket keeps its brackets.
+        "RETURN 1 - [1, 2] AS d",
     ] {
         crate::parser::parse(src).expect("the original parses");
         let n = normalized(src);
