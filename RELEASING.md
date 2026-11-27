@@ -42,14 +42,15 @@ non-offline release-notes dispatch can still announce the tag.
 
 **Registry publishes are not chained by default**: the `registries` input
 defaults to `false` — a plain release dispatch runs the full pipeline
-(website poke, Slack, canary) but does not touch any registry. The
-chained call's OIDC token names `release.yml`, and the registries'
-trusted publishers register `publish-registries.yml` — the v1.0.0 PyPI
-publish failed on exactly this mismatch — so publishing runs by a direct
-`publish-registries.yml` dispatch against the tag (see
-[Registry publishing](#registry-publishing)). Opt back into the chain
-with `-f registries=true` only after registering `release.yml` on every
-registry ([docs/PUBLISHING.md](docs/PUBLISHING.md)).
+(website poke, Slack, canary) but does not touch any registry. Opting in
+publishes npm and crates.io through the `publish-registries.yml` call
+(both registered for the chained OIDC identity) and PyPI through the
+release's own inline `publish-pypi` job — PyPI's Trusted Publishing does
+not support reusable workflows, so that leg cannot ride the call
+(ADR-0710). A direct `publish-registries.yml` dispatch against the tag
+remains the recovery arm for every registry, PyPI included (see
+[Registry publishing](#registry-publishing)); the one-time registrations
+live in [docs/PUBLISHING.md](docs/PUBLISHING.md).
 
 The version is derived from the existing `v*` git tags plus the chosen bump,
 not from the workspace version. The first ever run (no `v*` tags yet)
@@ -245,11 +246,12 @@ come out non-cacheable and compile from source.
 
 npm (ADR-0278), PyPI, and crates.io (ADR-0560) publish from one workflow,
 [`.github/workflows/publish-registries.yml`](.github/workflows/publish-registries.yml),
-run by direct dispatch against a release tag. The release run can also
-chain it (`registries=true`, off by default — the chained OIDC identity
-is the release workflow's, which the registries' publishers do not
-accept; skipped by `offline=true`). All three use OIDC trusted
-publishing — no API tokens in CI.
+run by direct dispatch against a release tag — the recovery arm for a
+partial publish. The release run chains the npm and crates.io legs
+(`registries=true`, off by default; skipped by `offline=true`); PyPI
+publishes inline in `release.yml` instead, because its Trusted Publishing
+does not support reusable workflows (ADR-0710). All three use OIDC
+trusted publishing — no API tokens in CI.
 
 The workflow also dispatches by hand with a release tag, per-registry
 toggles (`npm`, `pypi`, `crates-io`), and dry-run knobs

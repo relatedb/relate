@@ -18,7 +18,8 @@ everything at the `relatedb/relate` repository (private for now) and turn it on.
 - [ ] Create the **`release` GitHub environment** (repo Settings →
   Environments) with a deployment branch rule limited to `main` and **no
   required reviewers** (the chained call from `release.yml` must not
-  block). Every publish job in `publish-registries.yml` runs in it. This
+  block). Every publish job in `publish-registries.yml` — and the
+  release's inline PyPI job — runs in it. This
   rule is **not optional**: the in-code `github.ref == 'refs/heads/main'`
   guard lives in the workflow file itself, so it stops accidents, not an
   adversary — a write-access collaborator can dispatch a branch copy with
@@ -85,18 +86,25 @@ artifact landed on that first release:
   failed on-runner verification (`Get-AuthenticodeSignature` `Valid`
   with an RFC 3161 time-stamper) fails the release, so no unsigned
   Windows binary ships from a green run.
-- [ ] Python wheels (and sdist) publish to PyPI as **`relate-db`** (not
-  `relate`, which is taken) via trusted publishing (ADR-0560). The one-time
-  setup needs no first publish: on PyPI, add a *pending publisher* for
-  project `relate-db`, repository `relatedb/relate`, workflow
-  `publish-registries.yml` (the OIDC token names the *top-level*
-  workflow — `publish-registries.yml` on a direct dispatch, but
-  `release.yml` on the chained release call, where it does not match
-  this registration and the publish fails closed; run the publish legs
-  by direct dispatch); repeat on TestPyPI for dry runs. Validate with
-  `gh workflow run publish-registries.yml -f tag=<tag> -f npm=false
-  -f crates-io=false -f pypi-target=testpypi` before the first real
-  release.
+- [x] Python wheels (and sdist) publish to PyPI as **`relate-db`** (not
+  `relate`, which is taken) via trusted publishing (ADR-0560). PyPI's
+  Trusted Publishing does not support reusable workflows: a chained
+  call's OIDC token names `release.yml`, which no registration on
+  `publish-registries.yml` can ever match — the v1.0.0, v1.3.0 and
+  v1.4.0 cuts each failed the chained leg. So PyPI publishes through two
+  arms, each with its own registration (environment `release` on both):
+  the release's inline `publish-pypi` job (ADR-0710), and the
+  `publish-registries.yml` PyPI leg — direct dispatch only, the
+  recovery/backfill arm the v1.3.0 and v1.4.0 cuts recovered through,
+  and the TestPyPI dry-run path (`gh workflow run
+  publish-registries.yml -f tag=<tag> -f npm=false -f crates-io=false
+  -f pypi-target=testpypi`). The dispatch arm's publisher
+  (`publish-registries.yml`) is live.
+- [ ] Register the inline arm's publisher on PyPI: project `relate-db`,
+  repository `relatedb/relate`, workflow `release.yml`, environment
+  `release`. Until it lands, a release cut with `registries=true` fails
+  the inline `publish-pypi` job closed at the token exchange; the first
+  cut after it lands proves the arm end to end.
 - [ ] crates.io (ADR-0560): the publishable set is the `relate` facade's
   transitive workspace closure — 17 crates, all lockstep with the release
   tag. The bootstrap claims the names without publishing source: each of
@@ -175,7 +183,11 @@ artifact landed on that first release:
   already on the registry (the same arm the crates.io loop carries), so
   the re-run finishes the remainder. nuget.org skips a version it already
   has the same way, so a failed NuGet leg is recovered by re-dispatching
-  the same tag with `nuget=true`.
+  the same tag with `nuget=true`. A failed inline PyPI leg is recovered
+  by the dispatch arm the same way — `gh workflow run
+  publish-registries.yml -f tag=<tag> -f npm=false -f crates-io=false`
+  (PyPI is on by default on the dispatch form); the v1.3.0 and v1.4.0
+  cuts recovered exactly this way.
 
 The release payload is the CLI binaries and their checksums, the Python wheels,
 the FFI archives, the npm tarballs, the `Relate.Net` NuGet package, and the
