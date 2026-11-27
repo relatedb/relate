@@ -38,6 +38,14 @@ use super::pushdown::{residual_ok, Residual};
 pub(crate) trait BindingSink {
     fn offer(&mut self, graph: &ExecGraph<'_>, row: Row, used: &UsedRels) -> Result<()>;
     fn halted(&self) -> bool;
+
+    /// Whether the clause's fold is a full window ordered ascending by
+    /// `id(var)`: a start-node loop over an id-ascending candidate list can
+    /// stop, since no later candidate enters the window. The default, a sink
+    /// with no such fold, never stops the loop.
+    fn id_order_saturated(&self, _var: &relate_names::SmallName) -> bool {
+        false
+    }
 }
 
 /// Collect bindings, optionally stopping once a [`MatchCap`] is full.
@@ -92,6 +100,10 @@ impl BindingSink for CollectSink<'_, '_, '_, '_> {
 
     fn halted(&self) -> bool {
         self.cap.as_ref().is_some_and(|cap| cap.full())
+    }
+
+    fn id_order_saturated(&self, var: &relate_names::SmallName) -> bool {
+        self.tail.id_order_saturated(var)
     }
 }
 
@@ -269,6 +281,13 @@ impl BindingSink for PathSink<'_, '_, '_, '_> {
         match self {
             PathSink::Probe(probe) => probe.halted(),
             PathSink::Collect(sink) => sink.halted(),
+        }
+    }
+
+    fn id_order_saturated(&self, var: &relate_names::SmallName) -> bool {
+        match self {
+            PathSink::Probe(_) => false,
+            PathSink::Collect(sink) => sink.id_order_saturated(var),
         }
     }
 }

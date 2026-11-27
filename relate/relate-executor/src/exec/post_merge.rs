@@ -443,6 +443,42 @@ impl<'k, 'a> OutputContainer<'k, 'a> {
         Ok(())
     }
 
+    /// Land a candidate by its keys, building its row only if it is kept:
+    /// the window's keyed admission, or, for a container with no window,
+    /// the row built and landed as [`Self::land`] does.
+    pub(crate) fn land_keyed(
+        &mut self,
+        graph: &ExecGraph<'_>,
+        params: &BTreeMap<String, Value>,
+        fill: impl FnOnce(&mut Vec<Value>) -> Result<()>,
+        build: impl FnOnce(Vec<Value>) -> Result<Row>,
+    ) -> Result<()> {
+        match self {
+            OutputContainer::Window { window } => window.push_keyed(graph, fill, build),
+            OutputContainer::Collected { .. } | OutputContainer::Page { .. } => {
+                let mut keys = Vec::new();
+                fill(&mut keys)?;
+                let row = build(keys)?;
+                self.land(graph, params, row)
+            }
+        }
+    }
+
+    /// Whether the container is a top-k window already holding its `keep`
+    /// entries: with an order no later row can beat, the stream is done.
+    pub(crate) fn window_is_full(&self) -> bool {
+        match self {
+            OutputContainer::Window { window } => window.is_full(),
+            OutputContainer::Page { .. } | OutputContainer::Collected { .. } => false,
+        }
+    }
+
+    /// Whether the container is the top-k window, the one shape whose
+    /// candidates can be keyed before they are projected.
+    pub(crate) fn is_window(&self) -> bool {
+        matches!(self, OutputContainer::Window { .. })
+    }
+
     /// Whether the page is satisfied — the fact the bounded sink reads to
     /// stop projecting rows it would not keep (the page's own state, never a
     /// latch beside it).

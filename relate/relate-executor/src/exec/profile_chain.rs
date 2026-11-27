@@ -199,4 +199,12 @@ impl RowFold for CountingFold<'_> {
         self.stats.note_emitted(rows.len() as u64);
         self.inner.offer_container(graph, rows)
     }
+
+    fn is_id_ordered_window(&self, var: &relate_names::SmallName) -> bool {
+        self.inner.is_id_ordered_window(var)
+    }
+
+    fn id_order_saturated(&self, var: &relate_names::SmallName) -> bool {
+        self.inner.id_order_saturated(var)
+    }
 }

@@ -156,6 +156,9 @@ pub(crate) fn try_frontier_rows(
         patterns,
         where_clause,
         params: ctx.params,
+        // The frontier rung walks its own pair enumeration, never a
+        // start-node scan an id-ordered window could stop.
+        single_input: false,
     });
     let mut serving = Serving {
         run: ClauseRun::new(ctx, &contract, &conjuncts, reduce.as_ref()),

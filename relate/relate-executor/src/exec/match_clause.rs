@@ -22,6 +22,7 @@ use crate::row::{Row, RowRung};
 use crate::UsedSet;
 
 use super::batch::try_scan_filter_batch;
+use super::expr_safety::is_bare_node_scan_of;
 use super::hub_join::hub_join_answer;
 use super::kernels;
 use super::kernels::frontier_run::FrontierRows;
@@ -198,7 +199,13 @@ pub(crate) fn run_match_operator_ladder(
     // read, so the two ends cannot drift (the ordered and distinct caps
     // answer `None` and keep the walker with their semantics intact).
     let plain_want = cap.as_ref().and_then(MatchCap::plain_want);
-    let chain_eligible = (cap.is_none() || plain_want.is_some()) && projection.is_none();
+    // A bare node scan under an id-ordered window belongs to the walker: its
+    // start-node loop stops once the window is full, where a finished-
+    // container rung would build a row for every candidate first.
+    let id_ordered_scan = fold
+        .is_some_and(|fold| is_id_ordered_node_scan(&rows, optional, patterns, where_clause, fold));
+    let chain_eligible =
+        (cap.is_none() || plain_want.is_some()) && projection.is_none() && !id_ordered_scan;
     // The two finished-container rungs share the gate, and the kernel is
     // tried only once the chain declined — one decision, so the second
     // rung cannot drift from the first. A plain cap's want rides as the
@@ -271,6 +278,28 @@ pub(crate) fn run_match_operator_ladder(
     })
 }
 
+/// Whether the clause is one node scan over one input row that `fold`
+/// consumes as a top-k window ordered ascending by that node's id: the shape
+/// whose answer is the first `keep` rows of an id-ascending scan
+/// ([`is_bare_node_scan_of`] owns what a scan the walker may stop is).
+fn is_id_ordered_node_scan(
+    rows: &[Row],
+    optional: bool,
+    patterns: &[PathPattern],
+    where_clause: Option<&Expr>,
+    fold: &dyn RowFold,
+) -> bool {
+    let ([_], false, [path]) = (rows, optional, patterns) else {
+        return false;
+    };
+    path.nodes
+        .first()
+        .and_then(|node| node.variable.as_ref())
+        .is_some_and(|var| {
+            is_bare_node_scan_of(patterns, where_clause, var) && fold.is_id_ordered_window(var)
+        })
+}
+
 /// The dispatch layer's finished-container charge (ADR-0463, LABS-781):
 /// the one bulk spelling every site that lands a finished container reads
 /// — the SEARCH arm (its walker runs are per-candidate, so the
@@ -340,6 +369,7 @@ pub(crate) fn match_clause(
         patterns,
         where_clause,
         params,
+        single_input: rows.len() == 1,
     });
     // LABS-801: the patterns' resolved filters, built once per clause
     // evaluation, not per row — each pattern carries its tier state too,

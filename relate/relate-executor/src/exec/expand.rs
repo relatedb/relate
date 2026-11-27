@@ -353,9 +353,21 @@ pub(crate) fn match_node(
     // path-name bind.
     let node_rung = &pm.ladder.node[idx];
     let complete_rung = &pm.ladder.complete;
+    // An id-ordered window stops a whole-clause node scan once it is full:
+    // the candidates ascend strictly (checked, never assumed — an index seek
+    // or a bound start need not), so no later id enters the window.
+    let id_ordered_var = np.variable.as_ref().filter(|_| {
+        idx == 0
+            && path.rels.is_empty()
+            && forced.is_none()
+            && candidates.windows(2).all(|pair| pair[0] < pair[1])
+    });
     for id in candidates {
         graph.cancel_tick()?;
         if sink.halted() {
+            break;
+        }
+        if id_ordered_var.is_some_and(|var| sink.id_order_saturated(var)) {
             break;
         }
         if !predicate_spec::candidate_ok(graph, gate, id)? {

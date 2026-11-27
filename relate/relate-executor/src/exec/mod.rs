@@ -57,6 +57,7 @@ pub(crate) mod ddl_options;
 pub(crate) mod dispatch;
 pub(crate) mod exists_probe;
 pub(crate) mod expand;
+mod expr_safety;
 pub(crate) mod far_probe;
 pub(crate) mod feed;
 pub(crate) mod fulltext;
