@@ -3,6 +3,7 @@
 //! A missing count falls back to a rank sentinel. Measured counts may be
 //! scaled by relationship degree; rank sentinels stay unscaled.
 
+use std::cmp::Reverse;
 use std::collections::HashSet;
 
 use relate_ir::{Expr, NodePattern, PathPattern, PatternElement, RelPattern};
@@ -14,8 +15,8 @@ mod estimate;
 mod selectivity;
 
 pub use estimate::{
-    best_seek, crossover_scan_rows, endpoint_estimate, range_seek_gated, where_conjuncts_of, Bound,
-    Estimate, SeekPick,
+    best_seek, crossover_scan_rows, endpoint_estimate, range_seek_gated, where_conjuncts_of, Basis,
+    Bound, Estimate, SeekPick,
 };
 use estimate::{endpoint_bound, label_hits, RANK_BARE};
 
@@ -77,18 +78,31 @@ fn reversal_safe(path: &PathPattern, bound: Bound<'_>) -> bool {
     !refs.iter().any(|var| own(var) && !bound(var.as_str()))
 }
 
-/// `(cost, seed)`: the degree-scaled walk cost and the start endpoint's
-/// own estimate it was seeded from — the tie-break needs the seed, so it
-/// is returned rather than recomputed (stellar F-2-6).
+/// One orientation's price: the degree-scaled walk cost, the seed's own
+/// row estimate and the basis that estimate carries — the tie-breaks need
+/// the seed side, so it is returned rather than recomputed (stellar
+/// F-2-6).
+#[derive(Clone, Copy)]
+struct DirectionCost {
+    walked: u128,
+    seed: u128,
+    basis: Basis,
+}
+
+/// The price of walking `path` in one direction.
 fn direction_cost(
     path: &PathPattern,
     reversed: bool,
     bound: Bound<'_>,
     where_conjuncts: &[&Expr],
     stats: &dyn PatternStats,
-) -> (u128, u128) {
+) -> DirectionCost {
     if path.nodes.is_empty() {
-        return (RANK_BARE, RANK_BARE);
+        return DirectionCost {
+            walked: RANK_BARE,
+            seed: RANK_BARE,
+            basis: Basis::Rank,
+        };
     }
     // The walk cost and the tie-break seed both read the one shared
     // spellings — [`walk_cost`] and [`seed_rows`] — the same arithmetic
@@ -123,7 +137,11 @@ fn direction_cost(
             stats,
         )
     };
-    (walked, seed_rows(estimate))
+    DirectionCost {
+        walked,
+        seed: seed_rows(estimate),
+        basis: estimate.basis(),
+    }
 }
 
 /// Which side of `rel` a walk's seed node rides (LABS-426): the typed
@@ -365,9 +383,7 @@ pub fn walk_cost<'a>(
     match estimate {
         Estimate::Measured(rows) => degree_walk(rows, hops, stats),
         // the compound: the degree-scaled walk floored at the scan
-        Estimate::SampleScan { rows, scan }
-        | Estimate::Defaulted { rows, scan }
-        | Estimate::Statistic { rows, scan, .. } => degree_walk(rows, hops, stats).max(scan),
+        Estimate::Scanned { rows, scan, .. } => degree_walk(rows, hops, stats).max(scan),
         Estimate::Rank(rows) => rows,
     }
 }
@@ -375,7 +391,8 @@ pub fn walk_cost<'a>(
 /// `(reversed, cost)`. A strictly cheaper expanded cost wins. When both
 /// directions estimate the same output (a typed hop scaled by its degree),
 /// the smaller seed endpoint wins (ADR-0218): that is the scan, and the
-/// expanded row count hides it. Equal seeds keep the written direction.
+/// expanded row count hides it. Equal seeds go to the more trustworthy
+/// seed basis; equal bases keep the written direction.
 fn choose_orientation(
     path: &PathPattern,
     bound: Bound<'_>,
@@ -403,21 +420,21 @@ fn choose_orientation(
     if let Some(reversed) = forced {
         return (
             reversed,
-            direction_cost(path, reversed, bound, where_conjuncts, stats).0,
+            direction_cost(path, reversed, bound, where_conjuncts, stats).walked,
         );
     }
-    let (written, written_seed) = direction_cost(path, false, bound, where_conjuncts, stats);
-    let (flipped, flipped_seed) = direction_cost(path, true, bound, where_conjuncts, stats);
-    if flipped < written {
-        return (true, flipped);
-    }
-    if written < flipped {
-        return (false, written);
-    }
-    if flipped_seed < written_seed {
-        (true, flipped)
+    let written = direction_cost(path, false, bound, where_conjuncts, stats);
+    let flipped = direction_cost(path, true, bound, where_conjuncts, stats);
+    // A strictly cheaper cost wins, then the smaller seed; a tie on both
+    // goes to the seed whose estimate is the more trustworthy (a
+    // statistic over a default table). Basis never overrides a strictly
+    // cheaper price, and equal bases keep the written direction.
+    let flip = (flipped.walked, flipped.seed, Reverse(flipped.basis))
+        < (written.walked, written.seed, Reverse(written.basis));
+    if flip {
+        (true, flipped.walked)
     } else {
-        (false, written)
+        (false, written.walked)
     }
 }
 

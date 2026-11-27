@@ -1,6 +1,6 @@
 //! The default selectivity table: an unindexed or function-wrapped
-//! predicate narrows its endpoint's estimate as a [`Estimate::Defaulted`]
-//! (never a measurement), and a measured level still outranks it.
+//! predicate narrows its endpoint's estimate as a [`Estimate::Scanned`] on
+//! the [`Basis::Default`] (never a measurement), and a measured level still outranks it.
 
 use std::sync::Arc;
 
@@ -18,7 +18,11 @@ const LABELS: Stub = Stub {
 
 fn defaulted_rows(cypher: &str) -> u128 {
     match estimate_of(cypher, &LABELS) {
-        Estimate::Defaulted { rows, scan } => {
+        Estimate::Scanned {
+            rows,
+            scan,
+            basis: Basis::Default,
+        } => {
             assert_eq!(scan, 10_000, "the unseekable filter still pays the scan");
             rows
         }
@@ -109,9 +113,10 @@ fn an_index_measurement_outranks_the_default() {
 
 #[test]
 fn defaulted_walk_pays_the_scan_floor() {
-    let e = Estimate::Defaulted {
+    let e = Estimate::Scanned {
         rows: 5,
         scan: 10_000,
+        basis: Basis::Default,
     };
     assert_eq!(
         walk_cost(e, std::iter::empty::<Hop<'_>>(), &NoPatternStats),
@@ -228,19 +233,19 @@ fn an_unindexed_equality_prices_from_the_key_statistics() {
     };
     assert_eq!(
         estimate_of("MATCH (p:Person) WHERE p.city = 'London' RETURN p", &stats),
-        Estimate::Statistic {
+        Estimate::Scanned {
             rows: 3,
             scan: 10_000,
-            provenance: Provenance::Sketched
+            basis: Basis::Statistic(Provenance::Sketched)
         }
     );
     // the folded property map prices the same way
     assert_eq!(
         estimate_of("MATCH (p:Person {city: 'London'}) RETURN p", &stats),
-        Estimate::Statistic {
+        Estimate::Scanned {
             rows: 3,
             scan: 10_000,
-            provenance: Provenance::Sketched
+            basis: Basis::Statistic(Provenance::Sketched)
         }
     );
 }
@@ -252,9 +257,10 @@ fn without_key_statistics_the_default_table_answers() {
             "MATCH (p:Person) WHERE p.city = 'London' RETURN p",
             &NO_STATS
         ),
-        Estimate::Defaulted {
+        Estimate::Scanned {
             rows: 1_000,
-            scan: 10_000
+            scan: 10_000,
+            basis: Basis::Default
         }
     );
 }
@@ -270,10 +276,10 @@ fn a_function_wrapped_equality_prices_from_the_raw_distinct_count() {
             "MATCH (p:Person) WHERE toLower(p.gender) = toLower($g) RETURN p",
             &stats
         ),
-        Estimate::Statistic {
+        Estimate::Scanned {
             rows: 5_000,
             scan: 10_000,
-            provenance: Provenance::Sketched
+            basis: Basis::Statistic(Provenance::Sketched)
         }
     );
 }
@@ -290,7 +296,11 @@ fn the_least_trustworthy_term_names_the_basis() {
         "MATCH (p:Person) WHERE p.city = 'x' AND p.age > 3 RETURN p",
         &stats,
     ) {
-        Estimate::Defaulted { scan, .. } => assert_eq!(scan, 10_000),
+        Estimate::Scanned {
+            scan,
+            basis: Basis::Default,
+            ..
+        } => assert_eq!(scan, 10_000),
         other => panic!("expected the default basis, got {other:?}"),
     }
     // two statistic-priced terms carry the less trustworthy provenance
@@ -302,7 +312,10 @@ fn the_least_trustworthy_term_names_the_basis() {
         "MATCH (p:Person) WHERE p.city = 'x' AND toLower(p.gender) = 'm' RETURN p",
         &stats,
     ) {
-        Estimate::Statistic { provenance, .. } => assert_eq!(provenance, Provenance::Sketched),
+        Estimate::Scanned {
+            basis: Basis::Statistic(provenance),
+            ..
+        } => assert_eq!(provenance, Provenance::Sketched),
         other => panic!("expected a statistic, got {other:?}"),
     }
 }
@@ -327,4 +340,88 @@ fn a_skewed_key_flips_the_plan_the_default_table_would_pick() {
         ..NO_STATS
     };
     assert_eq!(seed_label(Q, &everyone), "Company");
+}
+
+/// Two 1 000-row labels joined by 5 000 `R` edges, so a walk from either
+/// end prices alike; `Person.city` has key statistics answering
+/// `city_rows` rows with provenance `Exact`, or none at all when `None`.
+struct TieStub {
+    city_rows: Option<u64>,
+}
+
+impl PatternStats for TieStub {
+    fn label_rows(&self, _: &NamedToken) -> Option<u64> {
+        Some(1_000)
+    }
+    fn equality_rows(&self, _: &NamedToken, _: &NamedToken, _: &Expr) -> Option<u64> {
+        None
+    }
+    fn contains_rows(&self, _: &NamedToken, _: &NamedToken, _: &Expr) -> Option<ContainsCount> {
+        None
+    }
+    fn rel_type_rows(&self, _: &NamedToken) -> Option<u64> {
+        Some(5_000)
+    }
+    fn equality_estimate(
+        &self,
+        _: &NamedToken,
+        property: &NamedToken,
+        _: &Expr,
+    ) -> Option<RowEstimate> {
+        self.city_rows
+            .filter(|_| property.0 == "city")
+            .map(|rows| RowEstimate {
+                rows,
+                provenance: Provenance::Exact,
+            })
+    }
+}
+
+const COMPANY_FIRST: &str = "MATCH (c:Company {name: 'x'})<-[:R]-(p:Person {city: 'y'}) RETURN p";
+const PERSON_FIRST: &str = "MATCH (p:Person {city: 'y'})-[:R]->(c:Company {name: 'x'}) RETURN p";
+
+#[test]
+fn equal_prices_go_to_the_more_trustworthy_seed_basis() {
+    // Person.city is a statistic (100 rows), Company.name the default
+    // table (a tenth of 1 000 = 100 rows): the two orientations price
+    // alike, so the statistic-priced end seeds even though the Company
+    // is written first
+    let stats = TieStub {
+        city_rows: Some(100),
+    };
+    assert_eq!(seed_label(COMPANY_FIRST, &stats), "Person");
+}
+
+#[test]
+fn equal_prices_and_equal_bases_keep_the_written_direction() {
+    // neither label has statistics: both ends are defaults, a true tie
+    let stats = TieStub { city_rows: None };
+    assert_eq!(seed_label(COMPANY_FIRST, &stats), "Company");
+    assert_eq!(seed_label(PERSON_FIRST, &stats), "Person");
+}
+
+#[test]
+fn a_more_trustworthy_basis_never_beats_a_strictly_cheaper_price() {
+    // Person.city is an exact statistic but keeps 900 of 1 000 rows; the
+    // Company's defaulted 100 rows are strictly cheaper to walk from, and
+    // trust only breaks ties
+    let stats = TieStub {
+        city_rows: Some(900),
+    };
+    assert_eq!(seed_label(PERSON_FIRST, &stats), "Company");
+}
+
+#[test]
+fn the_basis_order_is_the_trust_order() {
+    // the tie-break compares the derived order, so pin it
+    let ascending = [
+        Basis::Rank,
+        Basis::Default,
+        Basis::Sampled,
+        Basis::Statistic(Provenance::Sketched),
+        Basis::Statistic(Provenance::UpperBound),
+        Basis::Statistic(Provenance::Exact),
+        Basis::Measured,
+    ];
+    assert!(ascending.windows(2).all(|pair| pair[0] < pair[1]));
 }

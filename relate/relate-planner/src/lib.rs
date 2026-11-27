@@ -69,7 +69,8 @@ pub use crate::namespaces::{
 };
 pub use crate::order::{
     apply_degree, apply_hop_bound, apply_path_degree, best_seek, endpoint_estimate,
-    seed_on_rel_start, seed_rows, walk_cost, where_conjuncts_of, Bound, Estimate, Hop, SeekPick,
+    seed_on_rel_start, seed_rows, walk_cost, where_conjuncts_of, Basis, Bound, Estimate, Hop,
+    SeekPick,
 };
 /// ADR-0493's range-seek crossover policy — `pub` for the executor
 /// funnel, the policy's second consumer (the ladder is the first).

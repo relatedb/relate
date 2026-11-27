@@ -18,7 +18,7 @@ use relate_front::parse_and_lower;
 use relate_ir::{BinaryOp, Clause, Expr};
 use relate_names::{NamedToken, SmallName, Token, TokenResolver};
 use relate_planner::{
-    plan_with_stats, seed_on_rel_start, walk_cost, ContainsCount, Estimate, PatternStats,
+    plan_with_stats, seed_on_rel_start, walk_cost, Basis, ContainsCount, Estimate, PatternStats,
 };
 
 use super::graph_stats::GraphStats;
@@ -505,9 +505,10 @@ fn the_compound_first_hop_is_the_planners_sample_scan_arithmetic() {
     };
     assert_eq!((rows, scan), (2, 40));
     let want = walk_cost(
-        Estimate::SampleScan {
+        Estimate::Scanned {
             rows: u128::from(rows),
             scan: u128::from(scan),
+            basis: Basis::Sampled,
         },
         std::iter::once((np, rel, seed_on_rel_start(rel, false))),
         &stats,
