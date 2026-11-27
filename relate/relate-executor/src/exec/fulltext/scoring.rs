@@ -69,10 +69,35 @@ fn fuzzy_weight(edits: u8, query_chars: usize, candidate_chars: usize) -> Option
     (usize::from(edits) < shorter).then(|| 1.0 - f64::from(edits) / shorter as f64)
 }
 
-/// One in-range fuzzy candidate's heap key, in the expansion's result order
-/// (edits, then frequency, then term). Plain `Ord` data: the weight is
-/// derived from `edits` where the kept set becomes alternatives.
-type FuzzyKey<'a> = (u8, Reverse<usize>, &'a str);
+/// One in-range fuzzy candidate: its heap key in the expansion's result
+/// order (edits, then frequency, then term) beside the weight the match
+/// rule produced for it. Ordering reads the key alone: terms are unique
+/// within a vocabulary, so the key is already total and the weight (a
+/// function of the key and the term's length) never breaks a tie.
+struct FuzzyCandidate<'a> {
+    key: (u8, Reverse<usize>, &'a str),
+    weight: f64,
+}
+
+impl PartialEq for FuzzyCandidate<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        self.key == other.key
+    }
+}
+
+impl Eq for FuzzyCandidate<'_> {}
+
+impl PartialOrd for FuzzyCandidate<'_> {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for FuzzyCandidate<'_> {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.key.cmp(&other.key)
+    }
+}
 
 /// The bounded expansion of a fuzzy term over one field's vocabulary: every
 /// term within `max_edits`, closest first, then most frequent, then
@@ -84,25 +109,27 @@ fn expand_fuzzy(term: &str, max_edits: u8, stat: &FieldStats) -> Vec<Alternative
     // A max-heap on the result order keeps the best `MAX_FUZZY_EXPANSIONS`
     // candidates: the worst kept one sits on top and is evicted first, so
     // memory is bounded by the cap, not by how many terms are in range.
-    let mut best: BinaryHeap<FuzzyKey<'_>> = BinaryHeap::new();
+    let mut best: BinaryHeap<FuzzyCandidate<'_>> = BinaryHeap::new();
     for (candidate, df) in &stat.df {
         let Some(edits) = bounded_distance(&term_chars, candidate, max_edits) else {
             continue;
         };
-        if fuzzy_weight(edits, query_chars, candidate.chars().count()).is_none() {
+        let Some(weight) = fuzzy_weight(edits, query_chars, candidate.chars().count()) else {
             continue;
-        }
-        best.push((edits, Reverse(*df), candidate.as_str()));
+        };
+        best.push(FuzzyCandidate {
+            key: (edits, Reverse(*df), candidate.as_str()),
+            weight,
+        });
         if best.len() > MAX_FUZZY_EXPANSIONS {
             best.pop();
         }
     }
     best.into_sorted_vec()
         .into_iter()
-        .map(|(edits, _, kept)| Alternative {
-            term: kept.to_string(),
-            weight: fuzzy_weight(edits, query_chars, kept.chars().count())
-                .expect("a kept candidate passed the match rule"),
+        .map(|kept| Alternative {
+            term: kept.key.2.to_string(),
+            weight: kept.weight,
         })
         .collect()
 }
@@ -288,7 +315,11 @@ mod tests {
     #[test]
     fn weight_falls_with_distance_and_never_reaches_zero_in_a_match() {
         assert_eq!(fuzzy_weight(0, 8, 8), Some(1.0));
-        assert!(fuzzy_weight(1, 8, 9) > fuzzy_weight(2, 8, 9));
+        let (one_edit, two_edits) = (
+            fuzzy_weight(1, 8, 9).expect("one edit on a nine-character candidate matches"),
+            fuzzy_weight(2, 8, 9).expect("two edits on a nine-character candidate match"),
+        );
+        assert!(one_edit > two_edits);
         assert_eq!(fuzzy_weight(2, 2, 9), None);
         assert_eq!(fuzzy_weight(0, 0, 3), None);
         // A 2-char candidate 2 edits away weighs nothing: not a match.
