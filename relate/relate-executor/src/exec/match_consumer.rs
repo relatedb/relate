@@ -18,6 +18,7 @@ use std::collections::BTreeMap;
 
 use relate_core::{Result, Value};
 use relate_ir::Clause;
+use relate_names::SmallName;
 
 use crate::ctx::ExecCtx;
 use crate::overlay::ExecGraph;
@@ -96,6 +97,17 @@ impl RowFold for BoundedSink<'_> {
         charge_and_fold(self, graph, rows)
     }
 
+    fn is_id_ordered_window(&self, var: &SmallName) -> bool {
+        self.projection
+            .as_ref()
+            .is_some_and(|projection| projection.orders_ascending_by_id_of(var))
+            && self.container.borrow().is_window()
+    }
+
+    fn id_order_saturated(&self, var: &SmallName) -> bool {
+        self.is_id_ordered_window(var) && self.container.borrow().window_is_full()
+    }
+
     fn offer(&self, graph: &ExecGraph<'_>, row: Row) -> Result<()> {
         self.offered.set(self.offered.get() + 1);
         // The page's own state says it is satisfied; later rows are
@@ -103,12 +115,22 @@ impl RowFold for BoundedSink<'_> {
         if self.container.borrow().is_full() {
             return Ok(());
         }
-        let row = match &self.projection {
-            Some(projection) => finish_match_row(graph, &row, projection, self.params)?,
-            None => row,
+        let Some(projection) = &self.projection else {
+            return self.container.borrow_mut().land(graph, self.params, row);
         };
-        self.container.borrow_mut().land(graph, self.params, row)?;
-        Ok(())
+        let mut container = self.container.borrow_mut();
+        // A window keys the candidate first and projects it only when it
+        // enters: the other 99,9xx candidates of a large scan cost their keys.
+        if container.is_window() && projection.keys_before_projection(graph, &row) {
+            return container.land_keyed(
+                graph,
+                self.params,
+                |keys| projection.fill_key_values(graph, &row, self.params, keys),
+                |keys| projection.row_with_keys(graph, &row, keys, self.params),
+            );
+        }
+        let row = finish_match_row(graph, &row, projection, self.params)?;
+        container.land(graph, self.params, row)
     }
 }
 

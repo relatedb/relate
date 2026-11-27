@@ -174,6 +174,44 @@ impl<'k, 'a> TopKWindow<'k, 'a> {
         Ok(())
     }
 
+    /// Offer a candidate by its keys alone: `fill` writes the parked values,
+    /// in key order, into the window's own comparison scratch, and `build`
+    /// makes the full row (items, then these keys parked) and runs only when
+    /// the keys would enter the window. A candidate the window rejects costs
+    /// its keys and nothing else: no row, no projection, and no allocation
+    /// (the scratch is reused). The admission and the charge are
+    /// [`Self::push`]'s own, run on the built row, so the window ends in the
+    /// state `push` reaches.
+    pub(crate) fn push_keyed(
+        &mut self,
+        graph: &ExecGraph<'_>,
+        fill: impl FnOnce(&mut Vec<Value>) -> Result<()>,
+        build: impl FnOnce(Vec<Value>) -> Result<Row>,
+    ) -> Result<()> {
+        let mut keys = std::mem::take(&mut self.scratch);
+        keys.clear();
+        let filled = fill(&mut keys);
+        if filled.is_ok() && self.is_full() {
+            let worst = self.heap.peek().expect("a full window");
+            if !cmp_sort_keys(self.keys, &keys, self.seq, &worst.parked, worst.seq).is_lt() {
+                keys.clear();
+                self.scratch = keys;
+                return Ok(());
+            }
+        }
+        if let Err(error) = filled {
+            keys.clear();
+            self.scratch = keys;
+            return Err(error);
+        }
+        self.push(graph, build(keys)?)
+    }
+
+    /// Whether the window holds its `keep` entries.
+    pub(crate) fn is_full(&self) -> bool {
+        self.heap.len() == self.keep.get()
+    }
+
     /// The live window's charged bytes — the entry figure the window's own
     /// charge tracks (PROFILE's terminal-retention fact for a window sink).
     pub(crate) fn retained_bytes(&self) -> u64 {

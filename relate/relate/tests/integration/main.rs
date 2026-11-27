@@ -100,6 +100,7 @@ mod not_parenthesized_operand;
 mod notifications;
 mod order_by_id_scan_order;
 mod order_by_top_k_bounds;
+mod order_by_window_scan;
 mod parameter_missing;
 mod parquet_wide_format_facade;
 mod parser_syntax_gap_regressions;

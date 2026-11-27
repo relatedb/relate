@@ -50,6 +50,7 @@ use crate::UsedSet;
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
+use super::expr_safety::is_bare_node_scan_of;
 use relate_core::{NodeId, RelId, Result, Value};
 use relate_ir::{Expr, PathMode, PathPattern, PatternElement, QuantifiedPathPattern};
 use relate_names::SmallName;
@@ -512,6 +513,10 @@ pub(crate) struct MatchReduce<'a> {
     pub patterns: &'a [PathPattern],
     pub where_clause: Option<&'a Expr>,
     pub params: &'a BTreeMap<String, Value>,
+    /// The clause walks one input row, so its one pattern's start-node scan
+    /// is the clause's whole stream — the fact that lets an id-ordered
+    /// window stop that scan ([`MatchTail::id_order_saturated`]).
+    pub single_input: bool,
 }
 
 /// A consumer that takes a `MATCH`'s finished rows one at a time instead of
@@ -519,6 +524,25 @@ pub(crate) struct MatchReduce<'a> {
 /// without naming the aggregation's lifetime.
 pub(crate) trait RowFold {
     fn offer(&self, graph: &ExecGraph<'_>, row: Row) -> Result<()>;
+
+    /// Whether this consumer is a top-k window ordered ascending by
+    /// `id(var)` alone — the static half of [`Self::id_order_saturated`]. A
+    /// clause that is one bare node scan binding `var` hands such a window
+    /// to the walker, whose start-node loop can stop once the window is
+    /// full, instead of to a rung that builds a row for every candidate
+    /// first.
+    fn is_id_ordered_window(&self, _var: &SmallName) -> bool {
+        false
+    }
+
+    /// Whether this consumer is a full window ordered ascending by `id(var)`
+    /// alone, so that no row offered later from an id-ascending stream of
+    /// `var` can enter it. The walk's start-node loop reads it to stop
+    /// scanning ([`BindingSink::id_order_saturated`]); the default, a
+    /// consumer with no such window, never stops it.
+    fn id_order_saturated(&self, _var: &SmallName) -> bool {
+        false
+    }
 
     /// A finished container a rung built (the batch chain, the contracted
     /// kernels) offered whole. The default folds it row by row, uncharged
@@ -609,6 +633,27 @@ pub(crate) enum MatchTail<'a> {
 }
 
 impl MatchTail<'_> {
+    /// Whether the clause's fold is an id-ordered window over `var` that is
+    /// full, for a clause whose one pattern's start-node scan is its whole
+    /// stream — the walk may stop enumerating candidates.
+    pub(crate) fn id_order_saturated(&self, var: &SmallName) -> bool {
+        match self {
+            MatchTail::Finish {
+                reduce: Some(reduce),
+            } if reduce.single_input => match reduce.sink {
+                // The window's fullness first: a comparison per candidate. The
+                // static eligibility test runs only once the window is full,
+                // which is when the scan stops.
+                ReduceSink::Fold(fold) => {
+                    fold.id_order_saturated(var)
+                        && is_bare_node_scan_of(reduce.patterns, reduce.where_clause, var)
+                }
+                ReduceSink::Filter | ReduceSink::Project(_) => false,
+            },
+            _ => false,
+        }
+    }
+
     /// One accepted row into a collector's output — the shared back half
     /// of both cap arms (`CollectSink::offer` for the classic walk, the
     /// GPM `Cap` arm) and the one spelling of the carry decision every

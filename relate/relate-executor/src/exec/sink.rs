@@ -16,6 +16,7 @@ use crate::overlay::ExecGraph;
 use crate::row::{Row, RowNames};
 
 use super::classification::pages_eagerly;
+use super::expr_safety::{cannot_fail_on, cannot_fail_over_node, id_call_variable};
 use super::order::{parked_values, OrderKeys};
 use super::scope::{
     is_star_item, projection_collides_with_internal_names, projection_names,
@@ -33,28 +34,116 @@ pub(crate) struct SinkProjection<'a> {
     /// aggregate item, so it only ever sees the implicit-grouping decision.
     order: OrderKeys<'a>,
     names: RowNames,
+    /// Whether every order key reads only the incoming row's bindings: none
+    /// names a projected column, so a key evaluated against the incoming row
+    /// answers what the projected scope would (a verbatim key's item is the
+    /// same expression, evaluated on the same incoming row). Decided once
+    /// here; with it the window path keys a candidate before projecting it.
+    keys_read_incoming: bool,
+    /// The variable the clause orders by, ascending, as its one key
+    /// `id(var)` — the order an id-ascending scan of `var` already
+    /// delivers, so a full window can stop it.
+    ascending_id_of: Option<relate_names::SmallName>,
 }
 
 impl<'a> SinkProjection<'a> {
     fn new(
         graph: &ExecGraph<'_>,
         items: &'a [Projection],
-        order: &'a [relate_ir::OrderItem],
+        order_items: &'a [relate_ir::OrderItem],
     ) -> Self {
         // The sink declines a `*` item and any repeated resolved name, so the
         // filtered name list aligns with `items` index for index and the
         // output schema opens with the items' columns in that order.
         let mut names = projection_names(items);
         debug_assert_eq!(names.len(), items.len());
-        let order = OrderKeys::new(graph, order, items, false);
+        let order = OrderKeys::new(graph, order_items, items, false);
         for index in 0..order.len() {
             names.push(order.name(index).to_string());
         }
+        let item_names = projection_names(items);
+        let keys_read_incoming = !order.is_empty()
+            && order.exprs().all(|expr| {
+                let mut vars = HashSet::new();
+                relate_ir::expr_vars(expr, &mut vars);
+                vars.iter().all(|var| !item_names.contains(var))
+            });
+        // Only when every item and the key read nothing but that node (or a
+        // literal): the scan stops reading rows past the page, so an
+        // expression that could raise on one of them must keep the full scan.
+        let ascending_id_of = match order_items {
+            [key] if key.ascending && keys_read_incoming => id_call_variable(&key.expr)
+                .filter(|var| {
+                    items
+                        .iter()
+                        .all(|item| cannot_fail_over_node(&item.expr, var))
+                })
+                .cloned(),
+            _ => None,
+        };
         Self {
             items,
             order,
             names: RowNames::new(&names),
+            keys_read_incoming,
+            ascending_id_of,
         }
+    }
+
+    /// Whether the clause's whole order is `id(var)` ascending.
+    pub(crate) fn orders_ascending_by_id_of(&self, var: &relate_names::SmallName) -> bool {
+        self.ascending_id_of.as_ref() == Some(var)
+    }
+
+    /// Whether a window may key `row` before projecting it: the keys read
+    /// the incoming row alone, and every item and key is an expression whose
+    /// evaluation cannot fail on this row ([`cannot_fail_on`]), so a row the
+    /// window rejects raises exactly what projecting it first would have
+    /// raised: nothing.
+    pub(crate) fn keys_before_projection(&self, graph: &ExecGraph<'_>, row: &Row) -> bool {
+        self.keys_read_incoming
+            && self
+                .items
+                .iter()
+                .all(|item| cannot_fail_on(&item.expr, row, graph))
+            && self
+                .order
+                .exprs()
+                .all(|expr| cannot_fail_on(expr, row, graph))
+    }
+
+    /// Write the order keys' values for `row` into `out`, evaluated against
+    /// the incoming bindings: the sort's parked columns in key order, without
+    /// the projected scope row [`finish_match_row`] builds for them.
+    pub(crate) fn fill_key_values(
+        &self,
+        graph: &ExecGraph<'_>,
+        row: &Row,
+        params: &BTreeMap<String, Value>,
+        out: &mut Vec<Value>,
+    ) -> Result<()> {
+        for expr in self.order.exprs() {
+            out.push(eval(graph, row, expr, params)?);
+        }
+        Ok(())
+    }
+
+    /// The projected output row for `row` with its already-computed `keys`
+    /// parked after the items: what [`finish_match_row`] returns, built only
+    /// for a row the window kept.
+    pub(crate) fn row_with_keys(
+        &self,
+        graph: &ExecGraph<'_>,
+        row: &Row,
+        keys: Vec<Value>,
+        params: &BTreeMap<String, Value>,
+    ) -> Result<Row> {
+        let mut values = Vec::with_capacity(self.names.names().len());
+        for item in self.items {
+            values.push(eval(graph, row, &item.expr, params)?);
+        }
+        values.extend(keys);
+        Ok(Row::from_names(&self.names, values))
     }
 
     /// The projected items' columns: the output schema's leading
