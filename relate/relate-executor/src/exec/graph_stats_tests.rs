@@ -513,9 +513,10 @@ fn the_compound_first_hop_is_the_planners_sample_scan_arithmetic() {
         std::iter::once((np, rel, seed_on_rel_start(rel, false))),
         &stats,
     );
-    assert_eq!(u128::from(got), want);
+    assert_eq!(u128::from(got.rows), want);
+    assert_eq!(got.basis, Basis::Sampled);
     // the floor invariant: the whole-label scan is the walk cost's floor
-    assert!(got >= scan);
+    assert!(u128::from(got.rows) >= u128::from(scan));
 }
 
 /// ADR-0541: one method per probe. An `Id` token reads the store by id and

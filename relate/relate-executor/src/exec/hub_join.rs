@@ -25,10 +25,11 @@ use crate::ctx::ExecCtx;
 use crate::row::{Row, RowRung};
 
 use super::feed::RowStream;
-use super::graph_stats::GraphStats;
+use relate_planner::Basis;
+
+use super::graph_stats::{element_estimate, GraphStats, StartEstimate};
 use super::one_path::{match_one_path, PathFilters};
 use super::pattern_policies::{reduce_row, MatchReduce, MatchTail, Matched};
-use super::pivot::element_estimate;
 use super::pushdown::{residual_ok, Residual};
 
 /// The minimum side-A row count before the hub join pays for itself:
@@ -36,6 +37,13 @@ use super::pushdown::{residual_ok, Residual};
 /// (the measured single-left case joined as cheaply as the nested loop),
 /// and the join's grouped bookkeeping is pure overhead.
 const HUB_JOIN_MIN_SIDE_ROWS: usize = 128;
+
+/// The margin the join must beat the nested loop by when side B's full
+/// enumeration is priced from a default or a rank sentinel rather than a
+/// measurement: an unmeasured price is a guess, and a tie or a near-tie
+/// of guesses keeps the nested loop (REL8-2374). A gate only — a
+/// measured side B still ties to the join.
+const HUB_JOIN_GUESS_MARGIN: u64 = 2;
 
 #[cfg(test)]
 thread_local! {
@@ -120,9 +128,11 @@ fn hub_join_applies<'p>(
 /// from the bound hub — `rows(A) x (side B's walk from the hub)` against
 /// `side B's walk from its cheapest unbound end`, both priced by the
 /// ladder's one canonical estimate ([`GraphStats::estimate`], the
-/// per-row start selection's own). Ties go to the join (the measured
-/// fixture where every hub has one side-A row, LABS-348); side B's
-/// residual conjuncts narrow its start like any other estimate.
+/// per-row start selection's own). Ties go to the join when the price is
+/// measured (the fixture where every hub has one side-A row, LABS-348);
+/// a default- or rank-priced side B must beat the nested loop by
+/// [`HUB_JOIN_GUESS_MARGIN`] ([`join_beats_nested`]); side B's residual
+/// conjuncts narrow its start like any other estimate.
 fn hub_join_pays(
     ctx: ExecCtx<'_>,
     patterns: &[PathPattern],
@@ -131,21 +141,42 @@ fn hub_join_pays(
     residual: &Residual<'_>,
 ) -> bool {
     // `hub_join_applies` guarantees side B is one unquantified hop between
-    // two nodes, one of them the hub, so elements 0 and 1 are its ends.
+    // two nodes, one of them the hub: `ENDS` are its two elements.
+    const ENDS: [usize; 2] = [0, 1];
     let side_b = &patterns[1];
     let stats = GraphStats::new(ctx.graph.base(), ctx.params);
     let conjuncts = residual.conjuncts;
     let hub_bound = |name: &str| hub_var == name;
     let unbound = |_: &str| false;
-    let hub_end = usize::from(side_b.nodes[1].variable.as_ref() == Some(hub_var));
-    let per_hub = element_estimate(&stats, side_b, &hub_bound, conjuncts.iter(), hub_end);
+    let hub_end = ENDS[usize::from(side_b.nodes[ENDS[1]].variable.as_ref() == Some(hub_var))];
+    let per_hub = element_estimate(&stats, side_b, &hub_bound, conjuncts.iter(), hub_end).rows;
     let nested = per_hub.saturating_mul(side_a_rows as u64);
     // The one full enumeration starts at side B's cheaper end, neither end
     // bound.
-    let full = (0..2)
-        .map(|end| element_estimate(&stats, side_b, &unbound, conjuncts.iter(), end))
-        .fold(u64::MAX, u64::min);
-    full <= nested
+    let [first, second] =
+        ENDS.map(|end| element_estimate(&stats, side_b, &unbound, conjuncts.iter(), end));
+    let full = first.cheaper(second);
+    join_beats_nested(full, nested)
+}
+
+/// Whether the rows are a guess (the default table or a rank sentinel)
+/// rather than a count, a sample or a statistic: the trust order
+/// (`Basis`'s own `Ord`) decides, so a variant's position is the one place
+/// that says which side of the line it is on.
+pub(super) fn is_guess(price: StartEstimate) -> bool {
+    price.basis <= Basis::Default
+}
+
+/// The gate's decision on the two prices: a measured (or sampled, or
+/// statistic-backed) enumeration ties to the join; a default- or
+/// rank-priced one must beat the nested loop by [`HUB_JOIN_GUESS_MARGIN`].
+pub(super) fn join_beats_nested(full: StartEstimate, nested: u64) -> bool {
+    let margin = if is_guess(full) {
+        HUB_JOIN_GUESS_MARGIN
+    } else {
+        1
+    };
+    full.rows.saturating_mul(margin) <= nested
 }
 
 /// The name is a node variable of every pattern (the hub must be a
