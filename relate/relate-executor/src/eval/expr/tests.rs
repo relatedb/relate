@@ -401,3 +401,62 @@ fn equal_uuids_satisfy_the_equality_tolerant_operators() {
     assert_eq!(cmp(BinaryOp::Gte, a.clone(), a.clone()), Value::Bool(true));
     assert_eq!(cmp(BinaryOp::Lte, a.clone(), a.clone()), Value::Bool(true));
 }
+
+/// A scalar (or null) `IN` right operand answers as the one-element
+/// list holding it (ADR-0711): a match is true, a miss is false — never
+/// null — and a null operand still answers null. The row counts the
+/// compiled-gate differential proves cannot distinguish false from
+/// null, so the boolean itself is pinned here, at the operator's unit
+/// home.
+#[test]
+fn a_scalar_in_right_operand_answers_through_equality() {
+    use crate::exec::test_support::try_exec_cypher_params;
+    let g = crate::graph::Graph::default();
+    let run = |params: std::collections::BTreeMap<&str, Value>, query: &str| {
+        try_exec_cypher_params(
+            &g,
+            query,
+            &params
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), v))
+                .collect(),
+        )
+        .unwrap()
+        .rows[0][0]
+            .clone()
+    };
+    let query = "RETURN 'a' IN $tag AS r";
+    let tag = |v: Value| std::collections::BTreeMap::from([("tag", v)]);
+    assert_eq!(
+        run(tag(Value::String("a".into())), query),
+        Value::Bool(true)
+    );
+    assert_eq!(
+        run(tag(Value::String("b".into())), query),
+        Value::Bool(false),
+        "a miss answers false, never null"
+    );
+    assert_eq!(run(tag(Value::Null), query), Value::Null);
+}
+
+/// A container right operand of `IN` — a map, a vector — stays the
+/// typed rejection the list rule always was; the corpus pins the vector
+/// form (IN membership against a vector) and the map form (a map right
+/// operand in a map comprehension). A map *literal* is the compile-time
+/// rejection instead (ADR-0566's literal boundary); these are the
+/// runtime forms.
+#[test]
+fn a_container_in_right_operand_stays_the_typed_rejection() {
+    use crate::exec::test_support::{error_of, try_exec_cypher};
+    let g = crate::graph::Graph::default();
+    for query in [
+        "WITH {a: 1} AS m RETURN 2 IN m",
+        "RETURN 5 IN vector([1, 2, 3], 3, INTEGER)",
+    ] {
+        let err = error_of(try_exec_cypher(&g, query));
+        assert!(
+            err.contains("IN requires a list on the right-hand side"),
+            "{query}: {err}"
+        );
+    }
+}

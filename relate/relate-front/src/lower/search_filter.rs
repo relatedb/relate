@@ -75,8 +75,9 @@ fn id_argument_variable(arg: &Expr) -> Option<&SmallName> {
 /// The `IN` predicate's accepted LHS forms — one classification walk,
 /// three shapes (see [`classify_in_lhs`]).
 enum InLhs<'a> {
-    /// `id(<variable>)`, the id-spelled entity-set match filter.
-    IdCall(&'a SmallName),
+    /// `id(<variable>)`, the id-spelled entity-set match filter: the
+    /// call's own name beside the variable it wraps.
+    IdCall(&'a SmallName, &'a SmallName),
     /// A bare variable: the entity-set match filter.
     EntityVar(&'a SmallName),
     /// A variable property: the property-in-set filter.
@@ -89,13 +90,15 @@ enum InLhs<'a> {
 /// `id(<one argument>)` call (the `id` name through the registry's
 /// lowercase-then-compare idiom, `validate/index_hint.rs`'s spelling)
 /// whose argument is a bare variable, a bare variable itself, or a
-/// variable property. Anything else is [`InLhs::Other`].
+/// variable property. Anything else is [`InLhs::Other`]. The id-call
+/// form carries the call's own name — the one site that recognizes it
+/// is also the one site that spells it.
 fn classify_in_lhs(lhs: &Expr) -> InLhs<'_> {
     let lhs = unparen(lhs);
     if let Expr::FunctionCall(call) = lhs {
         if call.name.with_str(str::to_ascii_lowercase) == "id" && call.args.len() == 1 {
             return match id_argument_variable(&call.args[0]) {
-                Some(var) => InLhs::IdCall(var),
+                Some(var) => InLhs::IdCall(&call.name, var),
                 None => InLhs::Other,
             };
         }
@@ -273,10 +276,13 @@ fn to_predicate(
         // (`validate/index_hint.rs`'s spelling), not a second ad-hoc
         // function-name discrimination.
         Expr::In(i) => match classify_in_lhs(&i.expr) {
-            InLhs::IdCall(var) => {
+            InLhs::IdCall(call, var) => {
                 let rhs = lower_expr(&i.list)?;
                 validate_property_rule(var, binding_var, None, Some(&rhs))?;
-                Ok(SearchFilterPred::IdInSet { rhs })
+                Ok(SearchFilterPred::IdInSet {
+                    call: call.clone(),
+                    rhs,
+                })
             }
             InLhs::EntityVar(var) => {
                 let rhs = lower_expr(&i.list)?;
