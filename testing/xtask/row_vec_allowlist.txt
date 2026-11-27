@@ -74,6 +74,7 @@ exec/order.rs::take_parked_top_k # ORDER BY / SKIP / LIMIT buffer bounded by the
 exec/project.rs::aggregate_rows # projection/filter stage materializes its rows; to be replaced by streaming
 eval/predicates.rs::filter_rows_where # projection/filter stage materializes its rows; to be replaced by streaming
 eval/predicates.rs::filter_rows_where_clause # the optional-WHERE twin of filter_rows_where: same stage, same materialization, to be replaced by streaming with it
+exec/post_merge.rs::filter_parked_having # the aggregate-predicate (HAVING) twin of filter_rows_where_clause: same tail stage, same materialization, to be replaced by streaming with it
 exec/post_merge.rs::output_rows # the tail's output stage: the star shape's unparked rows, or the declared-column rebuild, to be replaced by streaming
 exec/project.rs::project_rows # projection/filter stage materializes its rows; to be replaced by streaming
 exec/project.rs::project_classed # projection/filter stage materializes its rows; the pre-classed body carved out of the allowlisted project_rows, to be replaced by streaming

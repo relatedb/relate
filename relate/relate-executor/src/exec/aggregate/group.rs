@@ -14,6 +14,7 @@ use crate::eval::{eval, is_agg_expr};
 use crate::overlay::ExecGraph;
 use crate::row::Row;
 
+use super::super::classification::WhereMode;
 use super::super::feed::RowStream;
 use super::super::order::{park_order_keys, OrderKeys};
 use super::super::scope::visible_keys;
@@ -27,61 +28,31 @@ use super::table::{GroupTable, Landing};
 /// ADR-0453's one WHERE split, one mode: an aggregating path whose WHERE
 /// carries aggregate calls takes it as HAVING — evaluated once per group
 /// through [`agg_eval`] (aggregate calls fold the group, non-aggregate
-/// leaves read the projected row), a group whose predicate is not true is
-/// dropped; false and null drop, a non-boolean value is the typed
+/// leaves read the projected row), a group's predicate value parks under
+/// its hidden column and the finish tail drops the paged rows whose value
+/// is not true; false and null drop, a non-boolean value is the typed
 /// rejection live raises (22N01) rather than a silent drop, and a
 /// predicate evaluation error aborts the statement — the same
 /// convert-or-raise policy the ordinary WHERE positions read
-/// (ADR-0458 §7, [`crate::eval::predicate_value_holds`]). Every other
+/// (ADR-0458 §7, [`crate::eval::predicate_value_holds`]), applied where
+/// the filter runs. Every other
 /// WHERE form — any WHERE on a non-aggregating path included — stays the
 /// plain post-merge filter: the projection applies it to the emitted
 /// rows, not the group, and the aggregation retains only what it reads
 /// in the seed, so an emitted row still carries the grouping keys the
 /// predicate names (`GROUP BY a.p WHERE a.p > 0`).
-#[derive(Clone, Copy)]
-pub(crate) enum WhereMode<'a> {
-    Having(&'a Expr),
-    Plain(&'a Expr),
-}
-
-impl<'a> WhereMode<'a> {
-    /// The predicate, whichever form it takes — the seed keeps what it
-    /// reads in both modes.
-    fn predicate(self) -> &'a Expr {
-        match self {
-            Self::Having(predicate) | Self::Plain(predicate) => predicate,
-        }
-    }
-
-    /// The HAVING predicate, `None` for the plain form.
-    pub(crate) fn having(self) -> Option<&'a Expr> {
-        match self {
-            Self::Having(predicate) => Some(predicate),
-            Self::Plain(_) => None,
-        }
-    }
-
-    /// The plain filter, `None` for the HAVING form.
-    pub(crate) fn plain(self) -> Option<&'a Expr> {
-        match self {
-            Self::Plain(predicate) => Some(predicate),
-            Self::Having(_) => None,
-        }
-    }
-}
-
 /// The projection's per-group subclause state, bundled to keep
 /// [`aggregate_ex`] under the argument-count lint.
-#[derive(Clone, Copy)]
 pub(crate) struct GroupSubclauses<'a> {
     /// The projection's `ORDER BY` key list with its per-key alias-scope
     /// decision. The group is the only place a key's aggregate calls can be
     /// answered, so each output row parks them through [`park_order_keys`]
     /// for the sort to read back.
     pub order: &'a OrderKeys<'a>,
-    /// The projection's one WHERE predicate, in the mode ADR-0453 decides
-    /// for it — see [`WhereMode`].
-    pub where_mode: Option<WhereMode<'a>>,
+    /// The clause's one trailing WHERE, as the one value ADR-0453's
+    /// split decides — the HAVING plan or the plain predicate; the seed
+    /// keeps what either reads ([`WhereMode::predicate`]).
+    pub where_mode: Option<&'a WhereMode<'a>>,
     /// ADR-0453: an importing subquery's scope row — the seed the phantom
     /// keyless group over an emptied input uses, so a non-aggregate leaf
     /// naming an import (`sum(y) + tax` with no rows left) reads the
@@ -89,21 +60,29 @@ pub(crate) struct GroupSubclauses<'a> {
     pub import_scope: Option<&'a Row>,
 }
 
+impl<'a> GroupSubclauses<'a> {
+    /// The expressions the subclauses contribute to a seed or a
+    /// discovery pass — the ORDER BY keys, then the trailing WHERE's
+    /// predicate whichever arm it takes — one chain every caller reads
+    /// instead of each rebuilding it from the mode's halves.
+    pub(super) fn where_exprs(&self) -> impl Iterator<Item = &'a Expr> + '_ {
+        self.order
+            .exprs()
+            .chain(self.where_mode.map(WhereMode::predicate))
+    }
+}
 /// One aggregating projection, fed a row at a time: [`Self::open`] does the
 /// plan setup, [`Self::offer`] folds one row into its group, and
-/// [`Self::finish`] emits the group rows (`ORDER BY` keys parked, HAVING
-/// applied). The graph is passed per call, as the accumulators take it.
+/// [`Self::finish`] emits the group rows (`ORDER BY` keys and the HAVING
+/// predicate's value parked, every group kept — the finish tail pages and
+/// filters). The graph is passed per call, as the accumulators take it.
 pub(crate) struct Aggregation<'a> {
     items: &'a [Projection],
     params: &'a BTreeMap<String, Value>,
-    /// The projection's `ORDER BY` keys, which the finish parks per group.
-    order: &'a OrderKeys<'a>,
-    /// The HAVING predicate the finish applies per group (the plain WHERE
-    /// is read at planning only, so it is not kept).
-    having: Option<&'a Expr>,
-    /// The importing subquery's scope row the phantom group's seed stands
-    /// in with.
-    import_scope: Option<&'a Row>,
+    /// The subclause bundle, held whole — the ORDER BY keys, the
+    /// trailing WHERE's mode and the import scope are declared once, in
+    /// [`GroupSubclauses`], and read through it.
+    subclauses: GroupSubclauses<'a>,
     key_exprs: Vec<Cow<'a, Expr>>,
     /// How each projection item is answered at the finish (a kept key
     /// value, the folded sites, or the seed row) — decided once at plan
@@ -140,16 +119,8 @@ impl<'a> Aggregation<'a> {
         items: &'a [Projection],
         group_by: Option<&'a [Expr]>,
         params: &'a BTreeMap<String, Value>,
-        subclauses: &GroupSubclauses<'a>,
+        subclauses: GroupSubclauses<'a>,
     ) -> Result<Self> {
-        let GroupSubclauses {
-            order,
-            where_mode,
-            import_scope,
-        } = *subclauses;
-        // The HAVING predicate the sites discover and the finish reads;
-        // the plain form carries no aggregate call, so it discovers none.
-        let having = where_mode.and_then(WhereMode::having);
         // The grouping strategy is loop-invariant: decide once whether the
         // key comes from the explicit `group_by` expressions or from the
         // inferred non-aggregating projection items.
@@ -183,7 +154,7 @@ impl<'a> Aggregation<'a> {
                 .iter()
                 .filter(|item| base_role(item) == Some(ItemRole::Aggregate))
                 .map(|item| &item.expr),
-            order.exprs().chain(having),
+            subclauses.where_exprs(),
             params,
         )?;
         // The input vector stays allocated until the fold finishes. Bill it
@@ -198,17 +169,12 @@ impl<'a> Aggregation<'a> {
         let (seeds, roles) = SeedStore::planned(
             items,
             &key_exprs,
-            order
-                .exprs()
-                .chain(where_mode.map(WhereMode::predicate))
-                .chain(accs.seed_reads()),
+            subclauses.where_exprs().chain(accs.seed_reads()),
         );
         let mut this = Self {
             items,
             params,
-            order,
-            having,
-            import_scope,
+            subclauses,
             key_exprs,
             roles,
             groups: GroupTable::new(seeds, accs),
@@ -294,9 +260,7 @@ impl<'a> Aggregation<'a> {
         let Self {
             items,
             params,
-            order,
-            having,
-            import_scope,
+            subclauses,
             roles,
             groups,
             bill,
@@ -304,6 +268,12 @@ impl<'a> Aggregation<'a> {
             ..
         } = self;
         drop(input);
+        let GroupSubclauses {
+            order,
+            where_mode,
+            import_scope,
+        } = &subclauses;
+        let having = where_mode.and_then(WhereMode::having);
         let mut out = Vec::new();
         // ADR-0463 (LABS-781): the aggregating projection's output
         // container — each emitted group row charges as it lands, ahead of
@@ -333,7 +303,7 @@ impl<'a> Aggregation<'a> {
                 row: seed,
                 keys: key_values,
             } = seeds.take(group);
-            let seed_row = seed.as_ref().or(import_scope);
+            let seed_row = seed.as_ref().or(*import_scope);
             let mut n = seed_row.cloned().unwrap_or_default();
             let folded = accs.finish_group(group, graph, seed.as_ref(), params);
             if has_star {
@@ -376,20 +346,24 @@ impl<'a> Aggregation<'a> {
                 )
             })?;
             // HAVING (ADR-0453): the aggregating WHERE, answered per group
-            // with the same scope an ORDER BY key gets. Not-true drops the
-            // group — the retain's verdict for a failing row; a non-boolean
-            // is the typed rejection live raises (22N01) and a list/path
-            // converts, both through the one predicate policy (ADR-0458 §7).
-            if let Some(predicate) = having {
+            // with the same scope an ORDER BY key gets — but not applied
+            // here. The clause's grammar pages first (`WITH projection
+            // [ORDER BY] [SKIP] [LIMIT] [WHERE]`), so the value parks
+            // under its hidden column and the finish tail filters the
+            // paged rows on it, the same position the plain trailing
+            // WHERE's page filter takes; the emission keeps every group.
+            // The parked value keeps its raw form — the tail applies the
+            // one predicate policy (ADR-0458 §7: not-true drops, a
+            // non-boolean is the typed rejection live raises, 22N01)
+            // where the filter runs.
+            if let Some(plan) = having {
                 let keeps = agg_eval(
                     graph,
                     AggScope::of_group(&folded, Some(&n)),
-                    predicate,
+                    plan.predicate(),
                     params,
                 )?;
-                if !crate::eval::predicate_value_holds(&keeps)? {
-                    continue;
-                }
+                n.insert(plan.parked().to_string(), keeps);
             }
             // The resolved aggregate values are shared with `n` until the
             // folded group lets go; drop it so the output row's landing
@@ -411,7 +385,7 @@ pub(crate) fn aggregate_ex<'a>(
     items: &'a [Projection],
     group_by: Option<&'a [Expr]>,
     params: &'a BTreeMap<String, Value>,
-    subclauses: &GroupSubclauses<'a>,
+    subclauses: GroupSubclauses<'a>,
 ) -> Result<Vec<Row>> {
     // The shape (a `*` key's expansion, the held input vector's bill) is
     // read from the rows already in hand before the walk starts; a produced

@@ -203,7 +203,7 @@ fn open_fold<'a>(
         class.fields.items,
         class.fields.group_by,
         params,
-        &class.group_subclauses(scope),
+        class.group_subclauses(scope),
     )
 }
 
@@ -645,7 +645,7 @@ fn aggregate_rows(
             class.fields.items,
             class.fields.group_by,
             params,
-            &class.group_subclauses(scope),
+            class.group_subclauses(scope),
         )?,
     };
     refresh.rows(graph, &mut agg);

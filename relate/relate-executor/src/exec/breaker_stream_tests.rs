@@ -141,7 +141,7 @@ fn star_billed(groups: i64) -> u64 {
         &items,
         None,
         &params,
-        &GroupSubclauses {
+        GroupSubclauses {
             order: &order,
             where_mode: None,
             import_scope: None,
