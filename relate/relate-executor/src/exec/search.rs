@@ -196,6 +196,20 @@ impl SearchWindow {
             limit: usize::MAX,
         }
     }
+
+    /// The window is satisfied once `survivors` entities have been kept:
+    /// the one spelling of "enough survivors", LIMIT 0 included (satisfied
+    /// before any candidate is seen).
+    fn satisfied(self, survivors: usize) -> bool {
+        survivors >= self.limit
+    }
+
+    /// The window a pre-bound entity can never fill: a SKIP window consumes
+    /// the one entity that could survive, and a LIMIT-0 window keeps
+    /// nothing, so the answer is empty without fetching.
+    fn empty_for_one_entity(self) -> bool {
+        self.skip > 0 || self.limit == 0
+    }
 }
 
 /// The clause's own window — the SKIP and LIMIT a source specification
