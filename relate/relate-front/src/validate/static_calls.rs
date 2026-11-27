@@ -127,6 +127,7 @@ fn check_static_function_call(fc: &FunctionCallExpr) -> Result<(), EngineError> 
         }
         "char_length" | "character_length" => check_string_argument(&fc.args, &format!("{name}()")),
         "properties" => check_properties_argument(&fc.args),
+        "keys" => check_keys_argument(&fc.args),
         "replace" => check_replace_limit(&fc.args),
         n if relate_core::temporal::is_constructor(n) => check_temporal_call(&fc.args),
         _ => Ok(()),
@@ -149,15 +150,40 @@ fn check_vector_similarity_call(args: &[Expr], name: &str) -> Result<(), EngineE
 /// `properties(x)` requires a node, relationship or map; a statically known
 /// literal of another kind is the compile-time rejection (Graph9 5-7).
 fn check_properties_argument(args: &[Expr]) -> Result<(), EngineError> {
+    check_map_like_argument(args, |ty| {
+        format!(
+            "properties() requires a node, relationship, or map, got {}",
+            ty.camel_name()
+        )
+    })
+}
+
+/// `keys()` reads the same operand family as `properties()`: a node, a
+/// relationship or a map. Live 2026.10.1 rejects a literal of any other
+/// kind at compile time (SyntaxError 22G03, `Type mismatch: expected Map,
+/// Node or Relationship but was String`); `keys(null)` stays null and a
+/// runtime-typed operand stays runtime-decided.
+fn check_keys_argument(args: &[Expr]) -> Result<(), EngineError> {
+    check_map_like_argument(args, |ty| {
+        format!(
+            "Type mismatch: expected Map, Node or Relationship but was {}",
+            ty.camel_name()
+        )
+    })
+}
+
+/// The one map-like-operand gate `properties()` and `keys()` share: the
+/// single-argument shape check (every other arity defers to the runtime
+/// arity rule), statically gated against the map-or-null family — each
+/// caller supplies only its authored mismatch `detail`.
+fn check_map_like_argument(
+    args: &[Expr],
+    detail: impl FnOnce(&LiteralValueKind) -> String,
+) -> Result<(), EngineError> {
     let [arg] = args else {
         return Ok(());
     };
-    require_static_type(arg, MAP_OR_NULL, |ty| {
-        format!(
-            "properties() requires a node, relationship, or map, got {}",
-            ty.name()
-        )
-    })
+    require_static_type(arg, MAP_OR_NULL, detail)
 }
 
 /// The cross-layer arity contract `relate-core` owns for `name`: a call with
@@ -563,6 +589,52 @@ mod tests {
             "RETURN toString({a: 1}) AS result",
             "RETURN toStringOrNull([1, 2]) AS result",
             "RETURN toStringOrNull(['a', 'b']) AS result",
+        ]);
+    }
+
+    /// REL8-2289: `keys()` statically rejects a literal of the wrong kind
+    /// with live's full 22G03 sentence — one row per statically-typed
+    /// kind outside the map-or-null family.
+    #[test]
+    fn keys_rejects_a_wrong_kind_literal_with_lives_text() {
+        for (query, kind) in [
+            ("RETURN keys('HELLO')", "String"),
+            ("RETURN keys(1)", "Integer"),
+            ("RETURN keys(true)", "Boolean"),
+            ("RETURN keys([1, 2])", "List"),
+            ("RETURN keys(1.5)", "Float"),
+        ] {
+            let err = parse_and_check_static_calls(query)
+                .expect_err(&format!("`{query}` must be rejected at compile time"));
+            let want = format!("Type mismatch: expected Map, Node or Relationship but was {kind}");
+            assert!(
+                err.to_string().contains(&want),
+                "`{query}` must carry `{want}`, got {err}"
+            );
+        }
+    }
+
+    /// `properties()` renders its rejected kind through the same
+    /// CamelCase mapping `keys()` uses — pinned so the shared rendering
+    /// cannot drift between the two texts.
+    #[test]
+    fn properties_rejects_a_wrong_kind_literal_with_the_shared_rendering() {
+        let err = parse_and_check_static_calls("RETURN properties('x')")
+            .expect_err("properties('x') must be rejected at compile time");
+        assert!(
+            err.to_string()
+                .contains("properties() requires a node, relationship, or map, got String"),
+            "properties() must render the kind through camel_name, got {err}"
+        );
+    }
+
+    #[test]
+    fn keys_null_map_and_runtime_operands_stay_green() {
+        assert_accepted(&[
+            "RETURN keys(null) AS k",
+            "RETURN keys({a: 1}) AS k",
+            "MATCH (n) RETURN keys(n) AS k",
+            "WITH 's' AS x RETURN keys(x) AS k",
         ]);
     }
 }

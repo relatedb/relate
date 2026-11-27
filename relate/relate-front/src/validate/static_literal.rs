@@ -10,34 +10,50 @@ use relate_core::{LiteralValueKind, Value};
 use relate_error::{EngineError, ErrorKind};
 use relate_parser::{Expr, LiteralValue};
 
-use crate::ast::tree::unparen;
+use crate::ast::tree::{is_boolean_operator, unparen};
 
-/// The static type of an expression, or `None` when the type cannot be
-/// determined without evaluation (variables, parameters, property access,
-/// function calls, `CASE`, ...). `Paren` is transparent.
-///
-/// Literals are the base case; the numeric/boolean operators extend it, so a
-/// constant expression whose *value* a content check cannot materialize
-/// (mixed Int/Float arithmetic, division, a comparison, `NOT`) still has a
-/// decided type. Inference is deliberately one-sided: it only answers where
-/// the operator's result type is certain for the operand types (numeric
-/// arithmetic over numerics, comparisons and boolean operators), and returns
-/// `None` everywhere else (`+` on a string/list mix may be concatenation or
-/// append, so it stays runtime-decided).
+/// The env-less default of [`static_type_in`]: every variable is
+/// runtime-decided.
 pub(super) fn static_literal_type(expr: &Expr) -> Option<LiteralValueKind> {
+    static_type_in(expr, &|_| None)
+}
+
+/// The one expression-type resolver, with an optional variable
+/// environment: a caller holding decided variable types — `reduce`'s
+/// accumulator and element — supplies them here and the resolver answers
+/// the body's type through the same operator table.
+///
+/// The static type of an expression, or `None` when the type cannot be
+/// determined without evaluation (an unbound variable, a parameter,
+/// property access, function calls, `CASE`, ...). `Paren` is transparent.
+///
+/// Literals are the base case; the operators extend it, so a constant
+/// expression whose *value* a content check cannot materialize (mixed
+/// Int/Float arithmetic, division, a comparison, `NOT`) still has a
+/// decided type. Inference is deliberately one-sided: it only answers
+/// where the operator's result type is certain for the operand types
+/// (numeric arithmetic over numerics, `+`'s String concatenation over
+/// non-container scalars, comparisons and boolean operators), and returns
+/// `None` everywhere else (`+` with a container or null operand may be
+/// append/propagation, so it stays runtime-decided).
+pub(super) fn static_type_in(
+    expr: &Expr,
+    env: &impl Fn(&relate_names::SmallName) -> Option<LiteralValueKind>,
+) -> Option<LiteralValueKind> {
     match unparen(expr) {
         // A literal, or a plan-cache placeholder for one (ADR-0503): the
         // value fold decides the type. A caller's own parameter is `None`
         // and is checked at runtime.
         Expr::Literal(_) | Expr::Parameter(_) => static_value_kind(expr),
+        Expr::Variable(name) => env(name),
         Expr::List(_) => Some(LiteralValueKind::List),
         Expr::Map(_) => Some(LiteralValueKind::Map),
         Expr::Unary(unary) => match unary.op {
             "NOT" => Some(LiteralValueKind::Boolean),
-            "-" | "+" => static_literal_type(&unary.expr).filter(|ty| ty.is_numeric()),
+            "-" | "+" => static_type_in(&unary.expr, env).filter(|ty| ty.is_numeric()),
             _ => None,
         },
-        Expr::Binary(binary) => static_binary_type(binary.op, &binary.left, &binary.right),
+        Expr::Binary(binary) => static_binary_type(binary.op, &binary.left, &binary.right, env),
         Expr::Comparison(_) => Some(LiteralValueKind::Boolean),
         _ => None,
     }
@@ -236,27 +252,76 @@ pub(super) fn is_arithmetic_op(op: &str) -> bool {
     ARITHMETIC_OPS.contains(&op)
 }
 
+/// The numeric promotion of a binary arithmetic over two *numeric* kinds —
+/// the one Int/Float decision, with the numeric precondition in the same
+/// home: `None` unless both operands are numeric.
+fn numeric_result(left: LiteralValueKind, right: LiteralValueKind) -> Option<LiteralValueKind> {
+    if !left.is_numeric() || !right.is_numeric() {
+        return None;
+    }
+    Some(
+        if left == LiteralValueKind::Float || right == LiteralValueKind::Float {
+            LiteralValueKind::Float
+        } else {
+            LiteralValueKind::Integer
+        },
+    )
+}
+
+/// The one `+` operand-pair classification (Neo4j's result rule): a
+/// container or null operand stays runtime-decided (append/propagation);
+/// a String operand makes it a String concatenation; two numerics take
+/// the numeric promotion; every other pair is runtime-decided. The
+/// operator table's `+` arm is its one consumer — a `reduce` body's `+`
+/// reaches it through `static_type_in`/`static_binary_type` like every
+/// other operator.
+fn plus_result(left: LiteralValueKind, right: LiteralValueKind) -> Option<LiteralValueKind> {
+    use LiteralValueKind::*;
+    match (left, right) {
+        // `+` with null propagates null at runtime — the pair stays
+        // runtime-decided, the module's convention for every null.
+        (Null, _) | (_, Null) => None,
+        // A container operand makes the sum an append/merge the static
+        // rule cannot rank.
+        (List, _) | (_, List) | (Map, _) | (_, Map) => None,
+        (String, _) | (_, String) => Some(String),
+        _ => numeric_result(left, right),
+    }
+}
+
+/// The one arithmetic-operator result policy: `+` takes the
+/// concatenation/append classification, `^` always Float, every other
+/// operator the numeric promotion — with the numeric precondition
+/// [`numeric_result`] owns.
+fn arithmetic_result(
+    op: &str,
+    left: LiteralValueKind,
+    right: LiteralValueKind,
+) -> Option<LiteralValueKind> {
+    if op == "+" {
+        return plus_result(left, right);
+    }
+    if op == "^" {
+        return numeric_result(left, right).map(|_| LiteralValueKind::Float);
+    }
+    numeric_result(left, right)
+}
+
 /// The result type of a binary operator over statically-typed operands, or
 /// `None` when it is not decided (a non-numeric operand of an arithmetic
 /// operator, an unknown operator, an operand of unknown type).
-fn static_binary_type(op: &str, left: &Expr, right: &Expr) -> Option<LiteralValueKind> {
+fn static_binary_type(
+    op: &str,
+    left: &Expr,
+    right: &Expr,
+    env: &impl Fn(&relate_names::SmallName) -> Option<LiteralValueKind>,
+) -> Option<LiteralValueKind> {
     match op {
-        "AND" | "OR" | "XOR" => Some(LiteralValueKind::Boolean),
+        _ if is_boolean_operator(op) => Some(LiteralValueKind::Boolean),
         _ if is_arithmetic_op(op) => {
-            let left = static_literal_type(left)?;
-            let right = static_literal_type(right)?;
-            if !left.is_numeric() || !right.is_numeric() {
-                return None;
-            }
-            // Mixed Int/Float arithmetic yields FLOAT; `^` always does.
-            Some(
-                if op == "^" || left == LiteralValueKind::Float || right == LiteralValueKind::Float
-                {
-                    LiteralValueKind::Float
-                } else {
-                    LiteralValueKind::Integer
-                },
-            )
+            let left = static_type_in(left, env)?;
+            let right = static_type_in(right, env)?;
+            arithmetic_result(op, left, right)
         }
         _ => None,
     }
