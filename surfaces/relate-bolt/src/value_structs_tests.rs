@@ -10,6 +10,7 @@ use crate::dialect::Dialect;
 use crate::param_structs::{struct_to_value, ParamPath};
 use crate::value_codec::{MdbPackError, ValueCodec};
 use relate::Value;
+use relate_core::temporal::CivilZonedFields;
 use relate_test_support::values::wrapped_in_lists;
 
 /// Evaluate `expr` in the engine and return the single value.
@@ -191,6 +192,49 @@ fn signs_and_civil_dates_follow_the_bolt_layout() {
             ],
         }
     );
+}
+
+/// ADR-0683's far-year zoned form packs through the same structure as an
+/// offset-only chrono datetime, from the engine's one zoned view: the
+/// wall clock's seconds-of-day are counted once, not twice, on every
+/// dialect axis (the legacy tag carries the wall clock read as UTC, the
+/// UTC tags the instant).
+#[test]
+fn a_far_year_zoned_datetime_packs_its_wall_clock_once() {
+    let time = NaiveTime::from_hms_nano_opt(3, 4, 5, 123_000_000).unwrap();
+    let value = Value::Temporal(Temporal::CivilZoned(Box::new(CivilZonedFields {
+        year: -999_999_999,
+        month: 1,
+        day: 1,
+        time,
+        offset: 7200,
+        zone: None,
+    })));
+    // The wall clock's seconds read from the same engine derivation the
+    // packer's arm reads (never hand-rolled day/hour arithmetic).
+    let wall = i64::try_from(civil_epoch_seconds(-999_999_999, 1, 1, time))
+        .expect("the wall clock fits i64");
+    assert_eq!(
+        encode(&value, Dialect::plain_44()),
+        Pack::Struct {
+            tag: DATE_TIME,
+            fields: vec![Pack::Int(wall), Pack::Int(123_000_000), Pack::Int(7200)],
+        }
+    );
+    for dialect in [Dialect::utc_44(), Dialect::at_5_4()] {
+        assert_eq!(
+            encode(&value, dialect),
+            Pack::Struct {
+                tag: DATE_TIME_UTC,
+                fields: vec![
+                    Pack::Int(wall - 7200),
+                    Pack::Int(123_000_000),
+                    Pack::Int(7200)
+                ],
+            },
+            "{dialect:?}"
+        );
+    }
 }
 
 /// A component beyond i64 fails the encode instead of falling back.
