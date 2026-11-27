@@ -25,14 +25,16 @@
 //! `shortestPath`) keeps the whole row, its reads not being enumerated.
 
 use std::borrow::Cow;
+use std::cell::OnceCell;
 use std::collections::HashSet;
 use std::sync::Arc;
 
 use relate_core::{Error, Node, Result, Value};
-use relate_ir::{classify_aggregate, map_projection_shorthand_names, Expr, Projection};
+use relate_ir::{is_agg_call, map_projection_shorthand_names, Expr, Projection};
 
 use crate::eval::is_agg_expr;
 use crate::row::{Row, RowNames};
+use crate::workspace::{buffer_growth, owned_heap, row_entry_bytes};
 
 use super::super::scope::is_star_item;
 use super::key::KeyValues;
@@ -102,7 +104,7 @@ impl Kept {
         } else {
             0
         };
-        boxed + crate::workspace::owned_heap(value)
+        boxed + owned_heap(value)
     }
 }
 
@@ -143,7 +145,7 @@ impl Reads {
             Expr::Star => self.whole = true,
             // An aggregate call's operands were folded while the rows
             // streamed; every other call rides the one child walk below.
-            Expr::Function { name, .. } if name.with_str(classify_aggregate).is_some() => {}
+            call if is_agg_call(call) => {}
             Expr::Variable(name) => {
                 self.names.insert(name.to_string());
             }
@@ -229,9 +231,28 @@ pub(super) enum ItemRole {
 
 /// The columns a narrowed seed keeps, fixed by the first row that lands.
 pub(super) struct Resolved {
+    /// The kept columns, in the first row's column order.
     names: RowNames,
+}
+
+impl Resolved {
+    /// Resolve the kept columns from a group's first row.
+    fn from_first_row(wanted: &HashSet<String>, row: &Row) -> Self {
+        Self {
+            names: RowNames::new(&kept_columns(wanted, row)),
+        }
+    }
+
     /// The kept column names, in the first row's column order.
-    columns: Vec<String>,
+    fn columns(&self) -> &[String] {
+        self.names.names()
+    }
+}
+
+/// The invariant error: every input row carries the columns its first row
+/// had.
+fn lost_column() -> Error {
+    Error::internal("an aggregation input row lost a column its first row had")
 }
 
 /// Every group's seed, flat: one `Kept` buffer of `stride` slots per group —
@@ -242,7 +263,9 @@ pub(super) enum SeedStore {
     Whole(Vec<Row>),
     Columns {
         wanted: HashSet<String>,
-        resolved: Option<Resolved>,
+        /// Resolved once, by whichever of the landing bill or the landing
+        /// sees the first row first.
+        resolved: OnceCell<Resolved>,
         /// The key positions whose first-seen values a group keeps, one per
         /// kept slot — the dedup the classification builds as items
         /// restate keys.
@@ -357,7 +380,7 @@ impl SeedStore {
             .collect();
         let store = Self::Columns {
             wanted,
-            resolved: None,
+            resolved: OnceCell::new(),
             key_slots,
             values: Vec::new(),
         };
@@ -369,7 +392,6 @@ impl SeedStore {
     /// is offered to the accumulators, while it still solely owns its
     /// payload (the same order the old whole-row charge used).
     pub(super) fn landing_bytes(&self, groups: usize, keys: &KeyValues, row: &Row) -> Result<u64> {
-        use crate::workspace::{buffer_growth, row_entry_bytes};
         match self {
             Self::Whole(_) => Ok(row_entry_bytes(row.values())),
             Self::Columns {
@@ -378,25 +400,13 @@ impl SeedStore {
                 key_slots,
                 ..
             } => {
-                // The first row's columns are derived by the one selection
-                // `land` resolves from; every later row reads the fixed set.
-                let first;
-                let names: &[String] = match resolved {
-                    Some(resolved) => &resolved.columns,
-                    None => {
-                        first = kept_columns(wanted, row);
-                        &first
-                    }
-                };
-                let cols: Vec<&Value> = names
+                // The first row resolves the columns once; `land` and every
+                // later row read the fixed set.
+                let resolved = resolved.get_or_init(|| Resolved::from_first_row(wanted, row));
+                let cols: Vec<&Value> = resolved
+                    .columns()
                     .iter()
-                    .map(|name| {
-                        row.get(name).ok_or_else(|| {
-                            Error::internal(
-                                "an aggregation input row lost a column its first row had",
-                            )
-                        })
-                    })
+                    .map(|name| row.get(name).ok_or_else(lost_column))
                     .collect::<Result<_>>()?;
                 let stride = slot_stride(key_slots, cols.len());
                 Ok(buffer_growth(
@@ -423,21 +433,18 @@ impl SeedStore {
                 key_slots,
                 values,
             } => {
-                let resolved = resolved.get_or_insert_with(|| {
-                    let columns = kept_columns(wanted, &row);
-                    Resolved {
-                        names: RowNames::new(&columns),
-                        columns,
-                    }
-                });
+                let resolved = resolved.get_or_init(|| Resolved::from_first_row(wanted, &row));
+                // Materialize the whole slot run first, then push: a missing
+                // column leaves the buffer at a whole number of strides.
+                let mut slots =
+                    Vec::with_capacity(slot_stride(key_slots, resolved.columns().len()));
                 for slot in key_slots.iter() {
-                    values.push(Kept::new(keys.take(*slot)));
+                    slots.push(Kept::new(keys.take(*slot)));
                 }
-                for name in &resolved.columns {
-                    values.push(Kept::new(row.take_value(name).ok_or_else(|| {
-                        Error::internal("an aggregation input row lost a column its first row had")
-                    })?));
+                for name in resolved.columns() {
+                    slots.push(Kept::new(row.take_value(name).ok_or_else(lost_column)?));
                 }
+                values.extend(slots);
             }
         }
         Ok(())
@@ -458,13 +465,13 @@ impl SeedStore {
                 values,
                 ..
             } => {
-                let Some(resolved) = resolved.as_ref() else {
+                let Some(resolved) = resolved.get() else {
                     return Taken {
                         row: None,
                         keys: Vec::new(),
                     };
                 };
-                let stride = slot_stride(key_slots, resolved.columns.len());
+                let stride = slot_stride(key_slots, resolved.columns().len());
                 let mut slots = values[group * stride..(group + 1) * stride]
                     .iter_mut()
                     .map(|kept| std::mem::take(kept).into_value());
@@ -562,5 +569,30 @@ mod tests {
                 "boxing disagrees with the billing partition"
             );
         }
+    }
+
+    /// A landing that finds a column missing fails whole: the flat buffer
+    /// stays at a whole number of strides, key slots included.
+    #[test]
+    fn a_failed_landing_leaves_the_buffer_whole() {
+        let mut store = SeedStore::Columns {
+            wanted: ["a", "b"].map(String::from).into_iter().collect(),
+            resolved: OnceCell::new(),
+            key_slots: vec![0],
+            values: Vec::new(),
+        };
+        let mut first = Row::new();
+        first.insert("a".into(), Value::Int(1));
+        first.insert("b".into(), Value::Int(2));
+        store
+            .land(KeyValues::One(Value::Int(9)), first)
+            .expect("first");
+        let mut short = Row::new();
+        short.insert("a".into(), Value::Int(3));
+        assert!(store.land(KeyValues::One(Value::Int(9)), short).is_err());
+        let SeedStore::Columns { values, .. } = &store else {
+            panic!("a narrowed store")
+        };
+        assert_eq!(values.len(), 3);
     }
 }
