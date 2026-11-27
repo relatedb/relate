@@ -100,11 +100,10 @@ artifact landed on that first release:
   publish-registries.yml -f tag=<tag> -f npm=false -f crates-io=false
   -f pypi-target=testpypi`). The dispatch arm's publisher
   (`publish-registries.yml`) is live.
-- [ ] Register the inline arm's publisher on PyPI: project `relate-db`,
+- [x] Register the inline arm's publisher on PyPI: project `relate-db`,
   repository `relatedb/relate`, workflow `release.yml`, environment
-  `release`. Until it lands, a release cut with `registries=true` fails
-  the inline `publish-pypi` job closed at the token exchange; the first
-  cut after it lands proves the arm end to end.
+  `release` (done 2026-11-27). The first cut with `registries=true`
+  after it proves the arm end to end.
 - [ ] crates.io (ADR-0560): the publishable set is the `relate` facade's
   transitive workspace closure — 17 crates, all lockstep with the release
   tag. The bootstrap claims the names without publishing source: each of
