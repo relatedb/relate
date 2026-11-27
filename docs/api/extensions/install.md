@@ -7,7 +7,7 @@ install prints, and what the provenance marker records. The authoring side
 is [authoring.md](authoring.md); the precise contract is [spec.md](spec.md).
 
 ```text
-relate extension install <name> [--url URL | --from DIR | --github OWNER/REPO@REF] [--version V] [--force]
+relate extension install <name> [--url URL | --from DIR|URL | --github OWNER/REPO@REF] [--version V] [--force]
 relate extension list [--available]
 relate extension remove <name>
 ```
@@ -21,7 +21,7 @@ decision. Four tiers, strongest first:
 | --- | --- | --- |
 | **First-party** | *(none)* | The signed release channel. The index (`extensions.json`) is SSHSIG-verified against the same release key `upgrade` verifies, and the tarball's SHA256 is checked against the signed row. `--version V` pins a channel version; the default is the newest listed |
 | **GitHub pin** | `--github OWNER/REPO@REF` | One commit of one repository. `REF` is a tag or a full commit SHA; a ref must be spelled (an untagged `owner/repo` is a moving target and is a usage error). The tag's commit SHA and the platform asset's SHA256 are resolved through the release route and recorded; a later install of the same pin is silent, a tag that moved to another commit is refused before any fetch, and moving a pin takes an explicit re-approval flag |
-| **Unsigned** | `--url URL` | Whoever serves that URL — no signature exists to check, so the https transport is the act's one leg of integrity. `https` only (plain `http` is accepted for a loopback address, the dev case); any other URL is a usage error *before* any fetch |
+| **Unsigned** | `--url URL` · `--from URL` | Whoever serves that URL — no signature exists to check, so the https transport is the act's one leg of integrity. `https` only (plain `http` is accepted for a loopback address, the dev case); any other URL is a usage error *before* any fetch. `--url` names the package tarball; `--from URL` names the loose files — the manifest the URL points at (a URL whose last segment ends in `.json`), or a path `extension.json` is appended to, with the executable beside the manifest or in a relative subfolder of it. A pasted `github.com/.../blob/...` or `/tree/...` URL is rewritten to its `raw.githubusercontent.com` form before any fetch, and a GitHub page that names no content (a bare repository URL, a URL stopped at the verb) is refused with the form that works |
 | **Local** | `--from DIR` | The directory you point at. Offline, CI and air-gapped path (`pull --from`'s posture): the directory is the trust act, no network, no signature. The executable must resolve inside it (an intermediate-directory symlink is a refusal) |
 
 Two invariants across all four: every install runs the same manifest,

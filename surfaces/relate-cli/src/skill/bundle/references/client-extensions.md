@@ -32,7 +32,7 @@ error — a query run never fetches anything.
 | Verb | What it does |
 | --- | --- |
 | `extension init <name> [--lang sh\|py\|ts\|rust]` | Scaffold a package into a new `<name>/` directory: the manifest, the language's minimal MCP client generated inline (no published dependency to install), a TODO-marked `walk()`, a README quickstart |
-| `extension install <name> [--github REPO@TAG\|@SHA \| --url URL \| --from DIR] [--version V] [--force] [--re-approve \| --approve SHA]` | Put a package on the machine — the signed first-party channel by default, `--github` the commit-pinned GitHub release, `--from DIR` the offline local act, `--url` the explicit third-party one |
+| `extension install <name> [--github REPO@TAG\|@SHA \| --url URL \| --from DIR\|URL] [--version V] [--force] [--re-approve \| --approve SHA]` | Put a package on the machine — the signed first-party channel by default, `--github` the commit-pinned GitHub release, `--from DIR` the offline local act, `--from URL` the remote-manifest one (https only: the manifest the URL names — or the path `extension.json` is appended to — plus the executable beside it; a pasted github.com blob URL works), `--url` the explicit third-party tarball one |
 | `extension list [--available \| --trust]` | The installed set (offline), the channel's catalog with `--available`, or the recorded GitHub pins with `--trust` |
 | `extension remove <name> [--forget-pin]` | Take a package off (the provenance marker is required); `--forget-pin` also clears its recorded GitHub pin |
 | `extension check <dir>` | Run a package directory through the mount's six stages without a store or network (see below) |

@@ -3,17 +3,23 @@
 //! `extension list --available`, §9); discovery, `run`, and every failure
 //! on an uninstalled name never fetch (ADR-0429 §7 stands unchanged).
 //!
-//! The four sources, one ladder of trust tiers (§7, ADR-0449): the
+//! The five sources, one ladder of trust tiers (§7, ADR-0449): the
 //! first-party channel (§4 — fetch the signed index, resolve the row,
 //! download the tarball, verify its SHA256 against the signed row), a
 //! GitHub release pinned to a commit (ADR-0449 — resolve the tag's commit
 //! and the platform asset's SHA256, compare against the per-user trust
 //! store before any fetch, download over the route machinery, verify,
-//! land, then record the pin), a third-party URL (§6 — the invocation is
+//! record the pin and land it — the pin rolls back if the landing
+//! fails; the adapters hand back the tier-less
+//! [`SourceFacts`](crate::extensions::provenance::SourceFacts), and the
+//! tier is stamped from `InstallSource::tier()` when the marker's
+//! provenance is built), a third-party URL (§6 — the invocation is
 //! the trust act: fetch, unpack, run the same checks, record the URL,
-//! print the loud line), and a local directory (§5 — the posture of
+//! print the loud line), a local directory (§5 — the posture of
 //! `pull --from`: whoever provisions the directory owns what is in it; the
-//! checks run unchanged, the accounted files are copied into place).
+//! checks run unchanged, the accounted files are copied into place), and
+//! `--from URL` (§5's remote form — the same loose-files layout fetched,
+//! third-party tier).
 //!
 //! The landing shape is the `skill install` staging shape (§4 step 4):
 //! unpack/copy into a `.relate-stage-*` sibling of the target, run
@@ -34,8 +40,7 @@ use std::path::{Path, PathBuf};
 use relate_formatter::sanitize_error_text;
 
 use crate::extensions::manifest::Manifest;
-use crate::extensions::provenance::{Provenance, Tier};
-use crate::extensions::registry::RegistryError;
+use crate::extensions::provenance::{Pin, Provenance, Tier};
 use crate::extensions::source::{InstallArgs, InstallSource};
 use crate::extensions::trust::{trust_path, TrustStore};
 use crate::release_channel::api_assets::github_api_url;
@@ -52,6 +57,10 @@ pub(crate) mod error;
 /// The per-tier source adapters (channel, GitHub pin, URL, local
 /// directory).
 mod sources;
+/// The `--from URL` layout rules: the pure string decisions (which URL
+/// is the manifest, the executable's folder join, the one GitHub
+/// rewrite) the URL adapter fetches through.
+mod url_layout;
 
 use self::checks::{
     check_reserved_words, check_target, recheck_parked_install, validate_package_name,
@@ -59,6 +68,7 @@ use self::checks::{
 use self::error::InstallError;
 use self::sources::{
     install_from_channel, install_from_dir, install_from_github, install_from_url,
+    install_from_url_files,
 };
 
 /// The `--github` tier's network endpoints and identity, resolved once per
@@ -108,8 +118,7 @@ pub(crate) fn run_install(args: &InstallArgs) -> Result<(), InstallError> {
             crate::config_dir::no_config_dir_text(),
         ));
     };
-    let registry =
-        crate::extensions::registry::ActionRegistry::load().map_err(install_registry_error)?;
+    let registry = crate::extensions::registry::ActionRegistry::load()?;
     install_into(
         &config_dir.join(crate::extensions::registry::EXTENSIONS_DIR),
         &trust_path(&config_dir),
@@ -156,8 +165,7 @@ fn install_into(
     // downloaded (ADR-0449). A malformed store is a refusal, never an
     // empty one — and it refuses before the staging dir exists, so the
     // failure leaves no residue.
-    let mut trust =
-        TrustStore::load(trust_file).map_err(|e| InstallError::Runtime(e.to_string()))?;
+    let mut trust = TrustStore::load(trust_file)?;
 
     // Stage → source work → marker → rename: a failed install never
     // leaves a half-written package, and the staged dir is cleaned on
@@ -188,9 +196,11 @@ fn install_into(
 ///
 /// A `--github` install's pin commits with the package (ADR-0449): the
 /// source step resolves and hands the pin back inside the [`Provenance`],
-/// and the trust store is written here — beside the provenance marker,
-/// only after the rename landed — so a landing failure leaves the
-/// recorded pins byte-identical to before the attempt.
+/// and the trust store is written here, beside the provenance marker —
+/// before the rename, with the store's prior bytes restored when the
+/// landing fails, so a landing failure leaves the recorded pins
+/// byte-identical to before the attempt and a failed trust write leaves
+/// nothing landed.
 ///
 /// The replace re-decides at land time ([`recheck_parked_install`]):
 /// `check_target`'s snapshot was taken before the fetch, so a concurrent
@@ -206,6 +216,10 @@ fn stage_and_land(
     let (provenance, manifest) = match &args.source {
         InstallSource::Url(url) => install_from_url(name, url, staged)?,
         InstallSource::From(dir) => install_from_dir(name, dir, staged)?,
+        // The remote form of `--from` (ADR-0431 §5): the loose-files
+        // package at a URL — third-party tier, the transport gate's
+        // posture.
+        InstallSource::FromUrl(url) => install_from_url_files(name, url, staged)?,
         InstallSource::Channel { version } => {
             install_from_channel(name, version.as_deref(), staged)?
         }
@@ -213,29 +227,81 @@ fn stage_and_land(
             install_from_github(spec, args, github_route, trust, staged)?
         }
     };
+    // The tier is the source's own ([`InstallSource::tier`]) — the
+    // adapters hand back only the pin and the source reference, so the
+    // variant→tier mapping has one home.
+    let provenance = Provenance {
+        tier: args.source.tier(),
+        pin: provenance.pin,
+        source: provenance.source,
+    };
     let Manifest::Command(command) = &manifest;
     provenance
         .write(staged)
         .map_err(|e| io("writing the provenance marker", staged, &e))?;
     let target = package_target(extensions_dir, name);
-    if target.exists() {
-        land_replacing(&target, staged, name, &args.source, args.force)?;
+    // The pin commits with the landing (ADR-0449 §4): it is recorded
+    // BEFORE the rename and the store's prior bytes are restored when
+    // the landing fails, so the recorded pin and the package land
+    // together or not at all. The order is what makes both failure
+    // directions safe: a failed trust write leaves nothing landed (the
+    // command reports failure and no package appeared), and a failed
+    // landing leaves the store byte-identical to before — never a
+    // landed-but-unpinned package, whose later reinstall would take the
+    // first-install path and silently approve a moved pin.
+    let committed_pin = match &provenance.pin {
+        Some(pin) => {
+            let prior = trust.record(name.to_string(), pin.clone())?;
+            PinCommit::Committed { prior }
+        }
+        None => PinCommit::NotCommitted,
+    };
+    let landed = if target.exists() {
+        land_replacing(&target, staged, name, &args.source, args.force)
     } else {
-        std::fs::rename(staged, &target).map_err(|e| io("landing the package", &target, &e))?;
-    }
-    // Only a landed package commits its pin (ADR-0449 §4: the recorded pin
-    // is updated after the verified bytes, and only here — after the rename
-    // actually put the package in place). Every earlier refusal, and a
-    // landing failure, leaves the trust store untouched, so the recorded
-    // pins always describe a package that is really installed.
-    if let Some(pin) = &provenance.pin {
-        trust.insert(name.to_string(), pin.clone());
-        let trust_file = trust.path().to_path_buf();
-        trust
-            .write()
-            .map_err(|e| io("recording the extension trust store", &trust_file, &e))?;
+        std::fs::rename(staged, &target).map_err(|e| io("landing the package", &target, &e))
+    };
+    if let Err(err) = landed {
+        // The landing failed: the commit state owns the compensation (and
+        // its double-failure report).
+        committed_pin.rollback(trust, name);
+        return Err(err);
     }
     Ok((provenance, command.version.clone()))
+}
+
+/// The pin commit's state around a landing (ADR-0449): nothing was
+/// committed, or the prior entry a [`TrustStore::rollback`] puts back.
+/// The state owns its own transition, so a landing failure is one call.
+enum PinCommit {
+    /// No pin was committed — a landing failure has nothing to undo.
+    NotCommitted,
+    /// The pin was recorded; `prior` is the entry it replaced.
+    Committed {
+        /// The entry the record replaced (`None` when the name had no
+        /// recorded pin).
+        prior: Option<Pin>,
+    },
+}
+
+impl PinCommit {
+    /// Undo the commit after a failed landing: put the prior entry back.
+    /// A rollback that fails too is reported beside the original error —
+    /// the pin then outlives no installed package, the safe direction (a
+    /// later install compares against it and refuses a moved pin instead
+    /// of silently approving one).
+    fn rollback(self, trust: &mut TrustStore, name: &str) {
+        let Self::Committed { prior } = self else {
+            return;
+        };
+        if let Err(restore) = trust.rollback(name, prior) {
+            crate::print_error(format!(
+                "rolling the extension trust store back after a failed landing failed too \
+                 ({restore}); the pin for '{name}' may outlive its package — the next \
+                 install compares against it and refuses a moved pin"
+            ));
+        }
+    }
 }
 
 /// Land the staged package over an existing target (ADR-0431 §3): park the
@@ -316,14 +382,6 @@ fn package_target(extensions_dir: &Path, name: &str) -> PathBuf {
 /// One IO failure, named with the path and cause.
 fn io(what: &str, path: &Path, e: &std::io::Error) -> InstallError {
     InstallError::Runtime(format!("{what} {}: {e}", path.display()))
-}
-
-/// A registry load failure during install: the installed set is broken
-/// (a package whose manifest fails the strict decode, a collision between
-/// two installed packages, …) — an environment failure naming the
-/// offender, the registry's own pinned text (exit 1).
-fn install_registry_error(err: RegistryError) -> InstallError {
-    InstallError::Runtime(err.to_string())
 }
 
 /// The one line the verb prints on a landed install (§6: "prints one line

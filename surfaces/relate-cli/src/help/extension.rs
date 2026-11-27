@@ -51,7 +51,7 @@ const INIT: ExtensionAction = ExtensionAction {
 const INSTALL: ExtensionAction = ExtensionAction {
     line: Some(
         "relate extension install <name> [--github REPO@TAG|@SHA] [--url URL] \
-         [--from DIR] [--version V] [--force] [--re-approve | --approve SHA]",
+         [--from DIR|URL] [--version V] [--force] [--re-approve | --approve SHA]",
     ),
     flags: &[
         "--github",
@@ -64,8 +64,13 @@ const INSTALL: ExtensionAction = ExtensionAction {
     ],
     rows: "  install <name>  Install a package: from the signed first-party channel
                   by default; --github REPO@TAG|@SHA is a GitHub release pinned to a commit;
-                  --url URL is the explicit third-party trust act; --from DIR the
-                  local-directory one (no network, no signature). The tarball is
+                  --url URL is the explicit third-party trust act (the tarball at the URL);
+                  --from DIR the local-directory one (no network, no signature), --from URL
+                  the remote-manifest one (https only: the manifest the URL names — or the
+                  path extension.json is appended to — plus the executable beside it, in
+                  its folder or a relative subfolder; a pasted github.com blob URL works,
+                  a github.com page naming no content refuses with the form that works).
+                  The tarball is
                   verified (channel: signature + SHA256; GitHub: the resolved asset SHA256),
                   unpacked under the closed contract, and load-checked before it lands —
                   never a silent fetch
@@ -75,9 +80,11 @@ const INSTALL: ExtensionAction = ExtensionAction {
                   before any fetch unless re-approved
   --url URL      Install the tarball at URL, https only (third-party: you named the
                   source; a non-https URL refuses before any fetch)
-  --from DIR     Install the unpacked package directory (local: the directory is the
+  --from DIR|URL Install the unpacked package directory (local: the directory is the
                   trust act, like pull --from; the executable must resolve
-                  inside it)
+                  inside it) — or the package at a URL (https only: the manifest
+                  the URL names, or the path extension.json is appended to; the
+                  executable lives beside the manifest or in a relative subfolder)
   --version V    Install channel version V (default: the newest listed)
   --force        Clobber a target directory without the install marker (never a
                   name collision or a tier's own reinstall path)
@@ -241,8 +248,9 @@ pub(super) fn extension_help() -> String {
          signing key upgrade verifies), github-pin (--github: the release's tag, commit\n\
          and asset SHA256 are recorded on first install — the invocation is the approval;\n\
          a moved tag or changed asset refuses without --re-approve/--approve), third-party\n\
-         (--url: the invocation is the trust act, the install line names what landed),\n\
-         local (--from: whoever provisions the directory owns what is in it).\n",
+         (--url, and --from with a URL: the invocation is the trust act, the install\n\
+         line names what landed), local (--from with a directory: whoever provisions\n\
+         the directory owns what is in it).\n",
     );
     page
 }

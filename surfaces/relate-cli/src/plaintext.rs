@@ -1,7 +1,10 @@
-//! The CLI's one plaintext-transport vocabulary (LABS-872): the
-//! authority→host extraction and the loopback-host predicates every
-//! `http://` gate states its policy in terms of. Ungated, so the refusals
-//! read the same in every build.
+//! The CLI's one URL-string vocabulary (LABS-872, REL8-2381): the
+//! authority→host extraction, the loopback-host predicates, and the
+//! generic URL splits (`scheme`, `is_http_scheme`, `path_suffix`,
+//! `last_segment`) — the transport gates and the path rules (the remote
+//! store's `.rl` requirement, the extension install's manifest rule) each
+//! state their policy on top. Ungated, so the refusals read the same in
+//! every build.
 //!
 //! Each gate keeps its own policy *on top* of this vocabulary — a per-ADR
 //! narrowing is an explicit extra check at its own site, never a fresh copy
@@ -40,6 +43,52 @@ pub(crate) fn authority_host(authority: &str) -> &str {
         return rest.split(']').next().unwrap_or_default();
     }
     host_port.split(':').next().unwrap_or_default()
+}
+
+/// The scheme of a `scheme://…` URL, exactly as written; `None` when the
+/// value carries no `://`. Schemes compare ASCII-case-insensitively
+/// (RFC 3986), so every caller compares with `eq_ignore_ascii_case` —
+/// this is the crate's one scheme extraction (the plaintext/loopback
+/// gates, the remote `--load` grammar, and the extension install's
+/// DIR-or-URL classifier all read it).
+pub(crate) fn split_scheme(url: &str) -> Option<(&str, &str)> {
+    url.split_once("://")
+}
+
+/// The scheme of a `scheme://…` URL, exactly as written; `None` when the
+/// value carries no `://`.
+pub(crate) fn scheme(url: &str) -> Option<&str> {
+    split_scheme(url).map(|(scheme, _)| scheme)
+}
+
+/// Whether `url`'s scheme is `http` or `https` — the crate's one http(s)
+/// test.
+pub(crate) fn is_http_scheme(url: &str) -> bool {
+    scheme(url).is_some_and(|scheme| {
+        scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https")
+    })
+}
+
+/// A URL's path part and its trailing query/fragment: the split every
+/// last-path-segment rule makes before it looks at the segment (the
+/// remote store's `.rl` requirement and the extension install's
+/// manifest-or-directory rule). The suffix is returned rather than
+/// dropped, so a caller that appends to the path can keep it.
+pub(crate) fn path_suffix(url: &str) -> (&str, &str) {
+    match url.find(['?', '#']) {
+        Some(idx) => (&url[..idx], &url[idx..]),
+        None => (url, ""),
+    }
+}
+
+/// The last path segment of a URL, query and fragment stripped — the
+/// segment every last-path-segment rule looks at ([`path_suffix`]'s path,
+/// then its final `/`).
+pub(crate) fn last_segment(url: &str) -> &str {
+    let (path, _) = path_suffix(url);
+    path.rsplit('/')
+        .next()
+        .expect("rsplit yields at least one item")
 }
 
 /// The **named** loopback hosts: `localhost` in any case, and the IPv6

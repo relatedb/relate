@@ -5,16 +5,19 @@
 //! tier resolves the tag's commit and the asset's SHA256 and compares
 //! them against the per-user trust store before any fetch; the URL tier's
 //! transport gate is the act's one integrity leg; the local directory
-//! tier copies exactly the accounted set. Every adapter unpacks into the
-//! staging dir through the one closed member contract and runs the same
-//! preflight checks.
+//! tier copies exactly the accounted set, and the remote loose-files tier
+//! ([`install_from_url_files`], ADR-0431 §5's `--from URL`) fetches it.
+//! Every adapter stages exactly the accounted set — the tarball tiers
+//! through the closed member contract (`unpack`), the two loose-files
+//! tiers through [`stage_accounted_set`] — and runs the same preflight
+//! checks.
 
 use std::path::Path;
 
 use crate::extensions::github;
 use crate::extensions::manifest::Manifest;
-use crate::extensions::provenance::{Pin, Provenance, Tier};
-use crate::extensions::source::{GithubSpec, InstallArgs};
+use crate::extensions::provenance::{Pin, SourceFacts};
+use crate::extensions::source::{Approval, GithubSpec, InstallArgs};
 use crate::extensions::trust::TrustStore;
 use crate::extensions::{channel, unpack};
 use crate::release_channel::download_route::probe_route_at;
@@ -40,7 +43,7 @@ pub(super) fn install_from_channel(
     name: &str,
     version: Option<&str>,
     staged: &Path,
-) -> Result<(Provenance, Manifest), InstallError> {
+) -> Result<(SourceFacts, Manifest), InstallError> {
     let index = channel::fetch_verified_index()?;
     let base = crate::release_channel::download_route::release_download_base()?;
     install_from_index(&index, name, version, &base, staged)
@@ -62,7 +65,7 @@ pub(super) fn install_from_index(
     version: Option<&str>,
     base: &str,
     staged: &Path,
-) -> Result<(Provenance, Manifest), InstallError> {
+) -> Result<(SourceFacts, Manifest), InstallError> {
     let row = channel::resolve_row(index, name, version)?;
     // The tarball is both the probe asset and the only needed asset
     // (§1: asset downloads ride the probe-then-fallback route machinery).
@@ -89,8 +92,7 @@ pub(super) fn install_from_index(
     verify_checksum(row.asset, &row.sha256, &tarball)?;
     let manifest = unpack_and_check(name, &tarball, staged)?;
     Ok((
-        Provenance {
-            tier: Tier::FirstParty,
+        SourceFacts {
             pin: None,
             // The tag names the channel release that hosts the assets
             // (§7's "the channel version": the version itself is the
@@ -116,6 +118,24 @@ fn verify_checksum(asset: &str, expected: &str, bytes: &[u8]) -> Result<(), Inst
     }
 }
 
+/// The third-party tiers' one transport gate (§6, and §5's remote
+/// `--from`): no signature covers a third-party fetch, so the transport
+/// is the act's one leg of integrity — https, or plain http to the
+/// loopback interface. The one shared predicate is
+/// `release_channel::http::approved_transport`; this helper is the one
+/// wording of the refusal, parameterized only by the flag the invoker
+/// named, so `--url` and `--from` cannot drift apart.
+fn require_approved_transport(flag: &str, url: &str) -> Result<(), InstallError> {
+    if approved_transport(url) {
+        Ok(())
+    } else {
+        Err(InstallError::Usage(format!(
+            "{flag} accepts only https URLs (or plain http to the loopback \
+             interface); '{url}' is neither"
+        )))
+    }
+}
+
 /// The explicit third-party trust act (§6): the URL names the package
 /// tarball at an https source the invoker chooses — no signature exists
 /// to check, so the tier's transport is the act's one leg of integrity
@@ -128,7 +148,7 @@ pub(super) fn install_from_url(
     name: &str,
     url: &str,
     staged: &Path,
-) -> Result<(Provenance, Manifest), InstallError> {
+) -> Result<(SourceFacts, Manifest), InstallError> {
     // The tier's transport gate: no signature covers a third-party
     // tarball (§6), so the download itself is the trust act's integrity —
     // a plaintext fetch is a man-in-the-middle's open microphone. The one
@@ -137,29 +157,11 @@ pub(super) fn install_from_url(
     // on-path attacker; the local fixture registry shape). A flag value
     // outside the accepted vocabulary: the usage class (ADR-0431 §3),
     // refused before any fetch.
-    if !approved_transport(url) {
-        return Err(InstallError::Usage(format!(
-            "--url accepts only https URLs (or plain http to the loopback \
-             interface); '{url}' is neither"
-        )));
-    }
-    let label = format!("the package tarball for {name}");
-    let tarball = download_asset(AssetRequest {
-        url,
-        name: &label,
-        token: None,
-        accept: None,
-    })
-    .map_err(|e| {
-        InstallError::Runtime(format!(
-            "could not download the package tarball from {url}: {}",
-            e.into_channel_error()
-        ))
-    })?;
+    require_approved_transport("--url", url)?;
+    let tarball = fetch(url, "the package tarball")?;
     let manifest = unpack_and_check(name, &tarball, staged)?;
     Ok((
-        Provenance {
-            tier: Tier::ThirdParty,
+        SourceFacts {
             pin: None,
             source: url.to_string(),
         },
@@ -203,14 +205,13 @@ pub(super) fn install_from_dir(
     name: &str,
     dir: &str,
     staged: &Path,
-) -> Result<(Provenance, Manifest), InstallError> {
+) -> Result<(SourceFacts, Manifest), InstallError> {
     let source = Path::new(dir);
-    let manifest_path = source.join("extension.json");
+    let manifest_path = source.join(crate::extensions::registry::MANIFEST_FILE);
     let manifest_bytes = std::fs::read(&manifest_path).map_err(|e| {
         InstallError::Runtime(format!("reading {} failed: {e}", manifest_path.display()))
     })?;
-    let manifest: Manifest = serde_json::from_slice(&manifest_bytes)
-        .map_err(|e| InstallError::Usage(format!("extension '{name}': invalid manifest: {e}")))?;
+    let manifest = decode_manifest(name, &manifest_bytes)?;
     check_manifest(name, &manifest)?;
     let Manifest::Command(command) = &manifest;
     let executable = source.join(&command.executable);
@@ -250,30 +251,142 @@ pub(super) fn install_from_dir(
             resolved.display()
         )));
     }
-    // Copy exactly the accounted set: nothing else rides — the installed
-    // dir holds the manifest, the executable, and the marker, the same
-    // invariant the unpacker enforces for tarballs (`fs::copy` preserves
-    // the executable's mode on unix).
-    std::fs::write(staged.join("extension.json"), &manifest_bytes)
-        .map_err(|e| io("staging the manifest", staged, &e))?;
-    let staged_executable = staged.join(&command.executable);
-    if let Some(parent) = staged_executable.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| io("staging the executable", staged, &e))?;
-    }
-    std::fs::copy(&executable, &staged_executable)
-        .map_err(|e| io("staging the executable", staged, &e))?;
-    // `fs::copy` carries the source's mode — including setuid/setgid/
-    // sticky. Mask it exactly as the unpacker masks a tarball member's
-    // mode (`apply_mode`, the one landing-mode policy, ADR-0431 §2), so a
-    // `--from` install and an unpacked install land the same permission
-    // shape for the same package.
-    unpack::apply_mode(&staged_executable, executable_mode)
-        .map_err(|e| io("staging the executable", staged, &e))?;
+    // Copy exactly the accounted set through the shared staging step
+    // (nothing else rides — the installed dir holds the manifest, the
+    // executable, and the marker, the same invariant the unpacker
+    // enforces for tarballs). The copy's mode rides through the one
+    // masking policy: `fs::copy` carries the source's mode, including
+    // setuid/setgid/sticky, and `apply_mode` masks it exactly as the
+    // unpacker masks a tarball member's mode (ADR-0431 §2), so a `--from`
+    // install and an unpacked install land the same permission shape.
+    stage_accounted_set(
+        staged,
+        &manifest_bytes,
+        &command.executable,
+        executable_mode,
+        |dest| std::fs::copy(&executable, dest).map(|_| ()),
+    )?;
     Ok((
-        Provenance {
-            tier: Tier::Local,
+        SourceFacts {
             pin: None,
             source: dir.to_string(),
+        },
+        manifest,
+    ))
+}
+
+/// Decode a package's manifest bytes with the one refusal (ADR-0429 §6's
+/// malformed-manifest text, which the registry's own strict decode
+/// words): every tier's decode goes through here, so the wording has one
+/// home.
+fn decode_manifest(name: &str, bytes: &[u8]) -> Result<Manifest, InstallError> {
+    serde_json::from_slice(bytes)
+        .map_err(|e| InstallError::Usage(format!("extension '{name}': invalid manifest: {e}")))
+}
+
+/// One unsigned fetch through the route machinery (the `--url` tier's
+/// wording, one policy for every third-party download): fetch `url`'s
+/// bytes for `asset` — the one noun phrase the request label and the
+/// failure text both spell, so the two cannot drift — and wrap a failure
+/// as the runtime refusal naming the asset and the URL.
+fn fetch(url: &str, asset: &str) -> Result<Vec<u8>, InstallError> {
+    download_asset(AssetRequest {
+        url,
+        name: asset,
+        token: None,
+        accept: None,
+    })
+    .map_err(|e| {
+        InstallError::Runtime(format!(
+            "could not download {asset} from {url}: {}",
+            e.into_channel_error()
+        ))
+    })
+}
+
+/// Stage one loose-files package's accounted set — the manifest and the
+/// executable, nothing else — the one staging step both loose-files tiers
+/// run (the local directory, ADR-0431 §5, and the remote URL, §5's remote
+/// form): the manifest bytes land under the one manifest filename, the
+/// executable's folder is created (the manifest's relative path decides
+/// it — `check_manifest` has proven that path non-empty and inside the
+/// package folder), `land_executable` writes the bytes, and the
+/// executable's mode is applied through the one landing-mode policy
+/// (`unpack::apply_mode`, ADR-0431 §2).
+fn stage_accounted_set(
+    staged: &Path,
+    manifest_bytes: &[u8],
+    executable: &Path,
+    mode: u32,
+    land_executable: impl FnOnce(&Path) -> std::io::Result<()>,
+) -> Result<(), InstallError> {
+    std::fs::write(
+        staged.join(crate::extensions::registry::MANIFEST_FILE),
+        manifest_bytes,
+    )
+    .map_err(|e| io("staging the manifest", staged, &e))?;
+    let staged_executable = staged.join(executable);
+    std::fs::create_dir_all(
+        staged_executable
+            .parent()
+            .expect("the executable is a non-empty relative path"),
+    )
+    .map_err(|e| io("staging the executable", staged, &e))?;
+    land_executable(&staged_executable).map_err(|e| io("staging the executable", staged, &e))?;
+    unpack::apply_mode(&staged_executable, mode)
+        .map_err(|e| io("staging the executable", staged, &e))
+}
+
+/// The remote `--from URL` install (ADR-0431 §5's remote form): the URL
+/// names the manifest — or a path `extension.json` is appended to — and
+/// the executable is fetched from the manifest's own folder, joined by
+/// the manifest's relative `executable` path (the layout decisions are
+/// [`url_layout`]'s). The tier is the third-party one (§6's posture: no
+/// signature covers the fetch, so the transport gate is the act's one
+/// leg of integrity), the manifest, protocol and collision checks run
+/// unchanged (the escaping-executable rule refuses `..` and absolute
+/// spellings *before* the executable is fetched), and there is no
+/// tarball and no member-mode field, so the executable lands with the
+/// fixed `755` mode through the one landing-mode policy
+/// (`unpack::apply_mode`). The staged package is exactly the manifest
+/// plus the executable — the same accounted set the local-directory tier
+/// copies — and the provenance records the URL as the invoker named it
+/// (pre-rewrite: the pasted blob URL is the act, the rewrite is
+/// mechanical).
+pub(super) fn install_from_url_files(
+    name: &str,
+    url: &str,
+    staged: &Path,
+) -> Result<(SourceFacts, Manifest), InstallError> {
+    use super::url_layout::{executable_url, github_raw_url, manifest_url};
+    require_approved_transport("--from", url)?;
+    let base = github_raw_url(url)?;
+    let manifest_target = manifest_url(&base);
+    let manifest_bytes = fetch(&manifest_target, "the package manifest")?;
+    let manifest = decode_manifest(name, &manifest_bytes)?;
+    // Every load refusal runs before the second fetch: a manifest whose
+    // name disagrees, whose protocol the host does not speak, or whose
+    // executable escapes the package folder refuses here, before the
+    // executable's bytes are ever requested.
+    check_manifest(name, &manifest)?;
+    let Manifest::Command(command) = &manifest;
+    let executable_target = executable_url(&manifest_target, &command.executable);
+    let executable_bytes = fetch(&executable_target, "the executable")?;
+    // Stage the accounted set through the shared step — the same two
+    // files the local-directory tier copies. No member-mode field exists
+    // on this tier, so the executable lands with the fixed executable
+    // mode through the one masking policy.
+    stage_accounted_set(
+        staged,
+        &manifest_bytes,
+        &command.executable,
+        0o755,
+        |dest| std::fs::write(dest, &executable_bytes),
+    )?;
+    Ok((
+        SourceFacts {
+            pin: None,
+            source: url.to_string(),
         },
         manifest,
     ))
@@ -285,16 +398,17 @@ pub(super) fn install_from_dir(
 /// store) *before* any asset fetch, download through the
 /// probe-then-fallback route, verify the bytes against the resolved
 /// SHA256, and unpack under the closed contract. The resolved pin rides
-/// back inside the returned [`Provenance`]; the caller records it in the
-/// per-user trust store once the package has landed, so the trust entry
-/// and the package's own marker commit together.
+/// back inside the returned [`SourceFacts`]; the caller records it in the
+/// per-user trust store before the landing and rolls that entry back when
+/// the landing fails (`stage_and_land`), so the trust entry and the
+/// package commit together or not at all.
 pub(super) fn install_from_github(
     spec: &GithubSpec,
     args: &InstallArgs,
     github_route: GithubResolver<'_>,
     trust: &TrustStore,
     staged: &Path,
-) -> Result<(Provenance, Manifest), InstallError> {
+) -> Result<(SourceFacts, Manifest), InstallError> {
     let name = args.name.as_str();
     let route = github_route(&spec.repo)?;
     let resolved = github::resolve(
@@ -308,13 +422,7 @@ pub(super) fn install_from_github(
     // The pin comparison, on local state plus the metadata the resolution
     // just fetched: a moved pin refuses here, before the tarball request
     // (ADR-0449's "refuses BEFORE any fetch").
-    compare_pin(
-        name,
-        trust.get(name),
-        &pin,
-        args.re_approve,
-        args.approve.as_deref(),
-    )?;
+    compare_pin(name, trust.get(name), &pin, args.approval.as_ref())?;
 
     let needed = [resolved.asset.as_str()];
     let probe = probe_route_at(
@@ -339,12 +447,11 @@ pub(super) fn install_from_github(
     let manifest = unpack_and_check(name, &tarball, staged)?;
     // The asset verified against the resolved SHA256 and the package passed
     // every load check; the pin rides back in the provenance and is
-    // recorded by the caller after the landing (ADR-0449: a re-approval
+    // recorded by the caller around the landing (ADR-0449: a re-approval
     // updates the recorded pin only after verification — and a failed
     // install leaves the previous pin in place).
     Ok((
-        Provenance {
-            tier: Tier::GithubPin,
+        SourceFacts {
             source: format!("{}@{}", spec.repo, pin.tag),
             pin: Some(pin),
         },
@@ -362,42 +469,43 @@ pub(super) fn compare_pin(
     name: &str,
     recorded: Option<&Pin>,
     resolved: &Pin,
-    re_approve: bool,
-    approve: Option<&str>,
+    approval: Option<&Approval>,
 ) -> Result<(), InstallError> {
-    // `--approve` names the commit the pin must resolve to — checked
-    // before any "unchanged" shortcut, so a wrong approval never passes
-    // silently.
-    if let Some(approved) = approve {
-        if approved != resolved.commit {
-            return Err(InstallError::Runtime(format!(
-                "extension '{name}' resolves to commit {}, not the approved commit {approved}; \
-                 nothing installed",
-                resolved.commit
-            )));
-        }
-    }
-    let Some(recorded) = recorded else {
-        return Ok(());
+    // The approval decides first, one exhaustive match over the choice:
+    // `--approve` names the commit the pin must resolve to (a mismatch
+    // refuses before any "unchanged" shortcut, so a wrong approval never
+    // passes silently; a match accepts whatever the store held), and
+    // `--re-approve` accepts whatever the pin resolves to now.
+    // The rules, each with its own case and one exit: `--approve` names the
+    // commit the pin must resolve to (checked before any "unchanged"
+    // shortcut, so a wrong approval never passes silently); a matching
+    // approval or a `--re-approve` accepts whatever the store held; with
+    // nothing approved, a first install is approved by the invocation
+    // itself, an unchanged pin passes, and a moved pin refuses.
+    let refusal = match (approval, recorded) {
+        (Some(Approval::Approve(approved)), _) if approved != &resolved.commit => Some(format!(
+            "extension '{name}' resolves to commit {}, not the approved commit {approved}; \
+             nothing installed",
+            resolved.commit
+        )),
+        (Some(Approval::Approve(_) | Approval::ReApprove), _) => None,
+        (None, None) => None,
+        (None, Some(recorded)) if recorded == resolved => None,
+        (None, Some(recorded)) => Some(format!(
+            "extension '{name}' is pinned to {}@{} (commit {}, asset sha256 {}); {}@{} now \
+             resolves to commit {}, asset sha256 {}; refusing before any fetch — re-approve \
+             with --re-approve or --approve <commit-sha>",
+            recorded.repo,
+            recorded.tag,
+            recorded.commit,
+            recorded.asset_sha256,
+            resolved.repo,
+            resolved.tag,
+            resolved.commit,
+            resolved.asset_sha256
+        )),
     };
-    // An approval that reached here named the resolved commit; a
-    // re-approval or an unchanged pin accepts it too.
-    if recorded == resolved || re_approve || approve.is_some() {
-        return Ok(());
-    }
-    Err(InstallError::Runtime(format!(
-        "extension '{name}' is pinned to {}@{} (commit {}, asset sha256 {}); {}@{} now resolves \
-         to commit {}, asset sha256 {}; refusing before any fetch — re-approve with --re-approve \
-         or --approve <commit-sha>",
-        recorded.repo,
-        recorded.tag,
-        recorded.commit,
-        recorded.asset_sha256,
-        resolved.repo,
-        resolved.tag,
-        resolved.commit,
-        resolved.asset_sha256
-    )))
+    refusal.map_or(Ok(()), |detail| Err(InstallError::Runtime(detail)))
 }
 
 /// Unpack a tarball into `staged` and run the staged-package checks
@@ -409,20 +517,20 @@ pub(super) fn compare_pin(
 /// manifest (the caller reads the version from it for the loud line).
 fn unpack_and_check(name: &str, tarball: &[u8], staged: &Path) -> Result<Manifest, InstallError> {
     let members = unpack::unpack(tarball, staged)?;
-    let manifest_bytes = std::fs::read(staged.join("extension.json")).map_err(|e| {
+    let manifest_name = crate::extensions::registry::MANIFEST_FILE;
+    let manifest_bytes = std::fs::read(staged.join(manifest_name)).map_err(|e| {
         InstallError::Runtime(format!(
-            "the package tarball does not carry a readable extension.json: {e}"
+            "the package tarball does not carry a readable {manifest_name}: {e}"
         ))
     })?;
-    let manifest: Manifest = serde_json::from_slice(&manifest_bytes)
-        .map_err(|e| InstallError::Usage(format!("extension '{name}': invalid manifest: {e}")))?;
+    let manifest = decode_manifest(name, &manifest_bytes)?;
     check_manifest(name, &manifest)?;
     let Manifest::Command(command) = &manifest;
     // The member accounting (§2): exactly the files the manifest accounts
     // for — `extension.json` and the executable — nothing else, in any
     // order.
     let mut accounted = vec![
-        "extension.json".to_string(),
+        crate::extensions::registry::MANIFEST_FILE.to_string(),
         command.executable.display().to_string(),
     ];
     let mut carried: Vec<String> = members;

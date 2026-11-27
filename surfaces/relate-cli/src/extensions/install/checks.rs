@@ -55,6 +55,15 @@ pub(super) fn check_reserved_words(name: &str) -> Result<(), InstallError> {
 /// and the protocol the host speaks.
 pub(super) fn check_manifest(name: &str, manifest: &Manifest) -> Result<(), InstallError> {
     let Manifest::Command(command) = manifest;
+    // An empty executable is not a path at all: it would join to the
+    // package directory itself (the loose-files tiers' staging and the
+    // URL join both take it as a relative path), so it refuses here with
+    // the manifest class rather than surfacing as a staging IO error.
+    if command.executable.as_os_str().is_empty() {
+        return Err(InstallError::Usage(format!(
+            "extension '{name}': the manifest's executable path is empty"
+        )));
+    }
     // The escaping-executable rule (ADR-0429 §2): the executable resolves
     // only inside the package directory — the extensions root's one
     // containment predicate.

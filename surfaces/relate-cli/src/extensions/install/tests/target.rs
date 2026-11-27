@@ -176,13 +176,11 @@ fn a_tier_crossing_replace_refuses_at_land_time_even_though_check_target_saw_the
     let staged = staging_dir(&world);
     let trust_file = world.trust_file();
     let mut trust = TrustStore::load(&trust_file).unwrap();
-    let args = InstallArgs {
-        name: "greet".to_string(),
-        source: InstallSource::From(source.display().to_string()),
-        force: false,
-        re_approve: false,
-        approve: None,
-    };
+    let args = install_args(
+        "greet",
+        InstallSource::From(source.display().to_string()),
+        None,
+    );
 
     let err = stage_and_land(
         &world.extensions_dir(),

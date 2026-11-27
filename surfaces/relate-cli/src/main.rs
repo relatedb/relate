@@ -69,6 +69,11 @@ mod feedback_ask;
 #[cfg(feature = "fetch-params")]
 mod fetch_params;
 mod flags;
+// The one GitHub web-URL vocabulary: the host recognition and
+// owner/repo/verb/tail split every fetcher that accepts a pasted
+// github.com URL shares (`--load`'s store rule and the extension
+// install's package rule each state their policy over it).
+mod github_url;
 mod help;
 #[cfg(feature = "info")]
 mod info_cmd;

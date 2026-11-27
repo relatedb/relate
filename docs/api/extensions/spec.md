@@ -523,7 +523,7 @@ Two verbs are the extension program's reserved words (ADR-0429 §1):
 ```text
 relate extension init <name> [--lang sh|py|ts|rust]
 relate extension install <name> [--github REPO@TAG|@SHA] [--url URL]
-                               [--from DIR] [--version V] [--force]
+                               [--from DIR|URL] [--version V] [--force]
                                [--re-approve | --approve SHA]
 relate extension list [--available | --trust]
 relate extension remove <name> [--forget-pin]
@@ -570,7 +570,16 @@ the release channel and its one signing root (`extensions.json` beside
 a package from a GitHub release pinned to a commit (below); `--from DIR` installs an
 unpacked package directory offline — the CI and air-gap path, the
 executable resolving inside the directory it names (an
-intermediate-directory symlink is a refusal); `--url URL` is the
+intermediate-directory symlink is a refusal), and `--from URL` the same
+loose-files layout over the network — the URL names the manifest (a last
+path segment ending in `.json`) or a path `extension.json` is appended
+to, a pasted `github.com` `blob`/`tree` URL is rewritten to its raw form
+first (a GitHub page that names no content — a bare repository URL, a
+URL stopped at the verb — is refused with the form that works), and the
+executable is fetched from the manifest's own folder or a
+relative subfolder of it (an empty or escaping path is a refusal before
+the executable fetch; third-party tier, the same transport gate as `--url`);
+`--url URL` is the
 explicit third-party trust act, https only — a non-https URL is a usage
 error before any fetch; every install runs the same manifest, protocol
 and collision checks and records provenance; nothing pre-seeds, nothing
@@ -637,8 +646,8 @@ record.
 
 The result is the tier ladder's fourth rung: first-party (the signed
 channel), github-pin (a commit-pinned GitHub release), third-party
-(`--url`, unsigned — the invocation is the act), local (`--from`, the
-directory is the act).
+(`--url` and `--from URL`, unsigned — the invocation is the act), local
+(`--from DIR`, the directory is the act).
 
 The importer extraction has landed (ADR-0431 §11): `fs-to-graph` and
 `git-to-graph` are first-party extension crates speaking MCP stdio — the

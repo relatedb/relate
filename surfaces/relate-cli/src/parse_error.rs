@@ -288,9 +288,18 @@ pub(crate) fn resolve_access(slot: Option<relate::OpenMode>) -> relate::OpenMode
 /// [`flag_once`] cannot drift apart.
 fn once(command: &str, flag: &str, taken: bool) -> Result<(), ParseError> {
     if taken {
-        return Err(format!("{command} {flag} may be given only once").into());
+        return Err(repeat_error(command, flag));
     }
     Ok(())
+}
+
+/// The once-only policy's one prose (LABS-465): the usage error for a
+/// flag that was already taken — [`once`], [`set_once`] and [`flag_once`]
+/// all word it through here, and a grammar that parks a **typed** value
+/// (the install grammar's source flags) consults it directly, so the
+/// policy's spelling has one home.
+pub(crate) fn repeat_error(command: &str, flag: &str) -> ParseError {
+    format!("{command} {flag} may be given only once").into()
 }
 
 /// The once-only policy for a repeated **value** flag: park `value` in

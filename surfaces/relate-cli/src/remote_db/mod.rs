@@ -41,29 +41,45 @@ pub(crate) struct RemoteDb {
     https_only: bool,
 }
 
-/// The `http(s)` scheme split of a remote value — the one scheme
-/// vocabulary this module classifies by. `Some((scheme, is_https, rest))` only for
-/// an `http`/`https` URL (the scheme compares case-insensitively, a URL's
-/// scheme is case-insensitive per RFC 3986, so `HTTPS://…` is the same
-/// remote value as `https://…`); `None` for every other `scheme://` form
-/// and every non-URL, which are local paths the engine answers for itself
-/// (ADR-0044). [`is_remote_uri`] and [`plan`] both consume this one split,
-/// so the predicate and the classifier can never disagree about a value.
-fn remote_uri_parts(uri: &str) -> Option<(&str, bool, &str)> {
-    let (scheme, rest) = uri.split_once("://")?;
-    match scheme.to_ascii_lowercase().as_str() {
-        "https" => Some((scheme, true, rest)),
-        "http" => Some((scheme, false, rest)),
-        _ => None,
+/// One remote URI, split once: the plaintext decision and the part after
+/// `://`, carried beside the whole URL — so no caller re-joins the URL
+/// from its parts. The scheme test is the crate's one
+/// ([`crate::plaintext::is_http_scheme`], ASCII-case-insensitive per RFC
+/// 3986, so `HTTPS://…` is the same remote value as `https://…`); every
+/// other `scheme://` form and every non-URL is a local path the engine
+/// answers for itself (ADR-0044).
+#[derive(Debug, Clone, Copy)]
+struct RemoteUri<'a> {
+    /// The whole URL, exactly as the invoker spelled it.
+    uri: &'a str,
+    /// Whether the scheme is `https` — the plaintext policy's input.
+    https: bool,
+    /// Everything after `://`.
+    rest: &'a str,
+}
+
+impl<'a> RemoteUri<'a> {
+    /// Split `uri` when its scheme is `http`/`https` (ASCII-case-
+    /// insensitive, like every URL scheme); `None` for every other value.
+    fn parse(uri: &'a str) -> Option<Self> {
+        let (scheme, rest) = crate::plaintext::split_scheme(uri)?;
+        if !crate::plaintext::is_http_scheme(uri) {
+            return None;
+        }
+        Some(Self {
+            uri,
+            https: scheme.eq_ignore_ascii_case("https"),
+            rest,
+        })
     }
 }
 
 /// Whether a value is an `http(s)` URL — the one scheme vocabulary
-/// [`remote_uri_parts`] splits, shared with the `--database` refusal that
+/// [`RemoteUri`] splits, shared with the `--database` refusal that
 /// keeps the target axis local (a URL is a `--load` source, never a store
 /// to open).
 pub(crate) fn is_remote_uri(uri: &str) -> bool {
-    remote_uri_parts(uri).is_some()
+    RemoteUri::parse(uri).is_some()
 }
 
 /// The whole pure answer for one `--load` value: `Ok(None)` for a local
@@ -81,11 +97,10 @@ pub(crate) fn is_remote_uri(uri: &str) -> bool {
 /// happens here, before any fetch, naming the `.rl`-shaped URL that works in
 /// its place.
 pub(crate) fn plan(uri: &str, safe_mode: bool) -> Result<Option<RemoteDb>, String> {
-    let Some((scheme, https, rest)) = remote_uri_parts(uri) else {
+    let Some(remote) = RemoteUri::parse(uri) else {
         return Ok(None);
     };
-    let fetch_url =
-        validate_url(scheme, https, rest).map_err(|e| format!("invalid --load: {e}"))?;
+    let fetch_url = validate_url(remote).map_err(|e| format!("invalid --load: {e}"))?;
     if safe_mode {
         return Err(
             "--safe refuses a remote --load source — a downloaded store is untrusted input, \
@@ -95,7 +110,7 @@ pub(crate) fn plan(uri: &str, safe_mode: bool) -> Result<Option<RemoteDb>, Strin
     }
     Ok(Some(RemoteDb {
         fetch_url,
-        https_only: https,
+        https_only: remote.https,
     }))
 }
 
@@ -137,12 +152,12 @@ pub(crate) fn cleanup_staged() {
 /// The URL-shape checks, one step: the plaintext scheme policy, the GitHub
 /// file-URL rewrite, and the bundle requirement, in that order — each
 /// refusal words itself; [`plan`] prefixes them all once.
-fn validate_url(scheme: &str, https: bool, rest: &str) -> Result<String, String> {
-    if rest.is_empty() {
+fn validate_url(remote: RemoteUri<'_>) -> Result<String, String> {
+    if remote.rest.is_empty() {
         return Err("empty URL".into());
     }
-    require_secure_scheme(https, rest)?;
-    let fetch_url = rewrite_github_file_url(scheme, rest)?;
+    require_secure_scheme(remote.https, remote.rest)?;
+    let fetch_url = rewrite_github_file_url(remote.uri)?;
     require_bundle_path(&fetch_url)?;
     Ok(fetch_url)
 }
@@ -164,78 +179,72 @@ fn require_secure_scheme(https: bool, rest: &str) -> Result<(), String> {
     ))
 }
 
-/// The GitHub file-URL rewrite, one pure step over a URL [`plan`] already
-/// split into `scheme` and the part after `://`: a **blob** link
-/// (`github.com/<owner>/<repo>/blob/<ref>/<path>`, the shareable page URL)
-/// or GitHub's own **raw** verb
-/// (`github.com/<owner>/<repo>/raw/<ref>/<path>`, which 302s to the bytes)
-/// becomes `raw.githubusercontent.com/<owner>/<repo>/<ref>/<path>` — one
-/// request straight at the bytes instead of a redirect hop. The same path
-/// on `www.github.com` rewrites alike. Every other host — a raw URL, a
-/// loopback server, anyone else's file host — passes through unchanged, and
-/// a `github.com` URL that is not a link to one file (a repository, tree,
-/// or other-verb URL) is refused with the form that works.
-fn rewrite_github_file_url(scheme: &str, rest: &str) -> Result<String, String> {
-    // A plain non-GitHub URL keeps its scheme as given (case and all). The
-    // host check rides the shared authority extraction, so a `:port` or
-    // userinfo@ spelling of github.com rewrites like the bare host does.
-    let path = rest.split_once('/').map_or("", |(_, path)| path);
-    let host = authority_host(rest);
-    // Host comparison is ASCII-case-insensitive, like the loopback check
-    // below: a mixed-case `GitHub.com` URL is the same host to a browser and
-    // must not skip the rewrite.
-    if !host.eq_ignore_ascii_case("github.com") && !host.eq_ignore_ascii_case("www.github.com") {
-        return Ok(format!("{scheme}://{rest}"));
-    }
-    let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
-    // owner/repo/<verb>/[<ref>/]<path-to-file> — the blob form needs all
-    // five: a bare repository URL (two segments) and a blob link whose
-    // ref swallows the file path (three or four) are folder-shaped.
-    if segments.len() < 3 {
-        return Err(format!(
+/// The GitHub file-URL rewrite, `--load`'s policy over the crate's one
+/// GitHub web-URL vocabulary ([`crate::github_url`], REL8-2381's hoist —
+/// the mechanism is shared with the extension install, the policy is
+/// this store rule's alone): a **blob** link (the shareable page URL) or
+/// GitHub's own **raw** verb becomes
+/// `raw.githubusercontent.com/<owner>/<repo>/<ref>/<path>` — one request
+/// straight at the bytes instead of a redirect hop. Every other host
+/// passes through unchanged, and a `github.com` URL that is not a link
+/// to one file (a repository, tree, or other-verb URL) is refused with
+/// the form that works: a store is a single `.rl` bundle, never a
+/// folder.
+fn rewrite_github_file_url(uri: &str) -> Result<String, String> {
+    match crate::github_url::parse(uri) {
+        // A plain non-GitHub URL keeps its scheme as given (case and all)
+        // — the vocabulary's `Other`, passed back exactly as it arrived.
+        crate::github_url::GithubWebUrl::Other => Ok(uri.to_string()),
+        crate::github_url::GithubWebUrl::Repo { owner, repo } => Err(format!(
             "a GitHub repository URL is not a single-file store; point at a .rl bundle file: {}",
-            blob_hint(scheme, segments.first().copied(), segments.get(1).copied())
-        ));
-    }
-    let (owner, repo, verb) = (segments[0], segments[1], segments[2]);
-    let tail = &segments[3..];
-    match verb {
-        // Both are links to one file's bytes: `blob` is the page URL people
-        // copy, `raw` is GitHub's own redirecting verb.
-        "blob" | "raw" => {}
-        "tree" => {
-            return Err(format!(
-                "a GitHub tree URL is a folder, not a single-file store; point at a .rl bundle \
-                 file inside it: {}",
-                blob_hint(scheme, Some(owner), Some(repo))
-            ));
+            blob_hint(owner.as_deref(), repo.as_deref())
+        )),
+        crate::github_url::GithubWebUrl::Web {
+            owner,
+            repo,
+            verb,
+            tail,
+        } => {
+            let hint = || blob_hint(Some(&owner), Some(&repo));
+            match verb {
+                // A link to one file's bytes: `blob` is the page URL
+                // people copy, `raw` is GitHub's own redirecting verb.
+                crate::github_url::WebVerb::Blob | crate::github_url::WebVerb::Raw => {}
+                crate::github_url::WebVerb::Tree => {
+                    return Err(format!(
+                        "a GitHub {} URL is a folder, not a single-file store; point at a .rl \
+                         bundle file inside it: {}",
+                        verb.as_str(),
+                        hint()
+                    ));
+                }
+                crate::github_url::WebVerb::Other(_) => {
+                    return Err(format!(
+                        "a GitHub {} URL is not a single-file store; the blob or raw form \
+                         fetches the file's bytes: {}",
+                        verb.as_str(),
+                        hint()
+                    ));
+                }
+            }
+            if tail.is_empty() {
+                return Err(format!(
+                    "a GitHub {} URL needs a file path after the ref: {}",
+                    verb.as_str(),
+                    hint()
+                ));
+            }
+            Ok(crate::github_url::raw_content_url(&owner, &repo, &tail))
         }
-        other => {
-            return Err(format!(
-                "a GitHub {other} URL is not a single-file store; the blob or raw form fetches \
-                 the file's bytes: {}",
-                blob_hint(scheme, Some(owner), Some(repo))
-            ));
-        }
     }
-    if tail.is_empty() {
-        return Err(format!(
-            "a GitHub {verb} URL needs a file path after the ref: {}",
-            blob_hint(scheme, Some(owner), Some(repo))
-        ));
-    }
-    Ok(format!(
-        "https://raw.githubusercontent.com/{owner}/{repo}/{}",
-        tail.join("/")
-    ))
 }
 
 /// The canonical blob URL every GitHub refusal points at, with the owner and
 /// repo filled in when the URL carried them (`OWNER`/`REPO` otherwise) — one
 /// spelling, so the form the errors teach cannot drift between the arms.
-fn blob_hint(scheme: &str, owner: Option<&str>, repo: Option<&str>) -> String {
+fn blob_hint(owner: Option<&str>, repo: Option<&str>) -> String {
     format!(
-        "{scheme}://github.com/{}/{}/blob/REF/PATH.{}",
+        "https://github.com/{}/{}/blob/REF/PATH.{}",
         owner.unwrap_or("OWNER"),
         repo.unwrap_or("REPO"),
         relate_storage::BUNDLE_EXTENSION,
@@ -247,8 +256,7 @@ fn blob_hint(scheme: &str, owner: Option<&str>, repo: Option<&str>) -> String {
 /// predicate decides, so `.rl` and the legacy v0.16 `.cl` are admitted alike
 /// (ADR-0517 §5).
 fn require_bundle_path(url: &str) -> Result<(), String> {
-    let no_query = url.split(['?', '#']).next().unwrap_or(url);
-    let last = no_query.rsplit('/').next().unwrap_or(no_query);
+    let last = crate::plaintext::last_segment(url);
     if relate_storage::is_bundle_path(std::path::Path::new(last)) {
         Ok(())
     } else {

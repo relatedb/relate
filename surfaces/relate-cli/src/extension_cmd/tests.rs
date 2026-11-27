@@ -96,6 +96,47 @@ fn install_reads_its_flags_in_any_order() {
     assert!(!spec.force);
 }
 
+/// The `--from` value's DIR-or-URL classification happens once, here at
+/// the grammar boundary (ADR-0431 §5): an https/http value is the remote
+/// form's typed variant (the third-party tier), anything else the local
+/// directory's (the local tier) — the flow never re-sniffs the string.
+#[test]
+fn install_classifies_the_from_value_into_the_dir_and_url_variants() {
+    for url in [
+        "https://github.com/relatedb/relate/blob/main/docs/api/extensions/examples/extension.bash.json",
+        "https://example.test/pkg",
+        "http://127.0.0.1:9/pkg",
+    ] {
+        let parsed =
+            parse_extension_args(&args(&["install", "greet", "--from", url])).unwrap();
+        let ExtensionAction::Install(spec) = &parsed else {
+            panic!("the install action");
+        };
+        assert_eq!(
+            spec.source,
+            InstallSource::FromUrl(url.to_string()),
+            "{url}"
+        );
+        assert_eq!(
+            spec.source.tier(),
+            crate::extensions::provenance::Tier::ThirdParty,
+            "{url}"
+        );
+    }
+    for dir in ["/pkgs/git-to-graph", "./pkg", "ftp://example.test/pkg"] {
+        let parsed = parse_extension_args(&args(&["install", "greet", "--from", dir])).unwrap();
+        let ExtensionAction::Install(spec) = &parsed else {
+            panic!("the install action");
+        };
+        assert_eq!(spec.source, InstallSource::From(dir.to_string()), "{dir}");
+        assert_eq!(
+            spec.source.tier(),
+            crate::extensions::provenance::Tier::Local,
+            "{dir}"
+        );
+    }
+}
+
 #[cfg(feature = "extension-install")]
 #[test]
 fn install_rejects_each_grammar_violation() {
@@ -153,6 +194,46 @@ fn install_rejects_each_grammar_violation() {
     }
 }
 
+/// The source-flag refusals are order-independent: the second flag is
+/// refused the moment it arrives, but the text names the pair in the
+/// grammar's canonical order — whichever of the two came first in argv.
+#[cfg(feature = "extension-install")]
+#[test]
+fn the_source_flag_refusals_do_not_depend_on_argv_order() {
+    for argv in [
+        &["install", "greet", "--from", "d", "--url", "u"][..],
+        &["install", "greet", "--url", "u", "--from", "d"],
+    ] {
+        let err = err_of(argv);
+        assert!(
+            err.contains(
+                "--url and --from are mutually exclusive (they both name the install source)"
+            ),
+            "{err}"
+        );
+    }
+    for argv in [
+        &["install", "greet", "--url", "u", "--github", "o/r@v1"],
+        &["install", "greet", "--github", "o/r@v1", "--url", "u"],
+        &["install", "greet", "--from", "d", "--github", "o/r@v1"],
+    ] {
+        let err = err_of(argv);
+        assert!(
+            err.contains(
+                "--github is mutually exclusive with --url and --from \
+                 (each names the install source)"
+            ),
+            "{err}"
+        );
+    }
+    // The same source flag twice keeps the once-only refusal, and a
+    // repeated --github is the once-only text, not the pair text.
+    assert_eq!(
+        err_of(&["install", "greet", "--github", "o/r@v1", "--github", "o/r@v2"]),
+        "extension install --github may be given only once"
+    );
+}
+
 #[test]
 fn the_install_action_parses_in_every_build() {
     // ADR-0137: the grammar is ungated — the flags parse identically in
@@ -166,8 +247,7 @@ fn the_install_action_parses_in_every_build() {
             name: "greet".into(),
             source: InstallSource::Url("x".into()),
             force: true,
-            re_approve: false,
-            approve: None,
+            approval: None,
         })
     );
     assert_eq!(parsed.as_str(), "install");
@@ -283,7 +363,7 @@ fn github_parses_a_tag_or_a_commit_and_carries_a_re_approval() {
             pin: GithubPin::Tag("v1.2.3".to_string()),
         })
     );
-    assert!(!spec.re_approve && spec.approve.is_none());
+    assert_eq!(spec.approval, None);
 
     let parsed = parse_extension_args(&args(&[
         "install",
@@ -305,7 +385,7 @@ fn github_parses_a_tag_or_a_commit_and_carries_a_re_approval() {
         })
     );
     // `--approve` normalizes the commit spelling.
-    assert_eq!(spec.approve.as_deref(), Some(COMMIT));
+    assert_eq!(spec.approval, Some(Approval::Approve(COMMIT.to_string())));
 
     let parsed = parse_extension_args(&args(&[
         "install",
@@ -318,8 +398,7 @@ fn github_parses_a_tag_or_a_commit_and_carries_a_re_approval() {
     let ExtensionAction::Install(spec) = &parsed else {
         panic!("the install action");
     };
-    assert!(spec.re_approve);
-    assert!(spec.approve.is_none());
+    assert_eq!(spec.approval, Some(Approval::ReApprove));
 }
 
 #[test]

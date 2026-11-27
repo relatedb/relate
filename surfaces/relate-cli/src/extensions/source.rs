@@ -10,9 +10,9 @@
 use crate::extensions::provenance::Tier;
 
 /// Where a package comes from (ADR-0431 §3, §5–§6; ADR-0449): the signed
-/// channel, the GitHub release pinned to a commit, or one of the two
-/// explicit trust acts — mutually exclusive at the grammar boundary, so
-/// exactly one shape ever reaches the flow.
+/// channel, the GitHub release pinned to a commit, or one of the explicit
+/// trust acts — mutually exclusive at the grammar boundary, so exactly one
+/// shape ever reaches the flow.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum InstallSource {
     /// The first-party channel (§4): the signed index's row for `name`,
@@ -33,9 +33,28 @@ pub(crate) enum InstallSource {
     /// `--from DIR` (§5): the local directory trust act, `pull --from`'s
     /// posture.
     From(String),
+    /// `--from URL` (§5's remote form): the loose-files package at a URL —
+    /// the manifest (or a path `extension.json` is appended to) plus the
+    /// executable beside it, in the manifest's folder or a relative
+    /// subfolder. The third-party tier (§6's posture): the transport gate
+    /// is the act's one leg of integrity, exactly the `--url` tier's.
+    FromUrl(String),
 }
 
 impl InstallSource {
+    /// The flag that names this source (ADR-0431 §3): the grammar's
+    /// once-only and pair refusals read the spelling from the variant
+    /// itself instead of carrying it alongside. `Channel` is the absence
+    /// of a source flag — the grammar never parks it.
+    pub(crate) fn install_flag(&self) -> Option<&'static str> {
+        match self {
+            Self::Url(_) => Some("--url"),
+            Self::From(_) | Self::FromUrl(_) => Some("--from"),
+            Self::Github(_) => Some("--github"),
+            Self::Channel { .. } => None,
+        }
+    }
+
     /// The trust tier the source arrives by (ADR-0431 §7, ADR-0449): the
     /// tier is the source — the channel's signature, the GitHub pin's
     /// recorded commit, the URL's invocation, the directory's
@@ -44,11 +63,15 @@ impl InstallSource {
         match self {
             Self::Channel { .. } => Tier::FirstParty,
             Self::Github(_) => Tier::GithubPin,
-            Self::Url(_) => Tier::ThirdParty,
+            Self::Url(_) | Self::FromUrl(_) => Tier::ThirdParty,
             Self::From(_) => Tier::Local,
         }
     }
 }
+
+// The `--from` DIR-or-URL question is answered at the grammar boundary by
+// the crate's one http(s) scheme test (`plaintext::is_http_scheme`) — no
+// second classifier lives here.
 
 /// The `--github` value as parsed at the grammar boundary (ADR-0449): the
 /// repository slug and the pin the invoker named.
@@ -132,6 +155,53 @@ pub(crate) fn is_full_commit_sha(value: &str) -> bool {
     value.len() == 40 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
+/// What a `--github` install's re-approval flags say (ADR-0449): the one
+/// choice a flag names — `--re-approve`, or `--approve SHA` — carried in
+/// the arguments as `Option<Approval>`, so "neither flag" has one
+/// representation (the absence) and the impossible both-flags state needs
+/// no exclusion branch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Approval {
+    /// `--re-approve`: accept whatever the pin resolves to now.
+    ReApprove,
+    /// `--approve SHA`: accept only a resolution whose commit is `SHA`.
+    Approve(String),
+}
+
+impl Approval {
+    /// The flag that named this choice — the parking helper's projection,
+    /// the counterpart of [`InstallSource::install_flag`], total because
+    /// only a flag-named choice ever parks.
+    pub(crate) fn flag(&self) -> &'static str {
+        match self {
+            Self::ReApprove => "--re-approve",
+            Self::Approve(_) => "--approve",
+        }
+    }
+}
+
+/// The parsed `install` arguments: the grammar `extension_cmd` owns — the
+/// source is the typed [`InstallSource`] (parsed at the grammar boundary,
+/// in every build), so the flow never re-matches a nullable pair.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct InstallArgs {
+    /// The package name: the positional, the channel row key, and — when
+    /// the manifest agrees — the installed package directory's name.
+    pub(crate) name: String,
+    /// Where the package comes from (ADR-0431 §3, ADR-0449): the signed
+    /// channel by default, a commit-pinned GitHub release, or one of the
+    /// explicit trust acts (`--url`, `--from DIR`, `--from URL` — the
+    /// enum above enumerates them).
+    pub(crate) source: InstallSource,
+    /// `--force`: clobber a foreign target directory — one without the
+    /// provenance marker (§3). Never a collision or cross-tier bypass.
+    pub(crate) force: bool,
+    /// The `--re-approve` / `--approve <commit-sha>` choice (ADR-0449):
+    /// one value in place of the two flags' nullable pair, absent when
+    /// neither flag was given.
+    pub(crate) approval: Option<Approval>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -205,27 +275,15 @@ mod tests {
             GithubPin::Tag("abc123".to_string())
         );
     }
-}
 
-/// The parsed `install` arguments: the grammar `extension_cmd` owns — the
-/// source is the typed [`InstallSource`] (parsed at the grammar boundary,
-/// in every build), so the flow never re-matches a nullable pair.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct InstallArgs {
-    /// The package name: the positional, the channel row key, and — when
-    /// the manifest agrees — the installed package directory's name.
-    pub(crate) name: String,
-    /// Where the package comes from (ADR-0431 §3, ADR-0449): the signed
-    /// channel by default, a commit-pinned GitHub release, or one of the
-    /// two explicit trust acts.
-    pub(crate) source: InstallSource,
-    /// `--force`: clobber a foreign target directory — one without the
-    /// provenance marker (§3). Never a collision or cross-tier bypass.
-    pub(crate) force: bool,
-    /// `--re-approve` (ADR-0449): re-approve whatever the `--github` pin
-    /// resolves to now, replacing a recorded pin that no longer matches.
-    pub(crate) re_approve: bool,
-    /// `--approve <commit-sha>` (ADR-0449): re-approve only when the pin
-    /// resolves to exactly this commit.
-    pub(crate) approve: Option<String>,
+    /// The remote form is the third-party tier (§6's posture), the local
+    /// one the local tier — the tier is the source, never re-decided.
+    #[test]
+    fn the_from_variants_map_to_their_tiers() {
+        assert_eq!(
+            InstallSource::FromUrl("https://example.test/pkg".into()).tier(),
+            Tier::ThirdParty
+        );
+        assert_eq!(InstallSource::From("./pkg".into()).tier(), Tier::Local);
+    }
 }
