@@ -11,6 +11,7 @@ use relate_model::EntityKind;
 use super::growth::{top_k_complete, widen_extra};
 use super::{
     attach_score, check_binding_kind, search_spec_candidates, spec_window, Growth, SearchEnv,
+    SearchWindow,
 };
 use crate::exec::match_clause::match_clause;
 use crate::row::Row;
@@ -40,6 +41,41 @@ fn match_candidate(
         None,
         None,
     )
+}
+
+/// The fetch-and-widen skeleton both row sources share: fetch the ranked
+/// window, check the binding's kind, hand the round's *new* candidates (an
+/// earlier, narrower round is an identical prefix of the same ranking, so
+/// its candidates are skipped) to `take`, and widen until the top-K
+/// completion test holds for `needed` survivors. `take` returns the
+/// cumulative survivor count. The scans always grow — the binding is
+/// seeded per candidate, so a wider window can reach candidates the
+/// current one cannot — and termination is the index's (`may_widen`).
+fn grow_candidates(
+    env: &SearchEnv<'_>,
+    input: &Row,
+    search: &SearchClause,
+    binding_kind: Option<EntityKind>,
+    window: SearchWindow,
+    needed: usize,
+    mut take: impl FnMut(Vec<(Value, f64)>) -> Result<usize>,
+) -> Result<()> {
+    let mut extra = 0usize;
+    let mut processed = 0usize;
+    while let Some(mut fetched) =
+        search_spec_candidates(env, input, &search.spec, window, Growth::Widen(extra))?
+    {
+        check_binding_kind(binding_kind, fetched.kind)?;
+        let seen = fetched.candidates.len();
+        let fresh = fetched.candidates.split_off(processed.min(seen));
+        processed = seen;
+        let survivors = take(fresh)?;
+        if top_k_complete(fetched.may_widen, survivors, needed) {
+            break;
+        }
+        extra = widen_extra(extra, window.limit);
+    }
+    Ok(())
 }
 
 /// The un-deferred shape: the source specification reads none of this
@@ -72,58 +108,52 @@ pub(super) fn direct_search_rows(
     // expressions never read a pattern binding — the front rejects that
     // — so one statement serves every growth round; see `spec_window`).
     let window = spec_window(env, input, &search.spec)?;
-    // The binding is seeded per candidate, so a wider window always
-    // reaches candidates the current one cannot: the direct scan always
-    // grows, so its completion test needs no grows guard.
-    let mut out = Vec::new();
-    let mut extra = 0usize;
-    // Candidates already matched in an earlier (narrower, hence identical
-    // prefix of the same ranking) round.
-    let mut processed = 0usize;
     // The SKIP window's consumed survivors, and the kept ones — both
     // cumulative across growth rounds.
+    let mut out = Vec::new();
     let mut skipped = 0usize;
     let mut survivors = 0usize;
-    while let Some(fetched) =
-        search_spec_candidates(env, input, &search.spec, window, Growth::Widen(extra))?
-    {
-        check_binding_kind(binding_kind, fetched.kind)?;
-        // A satisfied window completes before any candidate is processed
-        // (LIMIT 0 is the loudest case: the limit is 0 on the first test).
-        if survivors >= window.limit {
-            break;
-        }
-        for candidate in fetched.candidates.into_iter().skip(processed) {
-            processed += 1;
-            let matched = match_candidate(
-                env,
-                input,
-                search,
-                candidate,
-                match_mode,
-                patterns,
-                where_clause,
-            )?;
-            if matched.is_empty() {
-                continue;
+    grow_candidates(
+        env,
+        input,
+        search,
+        binding_kind,
+        window,
+        window.limit,
+        |candidates| {
+            // A satisfied window completes before any candidate is
+            // processed (LIMIT 0 is the loudest case).
+            if window.satisfied(survivors) {
+                return Ok(survivors);
             }
-            // The candidate survives the whole MATCH: the SKIP window
-            // consumes its leading survivors, the LIMIT keeps the rest.
-            if skipped < window.skip {
-                skipped += 1;
-                continue;
+            for candidate in candidates {
+                let matched = match_candidate(
+                    env,
+                    input,
+                    search,
+                    candidate,
+                    match_mode,
+                    patterns,
+                    where_clause,
+                )?;
+                if matched.is_empty() {
+                    continue;
+                }
+                // The candidate survives the whole MATCH: the SKIP window
+                // consumes its leading survivors, the LIMIT keeps the rest.
+                if skipped < window.skip {
+                    skipped += 1;
+                    continue;
+                }
+                out.extend(matched);
+                survivors += 1;
+                if window.satisfied(survivors) {
+                    break;
+                }
             }
-            out.extend(matched);
-            survivors += 1;
-            if survivors >= window.limit {
-                break;
-            }
-        }
-        if top_k_complete(fetched.may_widen, survivors, window.limit) {
-            break;
-        }
-        extra = widen_extra(extra, window.limit);
-    }
+            Ok(survivors)
+        },
+    )?;
     Ok(out)
 }
 
@@ -156,43 +186,31 @@ pub(super) fn pre_bound_search_rows(
         return Ok(Vec::new());
     }
     let window = spec_window(env, input, &search.spec)?;
-    if window.skip > 0 || window.limit == 0 {
+    if window.empty_for_one_entity() {
         return Ok(Vec::new());
     }
-    let mut extra = 0usize;
-    // Candidates already compared in an earlier (narrower, hence identical
-    // prefix of the same ranking) round.
-    let mut processed = 0usize;
-    while let Some(fetched) =
-        search_spec_candidates(env, input, &search.spec, window, Growth::Widen(extra))?
-    {
-        check_binding_kind(binding_kind, fetched.kind)?;
+    // The window of one: the pre-bound entity's single verdict satisfies it.
+    let mut verdict = Vec::new();
+    grow_candidates(env, input, search, binding_kind, window, 1, |candidates| {
         // An entity appears once in its own ranking (a wider window only
         // appends lower-ranked entities), so its candidate is the row's
         // one verdict: kept rows or none, never another round.
-        let found = fetched
-            .candidates
+        let Some(candidate) = candidates
             .into_iter()
-            .skip(processed)
-            .find(|(candidate, _)| {
-                processed += 1;
-                bound.eq_non_null(candidate)
-            });
-        if let Some(candidate) = found {
-            return match_candidate(
-                env,
-                input,
-                search,
-                candidate,
-                match_mode,
-                patterns,
-                where_clause,
-            );
-        }
-        if !fetched.may_widen {
-            break;
-        }
-        extra = widen_extra(extra, window.limit);
-    }
-    Ok(Vec::new())
+            .find(|(candidate, _)| bound.eq_non_null(candidate))
+        else {
+            return Ok(0);
+        };
+        verdict = match_candidate(
+            env,
+            input,
+            search,
+            candidate,
+            match_mode,
+            patterns,
+            where_clause,
+        )?;
+        Ok(1)
+    })?;
+    Ok(verdict)
 }
