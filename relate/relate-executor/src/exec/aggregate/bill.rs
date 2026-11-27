@@ -5,7 +5,7 @@
 //! these, so the module sits beneath `table`, `columns`, `site` and `pool`
 //! and none of them imports another for it.
 
-use relate_core::tokens::{peak_hold, WorkspaceCharge};
+use relate_core::tokens::{peak_families, peak_hold, WorkspaceCharge};
 use relate_core::Result;
 
 use crate::overlay::{ExecGraph, RetainedTotal};
@@ -45,7 +45,7 @@ impl InputBill {
         }
         let retained = RetainedRows::measure(rows);
         let charge = WorkspaceCharge::retain(retained.bytes())?;
-        peak_hold("aggregation");
+        peak_hold(peak_families::AGGREGATION);
         Ok(Self {
             held: Some((retained, charge)),
         })
@@ -78,7 +78,7 @@ impl GroupBill {
         self.retained.add_bytes(graph, bytes)?;
         let total = self.workspace.bytes().saturating_add(bytes);
         self.workspace.resize_with(|| total)?;
-        peak_hold("aggregation");
+        peak_hold(peak_families::AGGREGATION);
         Ok(())
     }
 
