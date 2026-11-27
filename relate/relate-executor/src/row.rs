@@ -15,15 +15,24 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use relate_core::Value;
 use relate_names::SmallName;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// The most appended-name links one schema remembers: a hot bind site
+/// extends a handful of shapes by one name, so a short list serves it
+/// and the scan stays a few string compares.
+const APPENDED_LINKS: usize = 8;
+
 struct RowSchema {
     names: Vec<String>,
     index: HashMap<String, usize>,
+    /// REL8-2242: the schemas this one became by appending one name —
+    /// weak, so a link never keeps a shape alive past the thread-local
+    /// cache's own bound. `Row::insert` of a new name reads it before the
+    /// clone-every-name + hash-the-whole-list intern path.
+    appended: Mutex<Vec<(String, Weak<RowSchema>)>>,
 }
 
 /// Schemas at most this wide resolve a name by scanning `names`: a few
@@ -32,6 +41,35 @@ struct RowSchema {
 /// query variable names, so no hash seed is involved. Wider schemas keep
 /// the indexed lookup.
 const LINEAR_SLOTS: usize = 8;
+
+impl Clone for RowSchema {
+    /// A copy starts with no links: it may be mutated in place
+    /// (`schema_mut`), and a link is only valid for the names it was
+    /// recorded against.
+    fn clone(&self) -> Self {
+        Self {
+            names: self.names.clone(),
+            index: self.index.clone(),
+            appended: Mutex::new(Vec::new()),
+        }
+    }
+}
+
+impl std::fmt::Debug for RowSchema {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RowSchema")
+            .field("names", &self.names)
+            .finish()
+    }
+}
+
+impl PartialEq for RowSchema {
+    fn eq(&self, other: &Self) -> bool {
+        self.names == other.names
+    }
+}
+
+impl Eq for RowSchema {}
 
 impl RowSchema {
     fn slot(&self, key: &str) -> Option<usize> {
@@ -60,6 +98,7 @@ impl RowSchema {
             Arc::new(RowSchema {
                 names: Vec::new(),
                 index: HashMap::new(),
+                appended: Mutex::new(Vec::new()),
             })
         }))
     }
@@ -72,7 +111,45 @@ impl RowSchema {
         Arc::new(Self {
             names: names.to_vec(),
             index,
+            appended: Mutex::new(Vec::new()),
         })
+    }
+
+    /// Whether this schema may carry append links: the empty schema is one
+    /// process-wide `Arc` (`empty()`), so its one-name children come from
+    /// the thread-local intern cache, never a link on the shared singleton.
+    fn links_enabled(&self) -> bool {
+        !self.names.is_empty()
+    }
+
+    /// The schema this one becomes with `key` appended, when a prior
+    /// append recorded it and it is still alive.
+    fn appended_with(&self, key: &str) -> Option<Arc<RowSchema>> {
+        if !self.links_enabled() {
+            return None;
+        }
+        let links = self.appended.lock().expect("row schema links poisoned");
+        links
+            .iter()
+            .find(|(name, _)| name == key)
+            .and_then(|(_, child)| child.upgrade())
+    }
+
+    /// Record that appending `key` yields `child` (dead links drop first;
+    /// the oldest goes at the bound).
+    fn record_appended(&self, key: &str, child: &Arc<RowSchema>) {
+        if !self.links_enabled() {
+            return;
+        }
+        let mut links = self.appended.lock().expect("row schema links poisoned");
+        links.retain(|(_, weak)| weak.strong_count() > 0);
+        if links.iter().any(|(name, _)| name == key) {
+            return;
+        }
+        if links.len() >= APPENDED_LINKS {
+            links.remove(0);
+        }
+        links.push((key.to_string(), Arc::downgrade(child)));
     }
 }
 
@@ -301,9 +378,17 @@ impl Row {
         if let Some(slot) = self.schema.slot(&key) {
             return Some(std::mem::replace(&mut self.values[slot], value));
         }
+        if let Some(child) = self.schema.appended_with(&key) {
+            self.schema = child;
+            self.values.push(value);
+            return None;
+        }
         let mut names = self.schema.names.clone();
         names.push(key);
-        self.schema = interned_schema(&names);
+        let child = interned_schema(&names);
+        let key = names.last().expect("the appended name was just pushed");
+        self.schema.record_appended(key, &child);
+        self.schema = child;
         self.values.push(value);
         None
     }
@@ -360,7 +445,14 @@ impl Row {
         if Arc::get_mut(&mut self.schema).is_none() {
             self.schema = Arc::new((*self.schema).clone());
         }
-        Arc::get_mut(&mut self.schema).expect("schema was just made unique")
+        let schema = Arc::get_mut(&mut self.schema).expect("schema was just made unique");
+        // an in-place edit invalidates every recorded append link
+        schema
+            .appended
+            .get_mut()
+            .expect("row schema links poisoned")
+            .clear();
+        schema
     }
 
     fn rebuild(&mut self, keep: Vec<usize>) {
