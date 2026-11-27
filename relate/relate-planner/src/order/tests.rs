@@ -10,6 +10,7 @@ use super::*;
 use crate::plan_with_stats;
 use crate::stats::{ContainsCount, NoPatternStats};
 
+mod range;
 mod seek;
 mod selectivity;
 
