@@ -65,7 +65,14 @@ bookmark, _ := conn.Commit()                    // "" when nothing committed
   unsigned integers, floats, `bool`, `string`, slices / arrays,
   `map[string]T` (keys sorted) and structs by `json` tag; an unsupported
   type is refused before the statement runs with
-  `parameter "<name>": unsupported parameter type T`. Never concatenate
+  `parameter "<name>": unsupported parameter type T`. The client's own
+  value types (`Date`, `LocalTime`, `Time`, `LocalDateTime`, `DateTime`,
+  `Duration`, `Point`, `Vector`) bind through their typed putters — a
+  value read from a result round-trips as a parameter of the same kind at
+  any depth; a `DateTime` with a non-empty `Zone` binds by that zone (the
+  engine re-resolves the offset), and a `Vector` must carry exactly one of
+  `Ints` / `Floats`. Entities (`Node`, `Relationship`, `Path`) refuse —
+  pass `.Properties` (or a path's elements) explicitly. Never concatenate
   untrusted input into the statement text.
 - **Errors are typed, never message-sniffed** — engine and boundary failures
   are `*relate.Error` with `Code`, `GQLStatus`, `Stage`

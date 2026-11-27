@@ -136,11 +136,29 @@ value maps to one value kind:
 | `nil`, a nil pointer, interface, slice or map | `NULL` |
 | `bool` | `BOOL` |
 | any signed or unsigned integer | `INT` (an unsigned value above `MaxInt64` is refused) |
-| `float32`, `float64` | `FLOAT` |
+| `float32`, `float64` | `FLOAT` (NaN and ±Inf included) |
 | `string` | `STRING` (an interior NUL is kept) |
 | slice or array (`[]byte` included) | `LIST` |
 | `map[string]T` (string keys) | `MAP`, keys sorted before binding |
-| struct | `MAP` of its exported fields, keyed by the `json` tag name; `json:"-"` is skipped and `omitempty` drops a zero value |
+| `Date`, `LocalTime`, `Time`, `LocalDateTime`, `DateTime`, `Duration` | the matching temporal kind, from components — never ISO text |
+| `Point` | `POINT` (z crosses only when `Dimension` is 3) |
+| `Vector` | `VECTOR` — `Ints` through the integer putters, `Floats` through the floating ones |
+| struct (any other) | `MAP` of its exported fields, keyed by the `json` tag name; `json:"-"` is skipped and `omitempty` drops a zero value |
+
+The client's own scalar value types (the structs a result decodes into,
+above) bind through the typed putters — the walker's exact reverse — so a
+value read from a result passes back as a parameter of the same kind, at
+any depth (a list item, a map value, a struct field, behind a pointer). A
+`DateTime` with a non-empty `Zone` binds by that zone: the engine keeps
+the zone and resolves the offset at that wall clock, ignoring the
+`OffsetSeconds` the struct carried; an empty `Zone` binds offset-only. A
+`Time` binds offset-only — the kind keeps no zone id. A `Point` refuses a
+`Dimension` outside {2, 3}. A `Vector` binds from the slice its dtype's
+family names: `Ints` for the `INTEGER*` dtypes, `Floats` for the `FLOAT*`
+ones. Entities — `Node`, `Relationship`, `Path` — do not bind as
+parameters (no putter carries them, and a reflected struct MAP of their
+fields is a shape no query expects): pass `Node.Properties` /
+`Relationship.Properties`, or a path's elements, explicitly.
 
 A value the builder cannot bind is refused before the statement runs, as a
 plain `error` (not `*Error`). The message names the parameter, prefixed
@@ -150,9 +168,18 @@ plain `error` (not `*Error`). The message names the parameter, prefixed
 | Case | Message (after the prefix) |
 | --- | --- |
 | unsigned integer above `MaxInt64` | `unsigned value N exceeds the INT range` |
-| map whose key type is not a string | `map key type K is not a string` |
+| map whose key type is not a string (a nil map is null whatever its key type) | `map key type K is not a string` |
 | struct with no exported fields (`time.Time` among them) | `struct type T has no exported fields to bind` |
+| `Vector` carrying neither or both coordinate slices | `vector dtype D must carry exactly one coordinate slice, Ints or Floats` |
+| `Point` with a `Dimension` outside {2, 3} | `point dimension N is neither 2 nor 3` |
+| entity value (`Node`, `Relationship`, `Path`) | `entity type T does not bind as a parameter; pass its Properties (a Path: its elements) explicitly` |
+| a value nesting deeper than 100 levels (a cyclic value — a map holding itself, a self-referential struct pointer — reaches the same refusal) | `value nests deeper than 100 levels` |
 | any other type (channel, function, complex, …) | `unsupported parameter type T` |
+
+What a typed putter itself validates — a bad component date, a DST-gap
+wall clock, an srid that is no `point()` coordinate system, a coordinate
+outside the dtype's width — is the engine's refusal and comes back as a
+typed `*Error`, like any statement failure.
 
 A name, not a value, is refused outside that prefix shape: a parameter,
 key or field name holding an interior NUL never crosses the C boundary —

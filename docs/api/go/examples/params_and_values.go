@@ -52,4 +52,17 @@ func main() {
 	fmt.Println("who:", who["name"], who["age"])
 	fmt.Println("scores:", scores)
 	fmt.Printf("date: %04d-%02d-%02d\n", day.Year, day.Month, day.Day)
+
+	// A typed value read from a result binds back as its own kind through
+	// the typed putters — the walker's reverse, never a reflected map.
+	echo, err := conn.QueryParams(
+		"RETURN $d AS d, $d = date('2020-06-01') AS same",
+		map[string]any{"d": day})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	back := echo.Rows[0][0].(relate.Date)
+	same := echo.Rows[0][1].(bool)
+	fmt.Println("date round-trips:", back == day, same)
 }

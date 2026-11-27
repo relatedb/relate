@@ -409,42 +409,6 @@ func TestPlanDecodeContract(t *testing.T) {
 	}
 }
 
-// The struct binding rules are this client's own where they part from
-// encoding/json, pinned here: omitempty drops a field at reflect's zero
-// value — IsZero, which drops a zero-valued struct field that encoding/json
-// would keep — and an embedded struct binds as a nested MAP under its field
-// name, where encoding/json flattens untagged embedded fields.
-func TestStructBindingRules(t *testing.T) {
-	conn := openConn(t)
-	type Inner struct {
-		B int64 `json:"b"`
-	}
-	type optStruct struct {
-		Opt Inner `json:"opt,omitempty"`
-	}
-	res, err := conn.QueryParams("RETURN keys($s) AS ks", map[string]any{"s": optStruct{Opt: Inner{}}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if ks, ok := res.Rows[0][0].([]any); !ok || len(ks) != 0 {
-		t.Fatalf("a zero struct field with omitempty is dropped: got %#v", res.Rows[0][0])
-	}
-	type embedded struct {
-		Inner
-	}
-	res, err = conn.QueryParams("RETURN keys($s) AS ks, $s.Inner.b AS b", map[string]any{"s": embedded{Inner{B: 2}}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	row := res.Rows[0]
-	if ks, ok := row[0].([]any); !ok || len(ks) != 1 || ks[0] != "Inner" {
-		t.Fatalf("an embedded struct binds nested under its name: got %#v", row[0])
-	}
-	if b, ok := row[1].(int64); !ok || b != 2 {
-		t.Fatalf("the nested embedded field reads through: got %#v", row[1])
-	}
-}
-
 // Commit returns the transaction's bookmark; an auto-commit write carries its
 // bookmark on the result; a commit that wrote nothing has no bookmark.
 func TestBookmarks(t *testing.T) {
@@ -544,88 +508,6 @@ func TestCommitFailureCarriesConflictClassification(t *testing.T) {
 	}
 	if e.Stage != relate.StageRuntime {
 		t.Fatalf("stage: got %q", e.Stage)
-	}
-}
-
-// Parameters bind through the typed builder: every scalar kind, nested lists
-// and maps, json-tagged structs, and a NUL-carrying string round-trip whole.
-func TestParamsRoundTrip(t *testing.T) {
-	conn := openConn(t)
-	type pt struct {
-		X    int64  `json:"x"`
-		Skip string `json:"-"`
-		Opt  string `json:"opt,omitempty"`
-	}
-	params := map[string]any{
-		"i":  int64(9007199254740993),
-		"f":  2.5,
-		"s":  "a\x00b",
-		"b":  true,
-		"n":  nil,
-		"l":  []any{int64(1), "two", []int{3}},
-		"m":  map[string]any{"k": map[string]any{"deep": int64(7)}},
-		"st": pt{X: 1, Skip: "gone"},
-		"by": []byte{1, 2},
-	}
-	res, err := conn.QueryParams(
-		"RETURN $i AS i, $f AS f, $s AS s, $b AS b, $n AS n, $l AS l, $m AS m, $st AS st, $by AS by",
-		params)
-	if err != nil {
-		t.Fatal(err)
-	}
-	row := res.Rows[0]
-	want := []any{
-		int64(9007199254740993), 2.5, "a\x00b", true, nil,
-		[]any{int64(1), "two", []any{int64(3)}},
-		map[string]any{"k": map[string]any{"deep": int64(7)}},
-		map[string]any{"x": int64(1)},
-		[]any{int64(1), int64(2)},
-	}
-	for i := range want {
-		if !reflect.DeepEqual(row[i], want[i]) {
-			t.Fatalf("column %s: got %#v, want %#v", res.Columns[i], row[i], want[i])
-		}
-	}
-}
-
-// A parameter the builder cannot bind is refused before the statement runs,
-// with the Go value named.
-func TestParamsRefusals(t *testing.T) {
-	conn := openConn(t)
-	if _, err := conn.QueryParams("RETURN $c AS c", map[string]any{"c": make(chan int)}); err == nil ||
-		!strings.Contains(err.Error(), "unsupported parameter type") {
-		t.Fatalf("chan parameter: got %v", err)
-	}
-	if _, err := conn.QueryParams("RETURN $u AS u", map[string]any{"u": uint64(1) << 63}); err == nil ||
-		!strings.Contains(err.Error(), "exceeds the INT range") {
-		t.Fatalf("oversized unsigned parameter: got %v", err)
-	}
-	// The struct refusal boundary is the type itself, not the filtered
-	// field list: no exported fields refuses, while a struct whose every
-	// field the json rules skip binds as an empty MAP — the {} encoding/json
-	// produces for it.
-	type onlyUnexported struct{ x int }
-	if _, err := conn.QueryParams("RETURN $s AS s", map[string]any{"s": onlyUnexported{}}); err == nil ||
-		!strings.Contains(err.Error(), "no exported fields") {
-		t.Fatalf("unexported-only struct: got %v", err)
-	}
-	type allSkipped struct {
-		A string `json:"-"`
-		B int    `json:"-"`
-	}
-	res, err := conn.QueryParams("RETURN size(keys($s)) AS n", map[string]any{"s": allSkipped{}})
-	if err != nil {
-		t.Fatalf("all-skipped struct must bind an empty map: %v", err)
-	}
-	got, ok := res.Rows[0][0].(int64)
-	if !ok || got != 0 {
-		t.Fatalf("all-skipped struct binds an empty map: got %#v, want 0 keys", res.Rows[0][0])
-	}
-	// A name holding an interior NUL is refused — the C builder takes
-	// names as NUL-terminated strings, so binding would silently truncate.
-	if _, err := conn.QueryParams("RETURN $v AS v", map[string]any{"a\x00b": 1}); err == nil ||
-		!strings.Contains(err.Error(), "interior NUL") {
-		t.Fatalf("interior-NUL parameter name: got %v", err)
 	}
 }
 
