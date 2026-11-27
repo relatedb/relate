@@ -244,6 +244,30 @@ func cString(what, s string) (*C.char, error) {
 	return C.CString(s), nil
 }
 
+// withCString mints one NUL-terminated C string through cString and frees
+// it when use returns — the one ownership shape every NUL-terminated
+// argument crossing this boundary shares (guarded/guardedErr's
+// value-returning pair), so a call site cannot state the free itself or
+// forget it. The refusal cString itself makes (an interior NUL) crosses
+// as the error, untouched.
+func withCString[T any](what, s string, use func(*C.char) (T, error)) (T, error) {
+	c, err := cString(what, s)
+	if err != nil {
+		var zero T
+		return zero, err
+	}
+	defer C.free(unsafe.Pointer(c))
+	return use(c)
+}
+
+// withCStringErr is withCString for a use that returns only an error.
+func withCStringErr(what, s string, use func(*C.char) error) error {
+	_, err := withCString(what, s, func(c *C.char) (struct{}, error) {
+		return struct{}{}, use(c)
+	})
+	return err
+}
+
 func Open(uri string) (*Database, error) {
 	return open(uri, false)
 }
@@ -256,20 +280,17 @@ func OpenReadOnly(uri string) (*Database, error) {
 }
 
 func open(uri string, readOnly bool) (*Database, error) {
-	cUri, err := cString("database uri", uri)
-	if err != nil {
-		return nil, err
-	}
-	defer C.free(unsafe.Pointer(cUri))
 	var db C.relate_database
 	var errJSON *C.char
 	var st C.relate_status
-	if readOnly {
-		st = C.relate_database_open_read_only(cUri, &db, &errJSON)
-	} else {
-		st = C.relate_database_open(cUri, &db, &errJSON)
-	}
-	if err := statusErr(st, errJSON); err != nil {
+	if err := withCStringErr("database uri", uri, func(cUri *C.char) error {
+		if readOnly {
+			st = C.relate_database_open_read_only(cUri, &db, &errJSON)
+		} else {
+			st = C.relate_database_open(cUri, &db, &errJSON)
+		}
+		return statusErr(st, errJSON)
+	}); err != nil {
 		return nil, err
 	}
 	d := &Database{lifecycle: newLifecycle(callsOverlap), ptr: db}
@@ -293,12 +314,7 @@ func (d *Database) Connect() (*Connection, error) {
 // (ADR-0117): "neo4j", "system" or "system_ontologies", matched
 // case-insensitively. Connect is ConnectNamespace("neo4j").
 func (d *Database) ConnectNamespace(name string) (*Connection, error) {
-	cName, err := cString("namespace name", name)
-	if err != nil {
-		return nil, err
-	}
-	defer C.free(unsafe.Pointer(cName))
-	return d.connect(cName)
+	return withCString("namespace name", name, d.connect)
 }
 
 func (d *Database) connect(cName *C.char) (*Connection, error) {
@@ -333,14 +349,11 @@ func (c *Connection) Close() {
 // case-insensitively. It fails while an explicit transaction is open.
 func (c *Connection) SetNamespace(name string) error {
 	return guardedErr(&c.lifecycle, func() error {
-		cName, err := cString("namespace name", name)
-		if err != nil {
-			return err
-		}
-		defer C.free(unsafe.Pointer(cName))
-		var errJSON *C.char
-		st := C.relate_conn_set_namespace(c.ptr, cName, &errJSON)
-		return statusErr(st, errJSON)
+		return withCStringErr("namespace name", name, func(cName *C.char) error {
+			var errJSON *C.char
+			st := C.relate_conn_set_namespace(c.ptr, cName, &errJSON)
+			return statusErr(st, errJSON)
+		})
 	})
 }
 
@@ -414,26 +427,23 @@ func (c *Connection) Query(cypher string) (*Result, error) {
 // failure returns a *Error from the call's own out-param.
 func (c *Connection) QueryParams(cypher string, params map[string]any) (*Result, error) {
 	return guarded(&c.lifecycle, func() (*Result, error) {
-		q, err := cString("statement", cypher)
-		if err != nil {
-			return nil, err
-		}
-		defer C.free(unsafe.Pointer(q))
-		var root C.relate_params
-		if params != nil {
-			root = C.relate_params_new()
-			defer C.relate_params_free(root)
-			if err := bindParams(root, params); err != nil {
+		return withCString("statement", cypher, func(q *C.char) (*Result, error) {
+			var root C.relate_params
+			if params != nil {
+				root = C.relate_params_new()
+				defer C.relate_params_free(root)
+				if err := bindParams(root, params); err != nil {
+					return nil, err
+				}
+			}
+			var res C.relate_query_result
+			var errJSON *C.char
+			st := C.relate_query_params(c.ptr, q, root, &res, &errJSON)
+			if err := statusErr(st, errJSON); err != nil {
 				return nil, err
 			}
-		}
-		var res C.relate_query_result
-		var errJSON *C.char
-		st := C.relate_query_params(c.ptr, q, root, &res, &errJSON)
-		if err := statusErr(st, errJSON); err != nil {
-			return nil, err
-		}
-		defer C.relate_destroy_result(res)
-		return readResult(res)
+			defer C.relate_destroy_result(res)
+			return readResult(res)
+		})
 	})
 }

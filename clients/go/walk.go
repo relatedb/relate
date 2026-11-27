@@ -251,12 +251,12 @@ func properties(v C.relate_value) (map[string]any, error) {
 		// map_get takes a NUL-terminated key, so a key with an interior NUL
 		// cannot be looked up through the walker — cString refuses it
 		// rather than let a truncated name read a different key's value.
-		ckey, err := cString(fmt.Sprintf("map key %q", key), key)
+		child, err := withCString(fmt.Sprintf("map key %q", key), key, func(ckey *C.char) (C.relate_value, error) {
+			return C.relate_value_map_get(v, ckey), nil
+		})
 		if err != nil {
 			return nil, err
 		}
-		child := C.relate_value_map_get(v, ckey)
-		C.free(unsafe.Pointer(ckey))
 		if child == nil {
 			return nil, fmt.Errorf("ABI contract violated: walker lost map key %q", key)
 		}

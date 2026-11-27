@@ -17,6 +17,13 @@ import (
 	"unsafe"
 )
 
+// maxBindDepth bounds the reflection descent: a cyclic value (a map
+// holding itself, a self-referential struct pointer, a slice containing
+// itself) or a nesting deeper than this refuses with a typed error
+// instead of overflowing the stack — the bound encoding/json's cycle
+// detection stands for here, as a cap that also bounds runaway depth.
+const maxBindDepth = 100
+
 // bindParams writes a Go parameter map into a params builder root through the
 // typed putters (ADR-0502 §4). No JSON is produced: each Go value maps to one
 // putter, and a container maps to a child builder the root owns.
@@ -25,85 +32,166 @@ import (
 // every signed and unsigned integer → INT (an unsigned value above MaxInt64
 // is refused); every float → FLOAT; string → STRING; a slice or array (a
 // []byte included, which the engine reads as a list of INT) → LIST; a map
-// with string keys → MAP; a struct → MAP keyed by its exported fields' json
-// names (`json:"name"`, `json:"-"` skipped, `omitempty` drops zero values).
-// Any other Go type is refused with a typed error.
+// with string keys → MAP; this client's own scalar value types (value.go)
+// → their engine kinds through the typed putters, so a walker value
+// round-trips back as a parameter; an entity (Node, Relationship, Path)
+// refuses — pass its properties explicitly; any other struct → MAP keyed
+// by its exported fields' json names (`json:"name"`, `json:"-"` skipped,
+// `omitempty` drops zero values). Any other Go type is refused with a
+// typed error.
 //
 // The root is bound as one entry list, through the same bindEntries loop
 // every container uses.
 func bindParams(root C.relate_params, params map[string]any) error {
-	return bindEntries(root, mapEntries(reflect.ValueOf(params)), "parameter")
+	entries, err := mapEntries(reflect.ValueOf(params))
+	if err != nil {
+		return err
+	}
+	return bindEntries(root, entries, "parameter", maxBindDepth)
 }
 
-// bindReflect binds one value under name. A nil name appends to a LIST
-// builder; the engine's container rule decides, not this function.
-func bindReflect(p C.relate_params, name *C.char, rv reflect.Value) error {
-	if !rv.IsValid() {
+// bindReflect binds one value under name — one dispatch, stated once: the
+// absent-value predicate, the indirection unwrap, this client's own value
+// types through their typed putters, and the reflection kinds as the
+// fall-through. A nil name appends to a LIST builder; the engine's
+// container rule decides, not this function. depth is the remaining
+// recursion budget; see maxBindDepth.
+//
+// Precondition: rv is a valid, interface-able Value — every call site
+// hands one over (a map entry, a slice element, an exported struct field,
+// the Elem of a non-nil pointer), so an invalid Value is a caller bug
+// this function does not absorb as null.
+func bindReflect(p C.relate_params, name *C.char, rv reflect.Value, depth int) error {
+	if depth <= 0 {
+		return fmt.Errorf("value nests deeper than %d levels", maxBindDepth)
+	}
+	// The absent-value policy, one predicate consulted once: a nil
+	// interface, pointer, slice or map is the same absent value — null —
+	// whatever its element or key type (a nil Path included).
+	if isAbsent(rv) {
 		return putNull(p, name)
 	}
-	switch rv.Kind() {
-	case reflect.Interface, reflect.Pointer:
-		if rv.IsNil() {
-			return putNull(p, name)
-		}
-		return bindReflect(p, name, rv.Elem())
-	case reflect.Bool:
-		return putBool(p, name, rv.Bool())
-	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		return putInt(p, name, rv.Int())
-	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
-		u := rv.Uint()
-		if u > math.MaxInt64 {
-			return fmt.Errorf("unsigned value %d exceeds the INT range", u)
-		}
-		return putInt(p, name, int64(u))
-	case reflect.Float32, reflect.Float64:
-		return putFloat(p, name, rv.Float())
-	case reflect.String:
-		return putString(p, name, rv.String())
-	case reflect.Slice:
-		if rv.IsNil() {
-			return putNull(p, name)
-		}
-		return bindList(p, name, rv)
-	case reflect.Array:
-		return bindList(p, name, rv)
-	case reflect.Map:
-		if rv.Type().Key().Kind() != reflect.String {
-			return fmt.Errorf("map key type %s is not a string", rv.Type().Key())
-		}
-		if rv.IsNil() {
-			return putNull(p, name)
-		}
-		child, err := putContainer(p, name, false)
-		if err != nil {
-			return err
-		}
-		return bindEntries(child, mapEntries(rv), "key")
-	case reflect.Struct:
-		// The refusal boundary is the type itself, not the filtered field
-		// list: a struct whose every field the binding rules skip
-		// (json:"-", or omitempty at a zero value) binds as an empty MAP.
-		if !hasExportedField(rv.Type()) {
-			return fmt.Errorf("struct type %s has no exported fields to bind", rv.Type())
-		}
-		child, err := putContainer(p, name, false)
-		if err != nil {
-			return err
-		}
-		return bindEntries(child, jsonFields(rv), "field")
+	// Indirections unwrap before any type or kind question, so a *Date
+	// reaches the typed switch as a Date. Every descent into bindReflect
+	// costs one level, this one included: an interface pointing at itself
+	// (var i any; i = &i) unwraps forever otherwise, with no container on
+	// the path to stop it.
+	if indirect(rv.Kind()) {
+		return bindReflect(p, name, rv.Elem(), depth-1)
+	}
+	// The client's own value types (value.go) bind through their typed
+	// putters (ADR-0502 §4) — the same per-class table the JS client binds
+	// by — never as the reflected MAP the reflection arms would build from
+	// their exported fields. The scalar kinds bind; entities carry no
+	// putter (the walker's reverse has no node/relationship/path row) and
+	// refuse rather than bind a reflected MAP no query expects — their
+	// properties bind explicitly. Everything else falls through to the
+	// reflection kinds below.
+	switch v := rv.Interface().(type) {
+	case Date:
+		return putDate(p, name, v)
+	case LocalTime:
+		return putLocalTime(p, name, v)
+	case Time:
+		return putTime(p, name, v)
+	case LocalDateTime:
+		return putLocalDateTime(p, name, v)
+	case DateTime:
+		return putDateTime(p, name, v)
+	case Duration:
+		return putDuration(p, name, v)
+	case Point:
+		return putPoint(p, name, v)
+	case Vector:
+		return putVector(p, name, v)
+	case Node, Relationship, Path:
+		return fmt.Errorf("entity type %s does not bind as a parameter; pass its Properties (a Path: its elements) explicitly", rv.Type())
 	default:
-		return fmt.Errorf("unsupported parameter type %s", rv.Type())
+		switch rv.Kind() {
+		case reflect.Bool:
+			return putBool(p, name, rv.Bool())
+		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+			return putInt(p, name, rv.Int())
+		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+			u := rv.Uint()
+			if u > math.MaxInt64 {
+				return fmt.Errorf("unsigned value %d exceeds the INT range", u)
+			}
+			return putInt(p, name, int64(u))
+		case reflect.Float32, reflect.Float64:
+			return putFloat(p, name, rv.Float())
+		case reflect.String:
+			return putString(p, name, rv.String())
+		case reflect.Slice, reflect.Array:
+			return bindList(p, name, rv, depth)
+		case reflect.Map:
+			return bindMap(p, name, rv, depth)
+		case reflect.Struct:
+			return bindStruct(p, name, rv, depth)
+		default:
+			return fmt.Errorf("unsupported parameter type %s", rv.Type())
+		}
 	}
 }
 
-func bindList(p C.relate_params, name *C.char, rv reflect.Value) error {
-	child, err := putContainer(p, name, true)
+// indirect reports whether k is a kind this binder unwraps — an interface
+// or a pointer — the one home of the indirection vocabulary, beside
+// isAbsent's nil-able table.
+func indirect(k reflect.Kind) bool {
+	return k == reflect.Interface || k == reflect.Pointer
+}
+
+// isAbsent reports whether rv is the absent value: a nil interface,
+// pointer, slice or map. The one home of the null policy — the dispatch
+// consults it once, and no arm restates it.
+func isAbsent(rv reflect.Value) bool {
+	switch rv.Kind() {
+	case reflect.Interface, reflect.Pointer, reflect.Slice, reflect.Map:
+		return rv.IsNil()
+	}
+	return false
+}
+
+// bindMap binds a map as a MAP under name; the entries bind under "key" —
+// a non-string key kind refuses where its name would be minted, in
+// mapEntries. (A nil map is null, whatever its key type: bindReflect's
+// isAbsent answers that before this arm is reached.)
+func bindMap(p C.relate_params, name *C.char, rv reflect.Value, depth int) error {
+	entries, err := mapEntries(rv)
+	if err != nil {
+		return err
+	}
+	return bindContainer(p, name, "key", entries, depth)
+}
+
+// bindStruct binds a struct as a MAP of its exported fields under their
+// json names. The refusal boundary is the type itself, not the filtered
+// field list: a struct whose every field the binding rules skip
+// (json:"-", or omitempty at a zero value) binds as an empty MAP.
+func bindStruct(p C.relate_params, name *C.char, rv reflect.Value, depth int) error {
+	if !hasExportedField(rv.Type()) {
+		return fmt.Errorf("struct type %s has no exported fields to bind", rv.Type())
+	}
+	return bindContainer(p, name, "field", jsonFields(rv), depth)
+}
+
+// bindContainer mints an empty MAP under name and fills it with entries —
+// the one container-then-entries prologue bindMap and bindStruct share.
+func bindContainer(p C.relate_params, name *C.char, noun string, entries []entry, depth int) error {
+	child, err := putMap(p, name)
+	if err != nil {
+		return err
+	}
+	return bindEntries(child, entries, noun, depth)
+}
+
+func bindList(p C.relate_params, name *C.char, rv reflect.Value, depth int) error {
+	child, err := putList(p, name)
 	if err != nil {
 		return err
 	}
 	for i := 0; i < rv.Len(); i++ {
-		if err := bindReflect(child, nil, rv.Index(i)); err != nil {
+		if err := bindReflect(child, nil, rv.Index(i), depth-1); err != nil {
 			return fmt.Errorf("item %d: %w", i, err)
 		}
 	}
@@ -116,34 +204,40 @@ func bindList(p C.relate_params, name *C.char, rv reflect.Value) error {
 // noun their wrapped errors name. Names mint through cString, the C
 // boundary's one interior-NUL refusal, so map keys and json field names
 // are covered alike.
-func bindEntries(p C.relate_params, entries []entry, noun string) error {
+func bindEntries(p C.relate_params, entries []entry, noun string, depth int) error {
 	for _, e := range entries {
-		name, err := cString(fmt.Sprintf("%s %q", noun, e.name), e.name)
-		if err != nil {
+		// One label names the entry everywhere: the cString refusal
+		// self-describes with it, and the value's own error is wrapped
+		// with it inside the callback — so no message states it twice.
+		label := fmt.Sprintf("%s %q", noun, e.name)
+		if err := withCStringErr(label, e.name, func(name *C.char) error {
+			if err := bindReflect(p, name, e.value, depth-1); err != nil {
+				return fmt.Errorf("%s: %w", label, err)
+			}
+			return nil
+		}); err != nil {
 			return err
-		}
-		err = bindReflect(p, name, e.value)
-		C.free(unsafe.Pointer(name))
-		if err != nil {
-			return fmt.Errorf("%s %q: %w", noun, e.name, err)
 		}
 	}
 	return nil
 }
 
-// mapEntries returns a map's string-keyed entries sorted by key, so binding
-// is deterministic. The call sites carry the precondition — bindReflect
-// refuses a non-string key kind and bindParams is statically
-// map[string]any. A non-map here panics in MapKeys; a non-string key would
-// not panic but bind String's "<T Value>" placeholder names, which is why
-// the key-kind guard lives at the call site, not here.
-func mapEntries(rv reflect.Value) []entry {
+// mapEntries returns a map's entries sorted by key, so binding is
+// deterministic. The string-key invariant is enforced here, where the
+// names are minted: a non-string key kind refuses — a k.String() over it
+// would otherwise bind the "<T Value>" placeholder as the key's name.
+// A non-map panics in MapKeys, a caller's type error (bindMap has already
+// switched on Kind Map; bindParams is statically map[string]any).
+func mapEntries(rv reflect.Value) ([]entry, error) {
+	if rv.Type().Key().Kind() != reflect.String {
+		return nil, fmt.Errorf("map key type %s is not a string", rv.Type().Key())
+	}
 	entries := make([]entry, 0, rv.Len())
 	for _, k := range rv.MapKeys() {
 		entries = append(entries, entry{name: k.String(), value: rv.MapIndex(k)})
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].name < entries[j].name })
-	return entries
+	return entries, nil
 }
 
 // entry is one named entry of any bound container: a parameter of the
@@ -250,17 +344,145 @@ func putString(p C.relate_params, name *C.char, v string) error {
 	return statusErr(st, errJSON)
 }
 
-// putContainer inserts an empty LIST or MAP and returns its child builder,
+// The typed putters (ADR-0502 §4): one wrapper per value type in value.go,
+// the walker's readers in reverse. Each passes the components whole; the
+// engine — never this file — validates them (a bad date, a DST-gap wall
+// clock, an srid/dimension pairing, a coordinate outside the dtype's width
+// refuse through the putter's own status).
+
+func putDate(p C.relate_params, name *C.char, v Date) error {
+	var errJSON *C.char
+	st := C.relate_params_put_date(p, name, C.int64_t(v.Year), C.int64_t(v.Month), C.int64_t(v.Day), &errJSON)
+	return statusErr(st, errJSON)
+}
+
+func putLocalTime(p C.relate_params, name *C.char, v LocalTime) error {
+	var errJSON *C.char
+	st := C.relate_params_put_local_time(p, name,
+		C.int64_t(v.Hour), C.int64_t(v.Minute), C.int64_t(v.Second), C.int64_t(v.Nanosecond), &errJSON)
+	return statusErr(st, errJSON)
+}
+
+// putTime binds a TIME offset-only: the kind keeps no zone id (the walker
+// reads none back), so the zone argument is always NULL.
+func putTime(p C.relate_params, name *C.char, v Time) error {
+	var errJSON *C.char
+	st := C.relate_params_put_time(p, name,
+		C.int64_t(v.Hour), C.int64_t(v.Minute), C.int64_t(v.Second), C.int64_t(v.Nanosecond),
+		C.int64_t(v.OffsetSeconds), nil, &errJSON)
+	return statusErr(st, errJSON)
+}
+
+func putLocalDateTime(p C.relate_params, name *C.char, v LocalDateTime) error {
+	var errJSON *C.char
+	st := C.relate_params_put_local_datetime(p, name,
+		C.int64_t(v.Year), C.int64_t(v.Month), C.int64_t(v.Day),
+		C.int64_t(v.Hour), C.int64_t(v.Minute), C.int64_t(v.Second), C.int64_t(v.Nanosecond), &errJSON)
+	return statusErr(st, errJSON)
+}
+
+// putDateTime binds a DATETIME offset-only when Zone is "" — the walker's
+// offset-only shape, a NULL zone — and by zone otherwise: the engine keeps
+// the zone and resolves the offset at that wall clock, ignoring
+// OffsetSeconds.
+func putDateTime(p C.relate_params, name *C.char, v DateTime) error {
+	if v.Zone == "" {
+		return putDateTimeAt(p, name, v, nil)
+	}
+	return withCStringErr(fmt.Sprintf("datetime zone %q", v.Zone), v.Zone, func(zone *C.char) error {
+		return putDateTimeAt(p, name, v, zone)
+	})
+}
+
+// putDateTimeAt is putDateTime's one C call, over the zone argument its
+// caller minted (NULL = offset-only).
+func putDateTimeAt(p C.relate_params, name *C.char, v DateTime, zone *C.char) error {
+	var errJSON *C.char
+	st := C.relate_params_put_datetime(p, name,
+		C.int64_t(v.Year), C.int64_t(v.Month), C.int64_t(v.Day),
+		C.int64_t(v.Hour), C.int64_t(v.Minute), C.int64_t(v.Second), C.int64_t(v.Nanosecond),
+		C.int64_t(v.OffsetSeconds), zone, &errJSON)
+	return statusErr(st, errJSON)
+}
+
+func putDuration(p C.relate_params, name *C.char, v Duration) error {
+	var errJSON *C.char
+	st := C.relate_params_put_duration(p, name,
+		C.int64_t(v.Months), C.int64_t(v.Days), C.int64_t(v.Seconds), C.int64_t(v.Nanos), &errJSON)
+	return statusErr(st, errJSON)
+}
+
+// putPoint binds a POINT: z crosses as a pointer only when Dimension is 3,
+// NULL for the 2D kinds — the pairing the engine validates against the
+// srid. A Dimension outside {2, 3} is refused here: the walker only ever
+// produces those two, so anything else is a malformed value that must not
+// silently coerce to 2D.
+func putPoint(p C.relate_params, name *C.char, v Point) error {
+	var z *C.double
+	switch v.Dimension {
+	case 2: // z stays NULL — the 2D kinds
+	case 3:
+		z = (*C.double)(unsafe.Pointer(&v.Z))
+	default:
+		return fmt.Errorf("point dimension %d is neither 2 nor 3", v.Dimension)
+	}
+	var errJSON *C.char
+	st := C.relate_params_put_point(p, name, C.int32_t(v.SRID),
+		C.double(v.X), C.double(v.Y), z, &errJSON)
+	return statusErr(st, errJSON)
+}
+
+// putVector binds a VECTOR through the coordinate family its slices name:
+// Ints for the INTEGER* dtypes, Floats for the FLOAT* ones — exactly the
+// split the walker produced them by. A Vector carrying neither or both is
+// malformed and refused here, before the C boundary: the dtype alone cannot
+// pick a putter for it.
+func putVector(p C.relate_params, name *C.char, v Vector) error {
+	return withCStringErr(fmt.Sprintf("vector dtype %q", v.DType), v.DType, func(dtype *C.char) error {
+		var errJSON *C.char
+		var st C.relate_status
+		switch {
+		case v.Ints != nil && v.Floats == nil:
+			st = C.relate_params_put_vector_int(p, name, dtype,
+				(*C.int64_t)(coordsPtr(v.Ints)), C.size_t(len(v.Ints)), &errJSON)
+		case v.Floats != nil && v.Ints == nil:
+			st = C.relate_params_put_vector_float(p, name, dtype,
+				(*C.double)(coordsPtr(v.Floats)), C.size_t(len(v.Floats)), &errJSON)
+		default:
+			return fmt.Errorf("vector dtype %s must carry exactly one coordinate slice, Ints or Floats", v.DType)
+		}
+		return statusErr(st, errJSON)
+	})
+}
+
+// coordsPtr is the pointer to a coordinate slice's first element, NULL
+// when the slice is empty — the one home of the empty-vector rule, shared
+// by both putter arms so they differ only in the C putter they call.
+func coordsPtr[T int64 | float64](xs []T) unsafe.Pointer {
+	if len(xs) == 0 {
+		return nil
+	}
+	return unsafe.Pointer(&xs[0])
+}
+
+// putMap inserts an empty MAP under name and returns its child builder,
 // which the root owns until it is freed.
-func putContainer(p C.relate_params, name *C.char, list bool) (C.relate_params, error) {
+func putMap(p C.relate_params, name *C.char) (C.relate_params, error) {
 	var child C.relate_params
 	var errJSON *C.char
-	var st C.relate_status
-	if list {
-		st = C.relate_params_put_list(p, name, &child, &errJSON)
-	} else {
-		st = C.relate_params_put_map(p, name, &child, &errJSON)
+	st := C.relate_params_put_map(p, name, &child, &errJSON)
+	if err := statusErr(st, errJSON); err != nil {
+		return nil, err
 	}
+	return child, nil
+}
+
+// putList inserts an empty LIST under name and returns its child builder,
+// which the root owns until it is freed.
+func putList(p C.relate_params, name *C.char) (C.relate_params, error) {
+	var child C.relate_params
+	var errJSON *C.char
+	st := C.relate_params_put_list(p, name, &child, &errJSON)
 	if err := statusErr(st, errJSON); err != nil {
 		return nil, err
 	}
