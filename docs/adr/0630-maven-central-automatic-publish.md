@@ -118,3 +118,10 @@ dispatched with `registries=true` — and from nothing else.**
   plugin bump's live verification.
 - Published versions are immutable; `autoPublish=true` makes the Portal
   deployments view a record rather than a queue.
+
+## Later references
+
+- [ADR-0704](./0704-maven-central-publishes-with-every-release.md) lifts
+  this ADR's §2 "one opt-in for every registry": the Java publish now
+  gates on `!offline` alone, so every ordinary release publishes the
+  jars. The OIDC chain keeps the `registries` opt-in.
