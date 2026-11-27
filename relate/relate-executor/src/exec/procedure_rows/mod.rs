@@ -73,6 +73,21 @@ pub(crate) fn procedure_metadata(signature: &ProcSignature) -> Procedure {
     }
 }
 
+/// ADR-0699: the one authored backstop error for a compat callable whose
+/// `CALL` bypassed the front-end rewrite — read by the call resolution
+/// (ahead of its void classification) and this module's row-producer
+/// dispatch, so the message cannot drift between the two sites. It lives
+/// here, in the lower of the two CALL modules: `exec::procedures`
+/// already imports this module's producers, so the constructor must not
+/// reach up from it.
+pub(crate) fn compat_rewrite_bypassed(name: &str) -> Error {
+    Error::internal(format!(
+        "compat procedure '{name}' is re-implemented as a Cypher body and is \
+         rewritten by the query front-end; a call reaching the executor means \
+         the front-end injection was bypassed"
+    ))
+}
+
 /// The rows of a built-in procedure under one `CALL`'s bound arguments.
 /// `signature` is the canonical registry entry the call resolved its name
 /// to: argument names/types, yield columns and the void fact all come from
@@ -91,6 +106,16 @@ pub(crate) fn builtin_procedure_rows(
     principal: Option<&str>,
     args: &BTreeMap<String, Value>,
 ) -> Result<Vec<BTreeMap<String, Value>>> {
+    // A compat callable (ADR-0699) never reaches this dispatch: the
+    // front-end rewrites its CALL into a Cypher body before lowering —
+    // membership is the front table's one fact, read here by name. A row
+    // arriving here means the injection was bypassed, and this guard
+    // answers it with an authored error rather than falling through to
+    // the no-producer table error below (a void compat call never gets
+    // this far: the resolver classifies it `CallResolution::Void` first).
+    if relate_front::compat_callables::is_compat_callable(signature.name) {
+        return Err(compat_rewrite_bypassed(signature.name));
+    }
     // A void procedure — the signature declares no return columns
     // (`tx.setMetaData`, `db.createLabel`, `db.awaitIndexes`) — is a unit
     // operation with no rows.

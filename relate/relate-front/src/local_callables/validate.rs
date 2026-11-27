@@ -14,8 +14,8 @@ use relate_parser::{
 
 use relate_names::SmallName;
 
-use super::walker_error;
 use crate::ast::naming::item_variable;
+use crate::ast::tree::walker_error;
 use crate::ast::tree::{walk_expr, walk_statement_tree};
 
 /// The body of a definition, validated: the CIP-231 authored define-time
@@ -500,7 +500,7 @@ pub(super) fn conditional_arms_return(body: &Statement) -> bool {
 
 /// The columns a procedure body exports, in projection order: `None`
 /// when the body does not export (a FINISH/void body).
-pub(super) fn body_export_names(body: &Statement) -> Option<Vec<SmallName>> {
+pub(crate) fn body_export_names(body: &Statement) -> Option<Vec<SmallName>> {
     let set = crate::output_vars::compute_subquery_output_vars(body)?;
     for link in chain_links(body) {
         match terminal_names(link) {

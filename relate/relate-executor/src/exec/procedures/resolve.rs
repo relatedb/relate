@@ -195,6 +195,18 @@ pub(crate) fn resolve_registry<'a>(
     // resolving by name in the binder below (the contract alone is this
     // path's to check; the positional slice is the scans').
     call.check_contract(binding.required_args, binding.metadata.arg_names.len())?;
+    // ADR-0699 backstop, ahead of the void classification: a compat
+    // callable's CALL was supposed to be rewritten by the front-end; one
+    // reaching this resolution means the injection was bypassed, and a
+    // VOID entry would otherwise answer the arm below as a silent
+    // success. Loud, never a no-op.
+    if let Some(signature) = builtin {
+        if relate_front::compat_callables::is_compat_callable(signature.name) {
+            return Err(super::super::procedure_rows::compat_rewrite_bypassed(
+                signature.name,
+            ));
+        }
+    }
     if void {
         return Ok(super::CallResolution::Void { binding });
     }

@@ -23,6 +23,17 @@ pub(crate) type StmtVisit<'v> = dyn FnMut(StmtRef<'_>) -> Result<(), EngineError
 pub(crate) type ClauseVisit<'v> = dyn FnMut(&Clause) -> Result<(), EngineError> + 'v;
 pub(crate) type ExprVisit<'v> = dyn FnMut(&Expr) -> Result<(), EngineError> + 'v;
 
+/// The AST walker's depth-guard error, flattened to a syntax error: the
+/// one conversion, consulted by every walk boundary — the local-callables
+/// resolver's walks (rewrite and validate), the preview gate's detectors,
+/// the compat-callables injection's collection walk (ADR-0699), and the
+/// depth guards in the parse entries — instead of an ad-hoc closure per
+/// site. It lives here, beside the walk family and the depth errors it
+/// flattens, so no feature module hosts a general-purpose helper.
+pub(crate) fn walker_error(error: EngineError) -> relate_core::Error {
+    relate_core::Error::syntax(error.to_string())
+}
+
 /// A projection's expression slot, by evaluation position: the projection
 /// items evaluate against the clause's input; `ORDER BY`, `SKIP` and
 /// `LIMIT` against the projection view.

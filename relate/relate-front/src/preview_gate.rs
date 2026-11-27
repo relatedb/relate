@@ -7,6 +7,7 @@ use relate_error::EngineError;
 use relate_parser::lexer::ParseOptions;
 use relate_parser::Statement;
 
+use crate::ast::tree::walker_error;
 use crate::{local_callables, validate};
 
 /// Switch on the `ParseOptions` field a parse-site feature names. Total over
@@ -68,14 +69,11 @@ pub(crate) fn parse_options(preview: PreviewFeatures) -> ParseOptions {
 /// declared. The graph-type family's AST walk runs once, before the loop, and
 /// its `GraphTypeMembership` arm reports membership instead of a second walk.
 pub(crate) fn require_detected_gates(stmt: &Statement, preview: PreviewFeatures) -> Result<()> {
-    let graph_type_gates =
-        validate::statement_graph_type_gates(stmt).map_err(local_callables::walker_error)?;
+    let graph_type_gates = validate::statement_graph_type_gates(stmt).map_err(walker_error)?;
     for feature in PREVIEW_FEATURES {
         for site in feature.gate_sites() {
             let uses = match site {
-                GateSite::AstDetector(kind) => {
-                    detector_uses(*kind, stmt).map_err(local_callables::walker_error)?
-                }
+                GateSite::AstDetector(kind) => detector_uses(*kind, stmt).map_err(walker_error)?,
                 GateSite::GraphTypeMembership => graph_type_gates.contains(feature),
                 // Decided before parsing ([`parse_options`]) or by a consumer
                 // outside the front (function admission, procedure dispatch,

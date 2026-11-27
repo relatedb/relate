@@ -119,10 +119,12 @@ mod producer_table_pin {
     use crate::procedure_registry::BUILTIN_PROCEDURE_SIGNATURES;
     use relate_core::Value;
 
-    /// The producer table and the registry agree: every executable signature
-    /// that declares return columns either has a diverted call path or a
-    /// producer arm in its registry row — asserted as the table fact
-    /// itself, never by classifying the probe's error text. The producer
+    /// The producer table and the registry agree: every executable
+    /// signature that declares return columns has exactly one of three
+    /// answers — a producer arm in its registry row, a diverted call
+    /// path, or a compat callable the front end rewrites away
+    /// (ADR-0699); asserted as the table fact itself, never by
+    /// classifying the probe's error text. The producer
     /// call stays as smoke: every declared parameter bound to a
     /// representative value, so a producer that reads its arguments is
     /// exercised rather than panicking on the CALL contract's missing
@@ -144,6 +146,15 @@ mod producer_table_pin {
             ))
             .is_some()
             {
+                continue;
+            }
+            // A compat callable (ADR-0699) is the third non-producer form:
+            // the front-end rewrites its CALL into a Cypher body before
+            // lowering, so no producer exists — and the dispatch answers a
+            // bypassed rewrite with an authored error, which the smoke call
+            // below would surface as a panic. Membership is the front
+            // table's one fact, read here by name.
+            if relate_front::compat_callables::is_compat_callable(signature.name) {
                 continue;
             }
             assert!(

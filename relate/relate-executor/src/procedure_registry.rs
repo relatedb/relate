@@ -78,10 +78,15 @@ pub struct ProcSignature {
     /// True when `SHOW PROCEDURES` lists it.
     pub listed: bool,
     /// The row producer a row-declaring executable signature carries; `None`
-    /// for a void signature, a catalog-only entry and a diverted procedure
-    /// (whose `CALL` path is a dedicated executor — see `divert_call`). One
-    /// fact with the return columns, so a row-declaring signature cannot
-    /// answer without a producer.
+    /// for a void signature, a catalog-only entry, a diverted procedure
+    /// (whose `CALL` path is a dedicated executor — see `divert_call`) and
+    /// a compat callable (ADR-0699: the query front-end rewrites its `CALL`
+    /// into a Cypher body before lowering — `relate_front`'s
+    /// `compat_callables` table owns the membership, and the dispatch
+    /// declines it by name). One fact with the return columns: a
+    /// row-declaring signature answers through exactly one of the three —
+    /// a producer arm here, a diverted call path, or the front-end
+    /// rewrite that lowers it away before the executor ever sees it.
     pub(crate) rows: Option<RowProducer>,
     /// True when a `CALL` mutates the graph or catalog (ADR-0116 §4) — the
     /// write classification `relate`'s namespace rules read, so there is
@@ -455,6 +460,78 @@ mod tests {
         }
     }
 
+    /// The description marker every compat-callables signature row and
+    /// front-table entry carries — the shared text the drift guard pins
+    /// both ways: table entries must have matching rows (the forward
+    /// walk), and a row carrying the marker without a table entry is an
+    /// engine-side compat row the front no longer rewrites.
+    const COMPAT_MARKER: &str = "Compatibility (ADR-0699)";
+
+    /// ADR-0699 drift guard, both directions: every compat-callables
+    /// table entry (`relate_front::compat_callables`) carries a matching
+    /// signature row here — executable, listed, no shadowing producer,
+    /// same parameters (names, types, default values), same yield
+    /// columns, same description — and every row carrying the
+    /// compatibility marker belongs to a table entry. Engine
+    /// classification (`writes`, `executable`, `listed`) lives in this
+    /// table alone; membership and bodies in the front table — this test
+    /// is the pin between them.
+    #[test]
+    fn compat_rows_match_the_front_callables_table() {
+        for entry in relate_front::compat_callables::COMPAT_CALLABLES {
+            // Procedure-kind entries pin against this table's rows;
+            // Function-kind entries (independent namespaces, ADR-0382)
+            // pin the inverse — no procedure row may carry their name
+            // until a function-signature home exists for them.
+            if entry.kind == relate_parser::LocalCallableKind::Function {
+                assert!(
+                    builtin_procedure_signature(entry.name).is_none(),
+                    "compat callable {} is Function-kind but has a procedure signature row; \
+                     it needs a function-signature home, not this table's",
+                    entry.name
+                );
+                continue;
+            }
+            let signature = builtin_procedure_signature(entry.name)
+                .unwrap_or_else(|| panic!("compat callable {} has no signature row", entry.name));
+            assert!(signature.executable, "{}", entry.name);
+            assert!(signature.listed, "{}", entry.name);
+            assert!(signature.rows.is_none(), "{}", entry.name);
+            // The full per-position parameter shape — name, type, and the
+            // default's VALUE — compared on both sides, so neither table
+            // can drift a parameter (or a default's text) without the
+            // other failing here.
+            let expected: Vec<(&str, &str, Option<&str>)> = entry
+                .params
+                .iter()
+                .map(|param| (param.name, param.ty, param.default))
+                .collect();
+            let declared: Vec<(&str, &str, Option<&str>)> = signature
+                .args
+                .iter()
+                .map(|arg| (arg.name, arg.type_str, arg.default))
+                .collect();
+            assert_eq!(declared, expected, "{}", entry.name);
+            let returns: Vec<&str> = signature.return_columns().collect();
+            assert_eq!(returns, entry.returns, "{}", entry.name);
+            assert_eq!(signature.description, entry.description, "{}", entry.name);
+        }
+        // The converse: an engine row carrying the compatibility marker
+        // whose name the front table no longer rewrites is an orphaned
+        // compat row — executable, listed, advertising a Cypher body
+        // nothing performs.
+        for signature in BUILTIN_PROCEDURE_SIGNATURES {
+            if signature.description.contains(COMPAT_MARKER) {
+                assert!(
+                    relate_front::compat_callables::is_compat_callable(signature.name),
+                    "{} carries the compatibility marker but is not a compat-callables \
+                     table entry",
+                    signature.name
+                );
+            }
+        }
+    }
+
     #[test]
     fn lookup_is_case_sensitive() {
         // CIP-230: built-in procedure names are case-sensitive (unlike
@@ -586,6 +663,10 @@ mod tests {
         assert_eq!(
             writes,
             [
+                "apoc.create.addLabels",
+                "apoc.merge.relationship",
+                "db.create.setNodeVectorProperty",
+                "db.create.setRelationshipVectorProperty",
                 "db.createLabel",
                 "db.ontology.apply",
                 "db.ontology.drop",

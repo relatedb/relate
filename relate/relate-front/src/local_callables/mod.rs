@@ -32,16 +32,16 @@
 //! on any `DEFINE` with the ADR-0371 authored error unless
 //! `RELATE_PREVIEW` enables `local-callables` (the same admission path
 //! as the CIP-278 `hybrid-search` gate).
-/// The AST walker's depth-guard error, flattened to this module's error
-/// text: the one conversion, consulted by every walk boundary (the
-/// statement/clause/expression walks in rewrite and validate) instead of
-/// an ad-hoc closure per site.
-pub(super) fn walker_error(error: relate_error::EngineError) -> relate_core::Error {
-    relate_core::Error::syntax(error.to_string())
-}
 
 mod rewrite;
 mod validate;
+
+/// The parsed body's emitted yield-column names, as the resolver's YIELD
+/// mapping reads them — the one derivation, re-exported for the
+/// compat-callables table's health test (ADR-0699), which pins each
+/// table row's `returns` to what its body actually emits.
+#[cfg(test)]
+pub(crate) use validate::body_export_names;
 
 use crate::ident_hash::IdentHashSet;
 use relate_names::SmallName;
