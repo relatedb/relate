@@ -11,33 +11,40 @@ use relate_core::{Error, PropertyMap, Result, Value};
 use relate_ir::{SearchFilterPred, SearchOp};
 use relate_model::EntityKind;
 
-use crate::eval::{binary, eval, in_op, in_rhs};
+use crate::eval::{binary, eval, in_op, in_rhs, is_membership_scalar};
 use crate::overlay::ExecGraph;
 use crate::row::Row;
 
+/// A member that a search filter admits but that never matches: null
+/// (absent ids read as null, and a null member leaves membership
+/// unknown, exactly like `IN`'s own fold) and the membership scalars
+/// ([`is_membership_scalar`]'s one kind-set). Two policies read this
+/// one rule: the entity-set member skip, and the comparison filter's
+/// right-operand value-type gate.
 fn search_filter_rhs_allowed(value: &Value) -> bool {
-    matches!(
-        value,
-        Value::Null
-            | Value::Bool(_)
-            | Value::Int(_)
-            | Value::Float(_)
-            | Value::String(_)
-            | Value::Temporal(_)
-    )
+    value.is_null() || is_membership_scalar(value)
 }
 
-/// A property-in-set filter's RHS: a null operand is accepted (it filters
-/// everything out through `IN`'s null), a list's members must each be a
-/// scalar (a null member leaves membership unknown, exactly like `IN`'s
-/// own fold). A non-list or nested container is rejected, matching Neo4j's
-/// list/element type rule.
-fn search_in_set_rhs_allowed(value: &Value) -> bool {
-    match in_rhs(value) {
-        Ok(None) => true,
-        Ok(Some(items)) => items.iter().all(search_filter_rhs_allowed),
-        Err(_) => false,
+/// The filter forms' one member-set accessor: the operand
+/// classification's member set, or the typed rejection for a scalar or
+/// container right operand — stated once beside
+/// [`invalid_filter_rhs`], so the "no member set at all ⇒ the one
+/// rejection" policy lives with the rejection it produces.
+fn filter_members(value: &Value) -> Result<&[Value]> {
+    match in_rhs(value).filter_members() {
+        Some(members) => Ok(members),
+        None => Err(invalid_filter_rhs()),
     }
+}
+
+/// A property-in-set filter's RHS: the operand classification's filter
+/// policy — a null operand filters everything out, a list's members
+/// must each satisfy the member rule ([`search_filter_rhs_allowed`]:
+/// null admitted — a null member leaves membership unknown, exactly
+/// like `IN`'s own fold — or a membership scalar), and no member set at
+/// all is the rejection.
+fn search_in_set_rhs_allowed(value: &Value) -> bool {
+    filter_members(value).is_ok_and(|members| members.iter().all(search_filter_rhs_allowed))
 }
 
 /// The one rejection of an ill-typed filter RHS: every filter form (a
@@ -108,7 +115,7 @@ pub(crate) fn search_filter_passes(
             }
             PreparedSearchFilter::InSet { property, rhs } => {
                 let left = property_or_null(properties, property);
-                in_op(left, rhs.clone())?.truthy() == Some(true)
+                in_op(&left, rhs)?.truthy() == Some(true)
             }
             PreparedSearchFilter::Ids { ids } => ids.contains(&id),
         };
@@ -119,15 +126,14 @@ pub(crate) fn search_filter_passes(
     Ok(true)
 }
 
-/// The one membership walk both `IN`-form extractions share: `in_rhs`'s
-/// operand policy (a null operand matches nothing — `x IN null` is null,
-/// so an empty set carries the same outcome), the per-member loop, the
-/// allowed-scalar skip, and the container rejection — the forms differ
-/// only in which members contribute an id, the `id_of` policy.
+/// The one membership walk both `IN`-form extractions share: the operand
+/// classification's filter policy (a null operand matches nothing, a
+/// non-list is no member set at all — the caller's typed rejection),
+/// the per-member loop, the allowed-scalar skip, and the container
+/// rejection — the forms differ only in which members contribute an id,
+/// the `id_of` policy.
 fn set_ids(value: &Value, id_of: impl Fn(&Value) -> Result<Option<i64>>) -> Result<HashSet<i64>> {
-    let Some(members) = in_rhs(value).map_err(|_| invalid_filter_rhs())? else {
-        return Ok(HashSet::new());
-    };
+    let members = filter_members(value)?;
     let mut ids = HashSet::new();
     for item in members.iter() {
         if let Some(id) = id_of(item)? {
@@ -240,7 +246,7 @@ pub(crate) fn prepare_search_filters<'a>(
             SearchFilterPred::EntityInSet { rhs } => PreparedSearchFilter::Ids {
                 ids: entity_set_ids(&eval(graph, input, rhs, params)?, kind)?,
             },
-            SearchFilterPred::IdInSet { rhs } => PreparedSearchFilter::Ids {
+            SearchFilterPred::IdInSet { rhs, .. } => PreparedSearchFilter::Ids {
                 ids: id_set_ids(&eval(graph, input, rhs, params)?, kind)?,
             },
         };

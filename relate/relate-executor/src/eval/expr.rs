@@ -178,7 +178,7 @@ fn binary_inner(charge: Option<&ExecGraph<'_>>, op: BinaryOp, l: Value, r: Value
                 ))
             }
         },
-        BinaryOp::In => in_op(l, r)?,
+        BinaryOp::In => in_op(&l, &r)?,
         BinaryOp::StartsWith => str_pred(l, r, |a, b| a.starts_with(b)),
         BinaryOp::EndsWith => str_pred(l, r, |a, b| a.ends_with(b)),
         BinaryOp::Contains => str_pred(l, r, |a, b| a.contains(b)),
@@ -287,31 +287,88 @@ pub(crate) fn cmp_bool(
     }
 }
 
-/// The one `IN`-operand policy: `None` for a null operand (`x IN null` is
-/// null) and the member list otherwise (the list's shared allocation, which
-/// the membership index is keyed on); a non-list is the typed shape
-/// error. Every `IN` consumer -- the membership operator, the CIP-240
-/// property-in-set filter, and the entity-set filter -- reads its operand
-/// through here, so the three cannot disagree about null.
-pub(crate) fn in_rhs(value: &Value) -> Result<Option<&Arc<Vec<Value>>>> {
-    if value.is_null() {
-        return Ok(None);
-    }
-    match value {
-        Value::List(xs) => Ok(Some(xs)),
-        _ => Err(Error::invalid_argument_type(
-            "IN requires a list on the right-hand side",
-        )),
+/// The one `IN`-operand classification. Every `IN` consumer — the
+/// membership operator, the CIP-240 property-in-set filter, and the
+/// entity-set filter — reads its policy off the named variant, so the
+/// three cannot disagree about null: the operator answers a scalar as
+/// the one-element list holding it (ADR-0711) and rejects a container,
+/// while the filter forms reject both, each stated at its own match.
+pub(crate) enum InOperand<'a> {
+    /// A null operand: `x IN null` is null.
+    Null,
+    /// The member list — the list's shared allocation, which the
+    /// membership index is keyed on.
+    List(&'a Arc<Vec<Value>>),
+    /// A membership scalar ([`is_membership_scalar`]'s one kind-set):
+    /// answers as the one-element list holding it.
+    Scalar,
+    /// Any other value — a map, a vector, an entity, a path, a point:
+    /// the typed rejection the list rule always was.
+    Container,
+}
+
+impl<'a> InOperand<'a> {
+    /// The filter forms' half of the operand policy, stated once on the
+    /// classification itself: a null operand is the empty member set
+    /// (`x IN null` matches nothing, so an empty set carries the same
+    /// outcome), a list is its members, and a scalar or container is no
+    /// member set at all — the caller's own typed rejection.
+    pub(crate) fn filter_members(self) -> Option<&'a [Value]> {
+        match self {
+            InOperand::Null => Some(&[]),
+            InOperand::List(members) => Some(members),
+            InOperand::Scalar | InOperand::Container => None,
+        }
     }
 }
 
-pub(crate) fn in_op(l: Value, r: Value) -> Result<Value> {
-    Ok(match in_rhs(&r)? {
+/// The one membership-scalar vocabulary: the value kinds that answer
+/// membership questions as themselves — booleans, numbers, strings,
+/// temporals. The `IN` right-operand policy (a scalar coerces to the
+/// one-element list, ADR-0711) and the search filters' member policy
+/// (an allowed scalar member never matches) read the same kind-set
+/// here, so the two cannot drift.
+pub(crate) fn is_membership_scalar(value: &Value) -> bool {
+    matches!(
+        value,
+        Value::Bool(_) | Value::Int(_) | Value::Float(_) | Value::String(_) | Value::Temporal(_)
+    )
+}
+
+/// Classify an `IN` right operand — the one entry point every consumer
+/// shares ([`InOperand`] is the policy vocabulary).
+pub(crate) fn in_rhs(value: &Value) -> InOperand<'_> {
+    match value {
+        Value::Null => InOperand::Null,
+        Value::List(xs) => InOperand::List(xs),
+        value if is_membership_scalar(value) => InOperand::Scalar,
+        _ => InOperand::Container,
+    }
+}
+
+pub(crate) fn in_op(l: &Value, r: &Value) -> Result<Value> {
+    // The operand policy is [`InOperand`]'s; the one fact this fold adds
+    // is that a one-member list's membership is exactly equality — both
+    // null rules included — so the scalar arm is `cypher_eq` itself:
+    // nothing allocates, and the pure-operator contract the compiled
+    // predicate gate evaluates this under stays intact.
+    Ok(match in_rhs(r) {
         // The one production membership entry: a long list bound once per
         // statement answers an exact same-typed probe from its once-built
         // index; everything the index cannot decide exactly takes the scan.
-        Some(list) => super::member_of(&l, list),
-        None => Value::Null,
+        InOperand::List(list) => super::member_of(l, list),
+        // A scalar — and a null operand, whose `x IN null is null` rides
+        // the same equality fold (`cypher_eq` answers null whenever
+        // either side is null).
+        InOperand::Null | InOperand::Scalar => l.cypher_eq(r),
+        // A container that is not a list — a map, a vector, an entity, a
+        // path — is the typed rejection the list rule always was; the
+        // corpus pins the vector and map forms.
+        InOperand::Container => {
+            return Err(Error::invalid_argument_type(
+                "IN requires a list on the right-hand side",
+            ))
+        }
     })
 }
 

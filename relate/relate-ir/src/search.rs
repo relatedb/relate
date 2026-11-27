@@ -5,6 +5,7 @@
 use crate::ast::Expr;
 
 use crate::BinaryOp;
+use relate_names::SmallName;
 
 /// `<source specification clause>`:
 /// `<index specification clause> | <combined specification clause>`.
@@ -71,7 +72,12 @@ pub enum SearchFilterPred {
     /// ids (or of entities, whose ids it reads) and the candidate's id
     /// must be a member — the id-spelled twin of the entity-set match
     /// filter, right-hand side a correlated `COLLECT` subquery included.
-    IdInSet { rhs: Expr },
+    /// `call` is the function name exactly as the lowering recognized
+    /// it — the consumed left-hand call site's own spelling, carried so
+    /// no later consumer re-derives it. The LHS variable is not carried:
+    /// lowering already enforced the binding-variable-only rule, and
+    /// every predicate is evaluated against the candidate entity.
+    IdInSet { call: SmallName, rhs: Expr },
 }
 
 impl SearchFilterPred {
@@ -81,26 +87,69 @@ impl SearchFilterPred {
     /// they have no property (the index-property-membership check skips
     /// them).
     pub fn property_name(&self) -> Option<&str> {
-        match self {
-            SearchFilterPred::Comparison { property, .. }
-            | SearchFilterPred::Exists { property }
-            | SearchFilterPred::NotExists { property }
-            | SearchFilterPred::InSet { property, .. } => Some(property),
-            SearchFilterPred::EntityInSet { .. } | SearchFilterPred::IdInSet { .. } => None,
-        }
+        self.parts().property
     }
 
     /// The value expression this predicate evaluates, if it has one.
     /// Existence predicates carry no RHS.
     pub fn rhs(&self) -> Option<&Expr> {
+        self.parts().rhs
+    }
+
+    /// The function call site this predicate consumed, if it did: the
+    /// recognized left-hand call's own name, carried from the lowering
+    /// that matched it — the third per-variant accessor beside
+    /// [`Self::property_name`] and [`Self::rhs`], so spec-wide
+    /// enumerations fold over the walk without re-matching variants or
+    /// re-deriving spellings. Crate-internal: its one consumer is this
+    /// crate's own [`SearchSpec::consumed_function_calls`].
+    fn consumed_call(&self) -> Option<&SmallName> {
+        self.parts().call
+    }
+
+    /// The one exhaustive projection over the predicate vocabulary —
+    /// the single `match self` every per-variant accessor reads, so a
+    /// new variant is one edit here plus a decision, never a third
+    /// literal variant list.
+    fn parts(&self) -> FilterPredParts<'_> {
         match self {
-            SearchFilterPred::Comparison { rhs, .. }
-            | SearchFilterPred::InSet { rhs, .. }
-            | SearchFilterPred::EntityInSet { rhs }
-            | SearchFilterPred::IdInSet { rhs } => Some(rhs),
-            SearchFilterPred::Exists { .. } | SearchFilterPred::NotExists { .. } => None,
+            SearchFilterPred::Comparison { property, rhs, .. } => FilterPredParts {
+                property: Some(property),
+                rhs: Some(rhs),
+                call: None,
+            },
+            SearchFilterPred::Exists { property } | SearchFilterPred::NotExists { property } => {
+                FilterPredParts {
+                    property: Some(property),
+                    rhs: None,
+                    call: None,
+                }
+            }
+            SearchFilterPred::InSet { property, rhs } => FilterPredParts {
+                property: Some(property),
+                rhs: Some(rhs),
+                call: None,
+            },
+            SearchFilterPred::EntityInSet { rhs } => FilterPredParts {
+                property: None,
+                rhs: Some(rhs),
+                call: None,
+            },
+            SearchFilterPred::IdInSet { call, rhs } => FilterPredParts {
+                property: None,
+                rhs: Some(rhs),
+                call: Some(call),
+            },
         }
     }
+}
+
+/// The three per-variant facts of one [`SearchFilterPred`], as the one
+/// [`SearchFilterPred::parts`] projection yields them.
+struct FilterPredParts<'a> {
+    property: Option<&'a str>,
+    rhs: Option<&'a Expr>,
+    call: Option<&'a SmallName>,
 }
 
 /// The five `<simple comp op>`s the search-filter grammar admits (the
@@ -190,41 +239,80 @@ impl SearchSpec {
     /// tree's WEIGHT/CONSTANT/LIMIT expressions.
     pub fn exprs(&self) -> Vec<&Expr> {
         let mut out = Vec::new();
-        push_spec_exprs(self, &mut out);
-        out
-    }
-}
-
-fn push_spec_exprs<'a>(spec: &'a SearchSpec, out: &mut Vec<&'a Expr>) {
-    match spec {
-        SearchSpec::Index(index) => {
-            out.push(&index.for_expr);
-            if let Some(expr) = &index.analyzer {
-                out.push(expr);
-            }
-            for pred in &index.filters {
+        self.for_each_slot(&mut |slot| match slot {
+            SearchSlot::Expr(expr) => out.push(expr),
+            SearchSlot::Pred(pred) => {
                 if let Some(rhs) = pred.rhs() {
                     out.push(rhs);
                 }
             }
-            if let Some(expr) = &index.offset_expr {
-                out.push(expr);
+        });
+        out
+    }
+
+    /// The function call sites the filter decomposition consumed: the
+    /// recognized left-hand call names carried by the predicates
+    /// (read through [`SearchFilterPred::consumed_call`], the third
+    /// per-variant accessor), so the spelling exists only where the
+    /// lowering matched it and no consumer re-derives it. The
+    /// statement-notification observer maps each name to its
+    /// deprecation occurrence — the same occurrence scope a surviving
+    /// `Expr::Function` call site gets.
+    pub fn consumed_function_calls(&self) -> Vec<&SmallName> {
+        let mut out = Vec::new();
+        self.for_each_slot(&mut |slot| {
+            if let SearchSlot::Pred(pred) = slot {
+                out.extend(pred.consumed_call());
             }
-            out.push(&index.limit_expr);
-        }
-        SearchSpec::Combine(combine) => {
-            for source in &combine.sources {
-                push_spec_exprs(&source.spec, out);
-                if let Some(expr) = &source.weight_expr {
-                    out.push(expr);
+        });
+        out
+    }
+
+    /// The one structural descent over this source tree, visiting every
+    /// slot in source order — each value expression and each decomposed
+    /// filter predicate, the combine tree's nested sources and its own
+    /// control expressions included. Every spec-wide enumeration
+    /// ([`Self::exprs`], [`Self::consumed_function_calls`]) derives from
+    /// this walk, so the tree's structure knowledge stays in this single
+    /// match and a new spec-wide need extends it instead of copying the
+    /// recursion.
+    fn for_each_slot<'a>(&'a self, f: &mut impl FnMut(SearchSlot<'a>)) {
+        match self {
+            SearchSpec::Index(index) => {
+                f(SearchSlot::Expr(&index.for_expr));
+                if let Some(expr) = &index.analyzer {
+                    f(SearchSlot::Expr(expr));
                 }
+                for pred in &index.filters {
+                    f(SearchSlot::Pred(pred));
+                }
+                if let Some(expr) = &index.offset_expr {
+                    f(SearchSlot::Expr(expr));
+                }
+                f(SearchSlot::Expr(&index.limit_expr));
             }
-            if let Some(expr) = &combine.constant_expr {
-                out.push(expr);
-            }
-            if let Some(expr) = &combine.limit_expr {
-                out.push(expr);
+            SearchSpec::Combine(combine) => {
+                for source in &combine.sources {
+                    source.spec.for_each_slot(f);
+                    if let Some(expr) = &source.weight_expr {
+                        f(SearchSlot::Expr(expr));
+                    }
+                }
+                if let Some(expr) = &combine.constant_expr {
+                    f(SearchSlot::Expr(expr));
+                }
+                if let Some(expr) = &combine.limit_expr {
+                    f(SearchSlot::Expr(expr));
+                }
             }
         }
     }
+}
+
+/// One slot of a source specification tree: a value expression, or one
+/// decomposed filter predicate (whose right-hand side is an expression
+/// slot of its own, read through [`SearchFilterPred::rhs`]).
+enum SearchSlot<'a> {
+    Expr(&'a Expr),
+    Pred(&'a SearchFilterPred),
 }

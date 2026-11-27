@@ -80,6 +80,7 @@
 //! `USING JOIN ON` hint detectors report each hint no plan can serve
 //! (`01N31`/`01N30`), one row per hint.
 
+mod deprecation;
 mod dynamic_property;
 mod hints;
 mod redundant_optional;
@@ -88,13 +89,10 @@ mod shape;
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use relate_executor::{
-    builtin_function_deprecation, builtin_procedure_deprecation, DeprecatedBy, DeprecationForm,
-    ExecGraph, IndexFacts, Procedure,
-};
+use relate_executor::{ExecGraph, IndexFacts, Procedure};
 use relate_ir::{
     walk_pattern_payloads, Clause, Expr, ExprRole, LabelExpr, MapProjectionItem, NodePattern,
-    PathPattern, PatternPayload, RelPattern,
+    PathPattern, PatternPayload, RelPattern, SearchSpec,
 };
 use relate_model::wire::{Notification, NotificationCategory, NotificationKind};
 use relate_names::{SmallName, Token};
@@ -102,6 +100,7 @@ use relate_planner::LogicalPlan;
 
 use crate::notifications::dedup_identical;
 use crate::plan_node::pattern_has_unbounded_expansion;
+use deprecation::DeprecationSurface;
 
 /// Merge the tree's operator-scoped entries with this module's
 /// statement-scoped entries (ADR-0363 decision 6): operator entries keep
@@ -297,6 +296,7 @@ impl Facts {
                 where_clause,
                 using_index,
                 using_join,
+                search,
                 ..
             } => {
                 for pattern in patterns {
@@ -308,6 +308,9 @@ impl Facts {
                 // across (each hint is its own clause's own fact), so
                 // they fire here against the statement's index snapshot.
                 hints::observe(&mut self.notifications, using_index, using_join, indexes);
+                if let Some(search) = search {
+                    self.observe_search_filter_callsites(&search.spec);
+                }
             }
             Clause::With {
                 distinct,
@@ -378,15 +381,7 @@ impl Facts {
                 self.property_keys.insert(key.to_string());
             }
             Expr::Function { name, .. } => {
-                if let Some(replacement) = name.with_str(builtin_function_deprecation) {
-                    self.notifications.push(
-                        Notification::new(
-                            NotificationKind::DeprecatedFunction,
-                            format!("The function `{name}()` is deprecated."),
-                        )
-                        .with_remedy(deprecation_remedy(replacement)),
-                    );
-                }
+                deprecation::push(&mut self.notifications, DeprecationSurface::Function, name);
             }
             // `expr { .key }` is a property access the expression walker
             // does not flatten into `Expr::Property`.
@@ -422,16 +417,20 @@ impl Facts {
         if registered.is_some() {
             return;
         }
-        let Some(replacement) = name.with_str(builtin_procedure_deprecation) else {
-            return;
-        };
-        self.notifications.push(
-            Notification::new(
-                NotificationKind::DeprecatedProcedure,
-                format!("The procedure `{name}` is deprecated."),
-            )
-            .with_remedy(deprecation_remedy(replacement)),
-        );
+        deprecation::push(&mut self.notifications, DeprecationSurface::Procedure, name);
+    }
+
+    /// One searching MATCH's decomposed filter call sites: the lowering
+    /// consumed each recognized left-hand call into its `IdInSet`
+    /// predicate shape, so those calls never reach the expression walk —
+    /// the spec carries the recognized names, and this observer maps
+    /// each to its deprecation occurrence, the same occurrence scope a
+    /// surviving `Expr::Function` call site gets (the corpus asserts one
+    /// notification per call).
+    fn observe_search_filter_callsites(&mut self, spec: &SearchSpec) {
+        for call in spec.consumed_function_calls() {
+            deprecation::push(&mut self.notifications, DeprecationSurface::Function, call);
+        }
     }
 
     /// One read path pattern's node and relationship payloads, through the
@@ -576,16 +575,6 @@ fn resolve_names(
     resolve_names_with(expr, names, out, collect_label_names);
 }
 
-/// The instance remedy for a catalog replacement: an identifier/call is
-/// rendered as code, a clause is named as a clause, and the catalog's
-/// display prose never reaches the backticks.
-fn deprecation_remedy(replacement: DeprecatedBy) -> String {
-    match replacement.form() {
-        DeprecationForm::Identifier(identifier) => format!("Use `{identifier}` instead."),
-        DeprecationForm::Clause(clause) => format!("Use the `{clause}` clause instead."),
-    }
-}
-
 /// Every static label name in a label/type expression, including the names
 /// inside `And`/`Or`/`Not` and `NOT :Label` forms. Dynamic (`$(…)`) and
 /// wildcard parts name no static label.
@@ -670,28 +659,6 @@ mod tests {
             merged.len(),
             2,
             "operator entries arrive deduplicated and are not re-scanned"
-        );
-    }
-
-    /// A replacement renders by its syntactic form: an identifier/call is
-    /// code, a clause is named as a clause, and catalog prose never reaches
-    /// the remedy.
-    #[test]
-    fn deprecation_remedy_renders_identifier_and_clause_forms() {
-        assert_eq!(
-            deprecation_remedy(DeprecatedBy::identified(
-                "elementId",
-                "elementId or consider using an application-generated id",
-            )),
-            "Use `elementId` instead."
-        );
-        assert_eq!(
-            deprecation_remedy(DeprecatedBy::identifier("db.cdc.current")),
-            "Use `db.cdc.current` instead."
-        );
-        assert_eq!(
-            deprecation_remedy(DeprecatedBy::clause("SEARCH")),
-            "Use the `SEARCH` clause instead."
         );
     }
 

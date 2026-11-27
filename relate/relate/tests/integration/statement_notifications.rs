@@ -323,6 +323,51 @@ fn deprecated_function_reads_the_function_catalog() {
     );
 }
 
+/// The SEARCH filter decomposition consumes every `id(<binding
+/// variable>)` left-hand side into its `IdInSet` predicate shape, so
+/// those call sites never reach the expression walk. The Match arm
+/// reads the count off the source spec instead and reports one
+/// deprecation per predicate — the corpus asserts one notification per
+/// `id()` occurrence, two in the id-fed match filter (the collected
+/// right-hand call and the filter's own left-hand side).
+#[test]
+fn a_search_match_filter_reports_each_id_call_site_once() {
+    let mut conn = connection();
+    run(&mut conn, "CREATE VECTOR INDEX v FOR (p:P) ON p.embed");
+    run(&mut conn, "CREATE (:P {embed: [1.0]})");
+    let explained = conn
+        .query(
+            "EXPLAIN MATCH (n:P) WITH collect(id(n)) AS ids \
+             MATCH (m:P) SEARCH m IN (VECTOR INDEX v FOR [1.0] WHERE id(m) IN ids LIMIT 1) \
+             RETURN m",
+        )
+        .unwrap();
+    assert_eq!(
+        kinds(&explained),
+        [
+            NotificationKind::DeprecatedFunction,
+            NotificationKind::DeprecatedFunction,
+        ],
+        "one 01N01 per id() call site — the RHS expression walk's, plus \
+         the decomposed IdInSet left-hand side's: {:?}",
+        explained.notifications()
+    );
+
+    // The bare entity-set form has no id() call site: no deprecation.
+    let entity = conn
+        .query(
+            "EXPLAIN MATCH (n:P) WITH collect(n) AS cands \
+             MATCH (m:P) SEARCH m IN (VECTOR INDEX v FOR [1.0] WHERE m IN cands LIMIT 1) \
+             RETURN m",
+        )
+        .unwrap();
+    assert!(
+        !has_notification(&entity, NotificationKind::DeprecatedFunction),
+        "the entity-set match filter carries no id() call: {:?}",
+        entity.notifications()
+    );
+}
+
 /// Acceptance 5: the registry's deprecated `db.index.vector.queryNodes`
 /// signature produces the procedure deprecation naming `SEARCH`.
 #[test]

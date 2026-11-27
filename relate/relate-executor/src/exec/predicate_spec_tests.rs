@@ -97,6 +97,24 @@ fn spec_graph(nodes: &[NodeCase]) -> Graph {
     g
 }
 
+/// The two IN-surface tests' one-node fixture: a single `:P` with the
+/// `id`/`s` pair both tests read — beside [`spec_graph`], the module's
+/// fixture home, so the two spell it once.
+fn one_p_node() -> Graph {
+    let g = Graph::default();
+    g.begin_write().unwrap();
+    g.create_node(
+        vec!["P".into()],
+        BTreeMap::from([
+            ("id".into(), Value::Int(0)),
+            ("s".into(), Value::String("a".into())),
+        ]),
+    )
+    .unwrap();
+    g.commit_write();
+    g
+}
+
 /// The query shapes the compiled predicates cover, each answered twice —
 /// the specialized walk, and the generic one under
 /// [`with_spec_disabled`] — over the same randomized graph.
@@ -514,33 +532,34 @@ fn in_and_regex_shapes_engage_the_gate_and_match_the_generic_rows() {
     assert_eq!(specialized.len(), 2);
 }
 
-/// The In and Regex error surfaces are the generic path's: a non-list
-/// `IN` bound and an invalid regex pattern raise the shared `binary`'s
-/// error identically whether the gate or the residual evaluates the
-/// conjunct.
+/// The module's one differential protocol: drain the gate counter, run
+/// live, prove the compiled gate engaged for the query under test, run
+/// again with specialization disabled, and prove both paths answer the
+/// same rows — the sandwich every gate-differential in this module
+/// carries, spelled once.
+fn gated(g: &Graph, params: &BTreeMap<String, Value>, query: &str) -> crate::exec::QueryResult {
+    let _ = take_spec_gates();
+    let specialized = try_exec_cypher_params(g, query, params).unwrap();
+    assert!(
+        take_spec_gates() > 0,
+        "the compiled gate must engage for the query under test"
+    );
+    let generic = with_spec_disabled(|| try_exec_cypher_params(g, query, params).unwrap());
+    assert_eq!(
+        specialized.rows, generic.rows,
+        "the specialized and generic paths must agree"
+    );
+    specialized
+}
+
+/// An invalid regex pattern raises the shared `binary`'s error —
+/// identically whether the gate or the residual evaluates the conjunct.
 #[test]
-fn in_and_regex_errors_match_the_generic_path() {
-    let g = Graph::default();
-    g.begin_write().unwrap();
-    g.create_node(
-        vec!["P".into()],
-        BTreeMap::from([
-            ("id".into(), Value::Int(0)),
-            ("s".into(), Value::String("a".into())),
-        ]),
-    )
-    .unwrap();
-    g.commit_write();
+fn an_invalid_regex_error_matches_the_generic_path() {
+    let g = one_p_node();
     let err_of = |params: &BTreeMap<String, Value>, query: &str| {
         error_of(try_exec_cypher_params(&g, query, params))
     };
-    // A non-list IN bound: `in_op`'s type error, on both paths.
-    let not_list = BTreeMap::from([("tags".to_string(), Value::Int(7))]);
-    let in_query = "MATCH (x:P) WHERE x.s IN $tags RETURN x.id AS id";
-    let specialized = err_of(&not_list, in_query);
-    let generic = with_spec_disabled(|| err_of(&not_list, in_query));
-    assert_eq!(specialized, generic);
-    assert!(specialized.contains("IN requires a list"), "{specialized}");
     // An invalid pattern: the regex compile's syntax error, on both paths.
     let no_params = BTreeMap::new();
     let re_query = "MATCH (x:P) WHERE x.s =~ '([' RETURN x.id AS id";
@@ -550,6 +569,31 @@ fn in_and_regex_errors_match_the_generic_path() {
     assert!(
         specialized.contains("invalid regular expression"),
         "{specialized}"
+    );
+}
+
+/// A non-list `IN` bound answers as the one-element list holding it
+/// (ADR-0711) — identically whether the gate or the residual evaluates
+/// the conjunct: the row whose value equals the scalar matches, a
+/// different scalar matches nothing (the corpus's "parameter is not a
+/// list, but it works as one"). The operator's own answer pins — the
+/// boolean the row counts cannot distinguish, and the container
+/// rejections — live in `eval/expr/tests.rs`, the operator's unit home.
+#[test]
+fn a_non_list_in_bound_answers_as_the_one_element_list_on_both_paths() {
+    let g = one_p_node();
+    let in_query = "MATCH (x:P) WHERE x.s IN $tag RETURN x.id AS id";
+    let scalar_match = BTreeMap::from([("tag".to_string(), Value::String("a".into()))]);
+    assert_eq!(
+        gated(&g, &scalar_match, in_query).rows.len(),
+        1,
+        "x.s IN 'a' is x.s IN ['a']: one row"
+    );
+    let scalar_miss = BTreeMap::from([("tag".to_string(), Value::String("b".into()))]);
+    assert_eq!(
+        gated(&g, &scalar_miss, in_query).rows.len(),
+        0,
+        "x.s IN 'b' matches nothing"
     );
 }
 
