@@ -118,7 +118,11 @@ jobs:
           git push \
             "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
             "HEAD:refs/heads/$branch"
+          # --head names the branch explicitly: the token-URL push above
+          # sets no upstream, so gh cannot infer it (the first dispatch
+          # aborted here with "you must first push the current branch").
           gh pr create \
+            --head "$branch" \
             --title "chore(distribution): re-sign the repository signing fixture" \
             --body "$(cat <<EOF
           ## Summary
