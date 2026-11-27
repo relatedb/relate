@@ -532,7 +532,7 @@ pub(super) const BUILTINS: &[BuiltinRow] = &[
     row("labels", entity::bi_labels, false, ARITY_AT_LEAST_ONE),
     row("last", list::bi_last, false, ARITY_AT_LEAST_ONE),
     row("left", string::bi_left, false, ARITY_AT_LEAST_ONE),
-    row("length", list::bi_length, false, ARITY_AT_LEAST_ONE),
+    form_row("length", list::length_form, ARITY_AT_LEAST_ONE),
     row("ln", math::bi_ln, false, ARITY_AT_LEAST_ONE),
     row(
         "local_date_time",

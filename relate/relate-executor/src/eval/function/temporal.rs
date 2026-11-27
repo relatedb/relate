@@ -73,23 +73,27 @@ pub(super) fn bi_timestamp(_graph: &ExecGraph<'_>, _n: &str, _vals: Vec<Value>) 
 /// `duration.between` and its `duration.in*` siblings: the unit comes from
 /// the row (`Applied::Between`), never from the call name, and
 /// the two operands are the whole argument list — the dispatcher enforced the
-/// row's exactly-two contract, so the signature states it. `n` is only the
-/// called spelling for the messages.
-pub(super) fn between_call(
-    unit: temporal::BetweenUnit,
-    n: &str,
-    [a, b]: [Value; 2],
-) -> Result<Value> {
-    match (a, b) {
+/// row's exactly-two contract, so the signature states it. Every spelling
+/// prints the same rejection: live names the underlying signature `Between`
+/// for all five (`duration.between`, `duration_between` and the three
+/// `duration.in*`, each probed 2026-11-27 on 2026.10.1), so the message
+/// carries no called spelling.
+pub(super) fn between_call(unit: temporal::BetweenUnit, [a, b]: [Value; 2]) -> Result<Value> {
+    match (&a, &b) {
         (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
-        (Value::Temporal(a), Value::Temporal(b)) => Ok(Value::Temporal(
-            temporal::duration_between_unit(&a, &b, unit)?,
+        (Value::Temporal(x), Value::Temporal(y)) => Ok(Value::Temporal(
+            temporal::duration_between_unit(x, y, unit)?,
         )),
         // Live rejects the non-temporal operands as the call's own
         // failure — ProcedureCallFailed under 42001 (probed 2026-11-20
-        // on 2026.10.1), not a syntax rejection.
+        // on 2026.10.1), not a syntax rejection — with the echoed input
+        // list as the message (`Invalid call signature for Between:
+        // Provided input was [String("abc"), String("def")]`, probed
+        // 2026-11-27 on 2026.10.1 for every spelling).
         _ => Err(Error::procedure_call(format!(
-            "Invalid call signature: {n} needs temporal values"
+            "Invalid call signature for Between: Provided input was [{}, {}]",
+            a.pretty_print(),
+            b.pretty_print()
         ))),
     }
 }
@@ -238,15 +242,21 @@ mod tests {
 
     /// A non-temporal operand is the call's own failure — live's
     /// `ProcedureCallFailed` class (probed 2026-11-20 on 2026.10.1), not a
-    /// syntax rejection.
+    /// syntax rejection — and the message is live's byte-for-byte: the
+    /// `Between` signature name and the echoed, pretty-printed input list
+    /// (probed 2026-11-27 on 2026.10.1, every spelling of the family).
     #[test]
     fn between_call_non_temporal_operands_fail_the_call() {
         let err = between_call(
             temporal::BetweenUnit::Months,
-            "duration.between",
             [Value::String("abc".into()), Value::String("def".into())],
         )
         .expect_err("non-temporal operands must fail the call");
         assert!(matches!(err, Error::ProcedureCall(_)), "{err}");
+        assert_eq!(
+            err.to_string(),
+            "ProcedureError: Invalid call signature for Between: \
+             Provided input was [String(\"abc\"), String(\"def\")]"
+        );
     }
 }

@@ -275,8 +275,8 @@ fn check_arity_contract(contract: ArityContract, count: usize) -> Result<()> {
 /// GQLSTATUS 22G03 before any row is produced (`length([1, 2, 3])`,
 /// `length('a string')`, probed 2026-11-11). The `rejected_kinds` column
 /// refuses the same kinds (and the entity kinds) when they arrive bound to
-/// a variable; any other value keeps the runtime backstop (`bi_length`,
-/// same message).
+/// a variable; any other value keeps the runtime backstop (the length
+/// form row's `path_length`, same message).
 ///
 /// A number or boolean literal is deliberately left to the runtime
 /// backstop: live resolves it the same way, but the corpus's

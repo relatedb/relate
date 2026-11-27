@@ -2,15 +2,18 @@
 //! `size`/`cardinality`/`length`/`isEmpty`, and the `coll.*` wrappers over
 //! the `eval::collection` helpers.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use relate_core::{
     expected_type_detail, integer_args, value_type_name, Error, ErrorKind, Result, Value,
     FUNCTION_REQUIRES_ONE_ARGUMENT, LENGTH_REQUIRES_A_PATH,
 };
-use relate_ir::QuantifierKind;
+use relate_ir::{Expr, QuantifierKind};
 
+use crate::exec::{eval_shortest, ShortestWant};
 use crate::overlay::ExecGraph;
+use crate::row::Row;
 
 use super::super::collection::{
     collection_distinct, collection_extreme, collection_flatten, collection_has,
@@ -18,15 +21,39 @@ use super::super::collection::{
 };
 use super::super::{into_items, Extreme};
 
-pub(super) fn bi_length(_graph: &ExecGraph<'_>, _n: &str, vals: Vec<Value>) -> Result<Value> {
-    // `length()` accepts only a path (or null): live Neo4j 2026.10.1
-    // resolves the signature at compile time, so a string or list is
-    // rejected like any other non-path value. Same message as the planner
-    // rule (`function_meta::rule_length_non_path_literal`).
+/// `length()` accepts only a path (or null): live Neo4j 2026.10.1
+/// resolves the signature at compile time, so a string or list is
+/// rejected like any other non-path value. Same message as the planner
+/// rule (`function_meta::rule_length_non_path_literal`); the form row
+/// and the tests end here — the body is the one spelling.
+fn path_length(vals: Vec<Value>) -> Result<Value> {
     unary_arg(vals, |value| match value {
         Value::Path(p) => Ok(Value::Int(p.rels.len() as i64)),
         _ => Err(Error::invalid_argument_type(LENGTH_REQUIRES_A_PATH)),
     })
+}
+
+/// `length()`'s form row: a lone `shortestPath()` argument lowers
+/// straight to the shortest-path kernel (its length is the kernel's own
+/// answer, never a path value) — the slice pattern deciding arity and
+/// shape in one — and anything else (a different argument, more or
+/// fewer of them) evaluates through the shared argument site and the
+/// path-length body, so the dispatcher keeps one resolve-then-dispatch
+/// flow with no per-name special case. The `all: false` the guard
+/// selects is the kernel parameter's own fact — the same spelling, one
+/// decision — and `allShortestPaths` stays on the delegate path.
+pub(super) fn length_form(
+    graph: &ExecGraph<'_>,
+    row: &Row,
+    params: &BTreeMap<String, Value>,
+    args: &[Expr],
+) -> Result<Value> {
+    match args {
+        [Expr::ShortestPath {
+            all: false, path, ..
+        }] => eval_shortest(graph, row, params, false, path, ShortestWant::Length),
+        _ => path_length(super::eval_args(graph, row, params, args)?),
+    }
 }
 
 /// The wrong-argument-type error of the list builtins (`22N01`): the one
@@ -614,35 +641,32 @@ mod tests {
 
     /// `length()`/`cardinality()` share the one unary-arity contract of the
     /// other list builtins: extra and zero arguments are the typed arity
-    /// error, null stays null.
+    /// error, null stays null. `length` registers as a form row (its
+    /// `shortestPath` lowering), so its body is exercised directly.
     #[test]
     fn length_and_cardinality_use_the_unary_arity_contract() {
         let g = Graph::default();
         let graph = ExecGraph::read(&g);
-        for (name, builtin) in [
-            ("length", bi_length as super::super::registry::Builtin),
-            (
-                "cardinality",
-                bi_cardinality as super::super::registry::Builtin,
-            ),
-        ] {
-            assert_one_argument_error(builtin(&graph, name, vec![]).unwrap_err());
-            assert_one_argument_error(
-                builtin(&graph, name, vec![ints(&[1]), ints(&[2])]).unwrap_err(),
-            );
-            assert_eq!(
-                builtin(&graph, name, vec![Value::Null]).unwrap(),
-                Value::Null
-            );
-        }
+        let cardinality = bi_cardinality as super::super::registry::Builtin;
+        assert_one_argument_error(cardinality(&graph, "cardinality", vec![]).unwrap_err());
+        assert_one_argument_error(
+            cardinality(&graph, "cardinality", vec![ints(&[1]), ints(&[2])]).unwrap_err(),
+        );
+        assert_eq!(
+            cardinality(&graph, "cardinality", vec![Value::Null]).unwrap(),
+            Value::Null
+        );
         // `cardinality` counts a list; `length` accepts a path only (live
         // Neo4j 2026.10.1 rejects a list at the signature check).
         assert_eq!(
-            bi_cardinality(&graph, "cardinality", vec![ints(&[1, 2])]).unwrap(),
+            cardinality(&graph, "cardinality", vec![ints(&[1, 2])]).unwrap(),
             Value::Int(2)
         );
+        assert_one_argument_error(path_length(vec![]).unwrap_err());
+        assert_one_argument_error(path_length(vec![ints(&[1]), ints(&[2])]).unwrap_err());
+        assert_eq!(path_length(vec![Value::Null]).unwrap(), Value::Null);
         assert_eq!(
-            bi_length(&graph, "length", vec![ints(&[1, 2])]).unwrap_err(),
+            path_length(vec![ints(&[1, 2])]).unwrap_err(),
             Error::invalid_argument_type(LENGTH_REQUIRES_A_PATH)
         );
     }

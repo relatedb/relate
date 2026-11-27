@@ -914,3 +914,15 @@ fn maps_compare_by_size_then_sorted_keys_then_values() {
     // Across types a map stays incomparable.
     assert_eq!(m(&[("k", Value::Int(1))]).compare(&Value::Int(1)), None);
 }
+
+// An empty path (public fields; any decoder or foreign binding can
+// produce one) renders the empty chain — never a panic: the walk's
+// pinned shape admits "nothing" beside the node-then-links alternation.
+#[test]
+fn an_empty_path_renders_the_empty_chain() {
+    let empty = Value::from_path(Path {
+        nodes: vec![],
+        rels: vec![],
+    });
+    assert_eq!(empty.to_display_string(), "");
+}
