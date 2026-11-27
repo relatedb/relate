@@ -927,3 +927,5 @@ mod subquery_eval_tests;
 pub(crate) mod test_support;
 #[cfg(test)]
 mod text_seek_tests;
+#[cfg(test)]
+mod write_tests;

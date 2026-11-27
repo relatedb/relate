@@ -7,6 +7,14 @@
 //! reads back in write order — the pattern's carried names first, the
 //! written ones after them.
 //!
+//! The one positional exception is ADR-0695: in `MERGE`'s `ON CREATE`
+//! arm, a `labels(n) = …` overwrite keeps the merge pattern's own
+//! labels for the node it created — the pattern anchors that node's
+//! identity, so the overwrite replaces everything else. The anchor is
+//! the created node's birth label set (dynamic label atoms resolved at
+//! creation), it covers only nodes the merge created, and `+=` / `-=`
+//! are unchanged in every position.
+//!
 //! The operand resolves through the one dynamic-label rule every
 //! dynamic label atom shares (`STRING` or `LIST<STRING>`): a constant
 //! operand is checked at admission — a zero-row `MATCH` still fails the
@@ -332,6 +340,139 @@ fn merge_on_a_missing_node_takes_the_on_create_arm() {
          RETURN labels(gem) AS ls",
         &["Person", "Fresh"],
         2,
+        0,
+    );
+}
+
+#[test]
+fn merge_on_create_overwrite_on_a_binding_a_same_named_rel_clobbers_is_typed_rejected() {
+    // The dynamic rel type reuse leaves the rel pattern's shape
+    // undeclared, so `create_rel` rebinds `r` to the relationship — the
+    // anchor scan must skip it and let the arm's target resolution raise
+    // the typed non-node error (this pinned a panic before the fix).
+    assert_label_rejection(
+        "WITH 'T' AS t \
+         MERGE (r:Person)-[r:$(t)]->(m) \
+         ON CREATE SET labels(r) = ['X'] \
+         RETURN labels(m) AS ls",
+        "syntax error: SET labels() requires a node",
+    );
+}
+
+// ADR-0695 — the ON CREATE overwrite keeps the merge pattern's own
+// labels for the node it created; the anchor is that node's birth label
+// set, and every other overwrite position stays a true overwrite.
+
+#[test]
+fn merge_on_create_overwrite_keeps_the_patterns_own_labels() {
+    assert_label_write(
+        None,
+        "WITH 'NewLabel' AS label, 'OldLabel' AS label2 \
+         MERGE (gem:Person {name: 'Gem'}) \
+         ON CREATE SET labels(gem) = [label] \
+         ON MATCH SET labels(gem) += [label2] \
+         RETURN labels(gem) AS ls",
+        &["Person", "NewLabel"],
+        2,
+        0,
+    );
+}
+
+#[test]
+fn merge_on_create_overwrite_reads_pattern_names_first_after_a_removal() {
+    assert_label_write(
+        None,
+        "WITH 'New' AS name \
+         MERGE (gem:Person {name: 'Gem'}) \
+         ON CREATE SET labels(gem) -= ['Person'], labels(gem) = [name] \
+         RETURN labels(gem) AS ls",
+        &["Person", "New"],
+        2,
+        0,
+    );
+}
+
+#[test]
+fn merge_on_create_overwrite_on_a_no_label_pattern_behaves_like_plain_overwrite() {
+    assert_label_write(
+        None,
+        "WITH 'Fresh' AS label \
+         MERGE (gem {name: 'Gem'}) \
+         ON CREATE SET labels(gem) = [label] \
+         RETURN labels(gem) AS ls",
+        &["Fresh"],
+        1,
+        0,
+    );
+}
+
+#[test]
+fn merge_on_create_overwrite_anchors_a_dynamic_pattern_label() {
+    assert_label_write(
+        None,
+        "WITH 'Born' AS born \
+         MERGE (n:$(born)) \
+         ON CREATE SET labels(n) = ['Fresh'] \
+         RETURN labels(n) AS ls",
+        &["Born", "Fresh"],
+        2,
+        0,
+    );
+}
+
+#[test]
+fn merge_on_create_overwrite_replaces_an_earlier_items_label() {
+    assert_label_write(
+        None,
+        "WITH 'New' AS name \
+         MERGE (gem:Person {name: 'Gem'}) \
+         ON CREATE SET gem:Extra, labels(gem) = [name] \
+         RETURN labels(gem) AS ls",
+        &["Person", "New"],
+        2,
+        0,
+    );
+}
+
+#[test]
+fn merge_on_create_overwrite_on_a_node_the_merge_did_not_create_is_plain() {
+    assert_label_write(
+        Some("CREATE (:Keep:Drop {name: 'Other'})"),
+        "MATCH (other {name: 'Other'}) \
+         WITH other, 'X' AS x \
+         MERGE (gem:Person {name: 'Gem'}) \
+         ON CREATE SET labels(other) = [x] \
+         RETURN labels(other) AS ls",
+        &["X"],
+        2,
+        2,
+    );
+}
+
+#[test]
+fn merge_on_match_overwrite_stays_a_true_overwrite() {
+    assert_label_write(
+        Some("CREATE (:Person {name: 'Gem'})"),
+        "WITH 'Fresh' AS label \
+         MERGE (gem:Person {name: 'Gem'}) \
+         ON CREATE SET labels(gem) = ['Never'] \
+         ON MATCH SET labels(gem) = [label] \
+         RETURN labels(gem) AS ls",
+        &["Fresh"],
+        1,
+        1,
+    );
+}
+
+#[test]
+fn merge_on_create_remove_still_drops_a_pattern_label() {
+    assert_label_write(
+        None,
+        "MERGE (gem:Person {name: 'Gem'}) \
+         ON CREATE SET labels(gem) -= ['Person'] \
+         RETURN labels(gem) AS ls",
+        &[],
+        0,
         0,
     );
 }
