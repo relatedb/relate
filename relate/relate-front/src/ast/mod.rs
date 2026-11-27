@@ -14,6 +14,8 @@
 //! - [`search_spec`]: the one walk over a SEARCH source specification.
 //! - [`stmt_ref`]: the statement-position type (real statement, UNION arm,
 //!   NEXT stage, or FOREACH body) the whole-tree walkers visit.
+//! - [`text`]: the structural expression renderer — the one parser-AST →
+//!   text spelling the error sentences quote through.
 //! - [`tree`]: the whole-tree statement/expression walker family and the
 //!   ADR-0257 nesting-depth cap they enforce.
 
@@ -22,6 +24,9 @@ pub(crate) mod naming;
 pub(crate) mod search_spec;
 pub(crate) mod stmt_ref;
 pub(crate) mod tree;
+
+mod text;
+pub(crate) use text::structural_expr_text;
 
 /// The shared nesting-depth cap, the parser's own constant (ADR-0257): the
 /// structural walkers refuse a statement or expression nested deeper.

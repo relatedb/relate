@@ -22,6 +22,7 @@ mod error;
 mod error_kinds;
 pub mod file_identity;
 pub mod integer_args;
+mod list_returns;
 mod literal;
 mod load_pool;
 mod memory_limit;
@@ -56,6 +57,7 @@ pub use error_kinds::{
     duplicate_variable_detail, undefined_variable_detail, unknown_function_detail, ErrorKind,
     TckErrorClass,
 };
+pub use list_returns::{builtin_returns_list, list_returning_names};
 pub use literal::{LiteralValueKind, TOSTRING_TYPE_ERROR_DETAIL};
 pub use load_pool::{
     current_load_threads, record_transient_lease, resolve_load_threads, run_load_tasks,
@@ -70,7 +72,7 @@ pub use namespace::{
     rel_element_id, ElementIdRef, Namespace, GRAPH_SELECTOR_FUNCTIONS,
     GRAPH_SELECTOR_FUNCTION_NAMES,
 };
-pub use output_safety::is_unsafe_output_char;
+pub use output_safety::{escape_unsafe_output, is_unsafe_output_char, quote_message};
 pub use presence_bits::PresenceBits;
 pub use preview::{
     preview_feature_disabled_text, DetectorKind, GateSite, ParseOption, PreviewFeature,

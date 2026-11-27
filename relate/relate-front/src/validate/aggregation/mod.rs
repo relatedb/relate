@@ -593,7 +593,10 @@ fn check_grouping_element_aliases(
                     "invalid grouping element. The grouping element '{}' is not a valid \
                      grouping key. A grouping element that references the projection item \
                      alias `{base}` must be a simple variable reference",
-                    grouping_element_text(key)
+                    // The one structural renderer, with this rejection's
+                    // placeholder for a shape outside the grouping
+                    // vocabulary.
+                    crate::ast::structural_expr_text(key, "<grouping element>")
                 ),
             ));
         }
@@ -619,27 +622,6 @@ fn projection_item_expr<'a>(items: &'a [ReturnItem], name: &SmallName) -> Option
                     && matches!(effective_expr(item), Expr::Variable(v) if v == name))
         })
         .map(effective_expr)
-}
-
-/// Render a grouping element for the 42I80 description: the expression's
-/// source text is not kept on the AST node, so the two shapes a grouping
-/// element takes in this rejection — a property access and a binary
-/// expression — are spelled structurally.
-fn grouping_element_text(expr: &Expr) -> String {
-    match expr {
-        Expr::Property(property) => match &property.expr {
-            Expr::Variable(base) => format!("{base}.{}", property.property),
-            other => format!("{}.{}", grouping_element_text(other), property.property),
-        },
-        Expr::Variable(name) => name.to_string(),
-        Expr::Binary(binary) => format!(
-            "{} {} {}",
-            grouping_element_text(&binary.left),
-            binary.op,
-            grouping_element_text(&binary.right)
-        ),
-        _ => "<grouping element>".to_string(),
-    }
 }
 
 #[cfg(test)]

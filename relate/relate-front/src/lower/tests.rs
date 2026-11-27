@@ -748,3 +748,19 @@ fn temporal_fold_declines_parameters_and_clock_forms() {
         "date({{year: 1984}}) must fold, got {folded:?}"
     );
 }
+/// ADR-0497 §4's hidden-name contract through the boundary's own
+/// validation sequence: the boolean-position policy defers a gated name
+/// (`BooleanOperandCheck::DeferredToAdmission`), and the function-name
+/// admission gate — later in the same sequence — answers for it, so a
+/// gated-off list-returning call in a boolean position answers
+/// UnknownFunction — never ADR-0715's coercion sentence, which would
+/// advertise a name the catalogue must not list.
+#[test]
+fn a_gated_list_returning_call_in_a_boolean_position_answers_the_admission_gate() {
+    let error = lower_err("RETURN true AND coll.zip([1], [2])");
+    assert!(error.contains("UnknownFunction"), "{error}");
+    assert!(
+        !error.contains("Cannot coerce LIST to BOOLEAN"),
+        "the boolean-position rule must not answer for a hidden name: {error}"
+    );
+}

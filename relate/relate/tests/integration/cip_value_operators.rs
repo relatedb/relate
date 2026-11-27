@@ -516,17 +516,6 @@ fn fulltext_and_vector_filters() {
         .unwrap();
     assert!(r.rows.is_empty());
 
-    // WHERE with FULLTEXT filters the candidates (ADR-0678 — the
-    // 42N14-era rejection retired with the graduated inner-WHERE
-    // surface); missing index still raises.
-    let r = c
-        .query("MATCH (p) SEARCH p IN (FULLTEXT INDEX ft FOR 'red' WHERE p.age > 20 LIMIT 10) RETURN p.name")
-        .unwrap();
-    assert_eq!(r.rows, vec![vec![Value::String("red fox".into())]]);
-    assert!(c
-        .query("MATCH (p) SEARCH p IN (FULLTEXT INDEX absent FOR 'red' LIMIT 10) RETURN p.name")
-        .is_err());
-
     // Vector search with a WITH-declared property filter; SKIP is
     // fulltext-only.
     c.query("CREATE VECTOR INDEX vidx FOR (p:Person) ON p.embed WITH [p.age]")
@@ -725,4 +714,34 @@ fn tostring_or_null_and_property_lists_render() {
     ] {
         assert_eq!(text(&mut c, query), expected, "{query}");
     }
+}
+
+/// ADR-0714's own pins, one policy per fn (the search_window.rs
+/// sibling's shape): a property predicate inside a fulltext window is
+/// the invalid-predicate rejection with the term's own spelling; the
+/// same filtering stays reachable through the MATCH's own WHERE, where
+/// the entity-side conjunct filters the window's survivors; a missing
+/// index still raises.
+#[test]
+fn a_fulltext_window_rejects_property_predicates_but_the_outer_where_filters() {
+    let mut c = connection();
+    c.query("CREATE FULLTEXT INDEX ft FOR (p:P) ON EACH [p.b]")
+        .unwrap();
+    c.query("CREATE (:P {name: 'red fox', b: 'red', age: 30})")
+        .unwrap();
+
+    let rejection = c
+        .query("MATCH (p) SEARCH p IN (FULLTEXT INDEX ft FOR 'red' WHERE p.age > 20 LIMIT 10) RETURN p.name")
+        .unwrap_err();
+    assert!(rejection.to_string().contains(
+        "invalid predicate for search with filters. The search filter \
+         predicate 'p.age > 20' is not supported"
+    ));
+    let r = c
+        .query("MATCH (p) SEARCH p IN (FULLTEXT INDEX ft FOR 'red' LIMIT 10) WHERE p.age > 20 RETURN p.name")
+        .unwrap();
+    assert_eq!(r.rows, vec![vec![Value::String("red fox".into())]]);
+    assert!(c
+        .query("MATCH (p) SEARCH p IN (FULLTEXT INDEX absent FOR 'red' LIMIT 10) RETURN p.name")
+        .is_err());
 }

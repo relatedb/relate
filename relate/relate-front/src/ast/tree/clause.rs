@@ -35,9 +35,6 @@ pub(super) fn walk_clause_exprs_tree(
                     walk_expr_at(expr, depths, walk)
                 })?;
             }
-            if let Some(w) = &mc.where_expr {
-                walk_expr_at(w, depths, walk)?;
-            }
         }
         Clause::Create(cc) => {
             for path in &cc.pattern {
@@ -91,9 +88,6 @@ pub(super) fn walk_clause_exprs_tree(
                 depths,
                 walk,
             )?;
-            if let Some(w) = &wc.where_expr {
-                walk_expr_at(w, depths, walk)?;
-            }
         }
         Clause::Unwind(uw) => {
             walk_expr_at(&uw.expr, depths, walk)?;
@@ -101,9 +95,6 @@ pub(super) fn walk_clause_exprs_tree(
         Clause::CallProcedure(cp) => {
             for arg in &cp.args {
                 walk_expr_at(arg, depths, walk)?;
-            }
-            if let Some(w) = &cp.where_expr {
-                walk_expr_at(w, depths, walk)?;
             }
         }
         Clause::CallSubquery(csq) => {
@@ -191,6 +182,15 @@ pub(super) fn walk_clause_exprs_tree(
         | Clause::CreateGraphType(_)
         | Clause::AlterCurrentGraphType(_)
         | Clause::Finish => {}
+    }
+    // The predicate WHERE root, read once from the clause's one table
+    // ([`Clause::predicate_where`]) — the same source the validators'
+    // root rules read. Every clause that carries one walks it last in
+    // its arm above (MATCH: pattern, search spec; WITH: projection;
+    // CALL: arguments), so the visit order is unchanged by the single
+    // site.
+    if let Some(w) = clause.predicate_where() {
+        walk_expr_at(w, depths, walk)?;
     }
     Ok(())
 }

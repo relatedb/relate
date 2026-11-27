@@ -23,11 +23,11 @@ use crate::ast::tree::{unparen, walk_clause_list_tree_with_clauses, SubqueryDesc
 
 use super::static_arithmetic::expr_is_bare_var;
 use super::static_literal::{
-    non_numeric_leaf_class, require_integer_argument, require_static_type, static_int_value,
-    static_literal_type, static_string_value, INTEGER_ONLY, INTEGER_OR_NULL, LIST_OR_NULL,
+    boolean_operand_check, list_returning_builtin_error, non_numeric_leaf_class,
+    require_integer_argument, require_static_type, static_int_value, static_literal_type,
+    static_string_value, BooleanOperandCheck, INTEGER_ONLY, INTEGER_OR_NULL, LIST_OR_NULL,
     MAP_OR_NULL, STRING_OR_NULL,
 };
-use super::static_types::is_statically_non_boolean;
 
 /// Apply this module's static argument checks to one statement node's
 /// clauses (the module contract above).
@@ -367,13 +367,19 @@ fn check_all_reduce(r: &relate_parser::AllReduceExpr) -> Result<(), EngineError>
     } else {
         &r.predicate
     };
-    if is_statically_non_boolean(effective_predicate) {
-        return Err(EngineError::semantic(
+    // The boolean-position policy, the same classifier the operator arms
+    // and the predicate roots read; a gated name defers to the admission
+    // gate. Each rule keeps its sentence: the literal rule this
+    // position's own, the list rule ADR-0715's shared coercion
+    // rejection — one sentence per rule across every boolean position.
+    match boolean_operand_check(effective_predicate) {
+        BooleanOperandCheck::NonBooleanLiteral(_) => Err(EngineError::semantic(
             ErrorKind::InvalidArgumentType,
             "allReduce() predicate must be boolean".to_string(),
-        ));
+        )),
+        BooleanOperandCheck::ListReturningBuiltin => Err(list_returning_builtin_error()),
+        BooleanOperandCheck::DeferredToAdmission | BooleanOperandCheck::Admitted => Ok(()),
     }
-    Ok(())
 }
 
 fn require_list_operand(expr: &Expr, what: &str) -> Result<(), EngineError> {
@@ -547,12 +553,39 @@ mod tests {
             // The predicate is the accumulator itself, whose static type is
             // the integer init expression.
             "RETURN allReduce(acc = 0, x IN [1, 2, 3] | acc + x, acc) AS result",
+            // ADR-0715's builtin rule reaches this position too: a
+            // list-returning call as the predicate is the same knowable
+            // violation, under this position's own sentence.
+            "RETURN allReduce(acc = true, x IN [1, 2] | acc, tail([1])) AS result",
         ]);
         assert_accepted(&[
             "RETURN any(x IN [1, 2] WHERE x > 0) AS result",
             "RETURN allReduce(acc = 0, x IN [1, 2] | acc + x, acc < 5) AS result",
             "RETURN any(x IN $l WHERE x > 0) AS result",
         ]);
+    }
+
+    /// The boolean-position rules' sentences at this position: the
+    /// literal rule keeps `allReduce()`'s own rejection, the list rule
+    /// reads ADR-0715's shared coercion sentence — one sentence per rule
+    /// across every boolean position.
+    #[test]
+    fn all_reduce_predicate_sentences_split_per_rule() {
+        let literal = parse_and_check_static_calls(
+            "RETURN allReduce(acc = 0, x IN [1, 2, 3] | acc + x, acc) AS result",
+        )
+        .expect_err("a statically non-boolean predicate is rejected");
+        let text = literal.to_string();
+        assert!(
+            text.contains("allReduce() predicate must be boolean"),
+            "{text}"
+        );
+        let list = parse_and_check_static_calls(
+            "RETURN allReduce(acc = true, x IN [1, 2] | acc, tail([1])) AS result",
+        )
+        .expect_err("a list-returning builtin predicate is rejected");
+        let text = list.to_string();
+        assert!(text.contains("Cannot coerce LIST to BOOLEAN"), "{text}");
     }
 
     #[test]

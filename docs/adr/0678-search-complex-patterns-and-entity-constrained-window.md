@@ -132,3 +132,10 @@ implementation past all of that:
   of the acceptance corpus turn green with this change; the fulltext
   suite's remaining failures are its procedure family, not the SEARCH
   clause.
+
+## Later references
+
+- [ADR-0714](./0714-fulltext-search-where-is-the-match-filter.md)
+  supersedes this record's "the inner `WHERE` serves both kinds" line:
+  a 2026-11 re-probe of live Neo4j split the predicate families by index kind —
+  a fulltext window's inner `WHERE` is the match filter only.

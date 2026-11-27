@@ -560,24 +560,29 @@ fn lower_search_clause(
 /// specification or a (possibly nested) combined one.
 fn lower_search_spec(binding_var: &SmallName, spec: &cl::SearchSpec) -> Result<mdb::SearchSpec> {
     Ok(match spec {
-        cl::SearchSpec::Index(spec) => mdb::SearchSpec::Index(Box::new(mdb::SearchIndexSpec {
-            kind: match spec.kind {
-                cl::SearchKind::Vector => mdb::SearchKind::Vector,
-                cl::SearchKind::Fulltext => mdb::SearchKind::Fulltext,
-            },
-            // Map-bridge feed: the IR's index name is catalog-facing
-            // (a stored index reference), rendered once here.
-            index_name: spec.index_name.to_string(),
-            for_expr: lower_expr(&spec.for_expr)?,
-            analyzer: lower_boxed(spec.analyzer.as_ref(), lower_expr)?,
-            filters: super::search_filter::lower_search_filters(
-                binding_var,
-                &spec.for_expr,
-                spec.inner_where.as_ref(),
-            )?,
-            offset_expr: lower_boxed(spec.offset_expr.as_ref(), lower_expr)?,
-            limit_expr: lower_expr(&spec.limit_expr)?,
-        })),
+        cl::SearchSpec::Index(spec) => {
+            // The kind rides both the IR (the executor's source dispatch)
+            // and the filter lowering (ADR-0714's per-kind predicate
+            // grammar) through the one `From` conversion (the
+            // `SearchOp`→`BinaryOp` idiom beside it).
+            let kind: mdb::SearchKind = spec.kind.into();
+            mdb::SearchSpec::Index(Box::new(mdb::SearchIndexSpec {
+                kind,
+                // Map-bridge feed: the IR's index name is catalog-facing
+                // (a stored index reference), rendered once here.
+                index_name: spec.index_name.to_string(),
+                for_expr: lower_expr(&spec.for_expr)?,
+                analyzer: lower_boxed(spec.analyzer.as_ref(), lower_expr)?,
+                filters: super::search_filter::lower_search_filters(
+                    binding_var,
+                    kind,
+                    &spec.for_expr,
+                    spec.inner_where.as_ref(),
+                )?,
+                offset_expr: lower_boxed(spec.offset_expr.as_ref(), lower_expr)?,
+                limit_expr: lower_expr(&spec.limit_expr)?,
+            }))
+        }
         cl::SearchSpec::Combine(spec) => mdb::SearchSpec::Combine(mdb::SearchCombineSpec {
             sources: spec
                 .sources

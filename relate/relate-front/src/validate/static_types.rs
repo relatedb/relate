@@ -7,24 +7,38 @@
 //! `reduce()` accumulator rule in [`super::static_reduce`]. Everything whose
 //! type depends on runtime data is deliberately left to the runtime evaluator.
 
-use relate_core::LiteralValueKind;
 use relate_error::{EngineError, ErrorKind};
 use relate_parser::{Clause, Expr};
 
-use crate::ast::tree::{is_boolean_operator, walk_clause_list_tree, SubqueryDescent};
+use crate::ast::tree::{is_boolean_operator, walk_clause_list_tree_with_clauses, SubqueryDescent};
 
 use super::static_arithmetic::check_quantifier_arithmetic;
 use super::static_literal::{
-    require_static_type, require_static_type_kind, static_type_outside, LIST_OR_NULL,
+    boolean_operand_check, is_concat_operator, is_regex_operator, list_returning_builtin_error,
+    require_static_type, require_static_type_kind, BooleanOperandCheck, LIST_OR_NULL,
     STRING_OR_LIST_OR_NULL, STRING_OR_NULL,
 };
 use super::static_reduce::{check_reduce_accumulator_type, check_reduce_temporal_arithmetic};
 
-/// The boolean-operand rule's predicate, shared by the operator gate here and
-/// `static_calls`' `allReduce()` predicate check: a statically-known type
-/// that is neither BOOLEAN nor NULL.
-pub(super) fn is_statically_non_boolean(expr: &Expr) -> bool {
-    static_type_outside(expr, BOOLEAN_OPERAND_TYPES).is_some()
+/// One boolean position's operand contract, stated once: both rules'
+/// authored rejections — the literal rule's operand-mismatch sentence
+/// (the `InvalidArgumentType` class the `require_static_type` gate
+/// carries) and the builtin rule's reference-server coercion sentence
+/// ([`list_returning_builtin_error`], ADR-0715). The operator arms read
+/// this; positions that pin their own literal-rule sentence
+/// (`static_calls`' `allReduce()` predicate) read [`boolean_operand_check`]
+/// and match its answer directly.
+fn require_boolean_operand(operand: &Expr) -> Result<(), EngineError> {
+    match boolean_operand_check(operand) {
+        BooleanOperandCheck::NonBooleanLiteral(kind) => Err(EngineError::semantic(
+            ErrorKind::InvalidArgumentType,
+            format!("Type mismatch: expected Boolean but was {}", kind.name()),
+        )),
+        BooleanOperandCheck::ListReturningBuiltin => Err(list_returning_builtin_error()),
+        // A gated name is the admission gate's to answer; this position
+        // defers ([`BooleanOperandCheck::DeferredToAdmission`]).
+        BooleanOperandCheck::DeferredToAdmission | BooleanOperandCheck::Admitted => Ok(()),
+    }
 }
 
 /// `||` admits strings and lists, plus NULL. Its rejection carries the
@@ -52,23 +66,6 @@ fn require_string_literal_operand(operand: &Expr) -> Result<(), EngineError> {
     })
 }
 
-/// The types a boolean operand admits: BOOLEAN, plus NULL (three-valued
-/// logic). One list, consulted by the operator gate and
-/// [`is_statically_non_boolean`].
-const BOOLEAN_OPERAND_TYPES: &[LiteralValueKind] =
-    &[LiteralValueKind::Boolean, LiteralValueKind::Null];
-
-/// Reject a boolean-operator operand whose *literal* type is neither Boolean nor
-/// Null. A `null` operand is always allowed (three-valued logic); a non-literal
-/// operand is left for runtime. A list *literal* stays a compile-time error
-/// (openCypher TCK Boolean1-3 [8]); only a runtime list (a parameter, a
-/// function result) takes the deprecated list-to-boolean conversion.
-fn require_boolean_literal_operand(operand: &Expr) -> Result<(), EngineError> {
-    require_static_type(operand, BOOLEAN_OPERAND_TYPES, |ty| {
-        format!("Type mismatch: expected Boolean but was {}", ty.name())
-    })
-}
-
 /// Compile-time type checking for operators/functions whose operand type is
 /// statically knowable from a *literal*. Neo4j/openCypher rejects these during
 /// semantic analysis (a compile-time `SyntaxError: InvalidArgumentType`), not at
@@ -77,7 +74,7 @@ fn require_boolean_literal_operand(operand: &Expr) -> Result<(), EngineError> {
 /// that boundary and *only* for literal operands; every non-literal operand
 /// (variable, parameter, function result, …) is left to the runtime evaluator,
 /// so no valid query is affected. It rides the shared clause walk
-/// ([`walk_clause_list_tree`]) over every clause shape's expressions — the
+/// ([`walk_clause_list_tree_with_clauses`]) over every clause shape's expressions — the
 /// `MERGE` `ON CREATE`/`ON MATCH SET` values, `FOREACH` lists, `CALL`
 /// arguments and `WHERE`, `SKIP`/`LIMIT` bounds and write-clause property
 /// maps included — exactly as [`super::static_calls`]' pass does; nested
@@ -88,33 +85,57 @@ fn require_boolean_literal_operand(operand: &Expr) -> Result<(), EngineError> {
 /// - `NOT` / `AND` / `OR` / `XOR` require boolean operands (Boolean1-4).
 /// - `x IN <list>` requires a list right operand (List5 scenario 42).
 pub fn validate_static_operator_types(clauses: &[Clause]) -> Result<(), EngineError> {
-    walk_clause_list_tree(
+    walk_clause_list_tree_with_clauses(
         clauses,
         SubqueryDescent::Opaque,
         &mut check_static_operator_types,
+        &mut check_where_root,
     )
+}
+
+/// ADR-0715's predicate-position roots: the `WHERE` of a `MATCH`, `WITH`
+/// or `CALL … YIELD … WHERE` (the one table: [`Clause::predicate_where`])
+/// is itself a boolean position, so its root expression answers the same
+/// builtin-list rejection the operator operands get. Only the builtin
+/// half of the policy applies here — the literal half's root rejection is
+/// the planner's own (its 42N06 SyntaxError class is pinned), and nested
+/// boolean positions inside the root (an `AND`, a `NOT`) are the
+/// expression visitor's. A path pattern's own per-element `WHERE` is
+/// deliberately out of scope (ADR-0715): it is a row-level predicate
+/// inside the pattern, evaluated like the dynamically-typed shapes, and
+/// no reference rejection pins it.
+fn check_where_root(clause: &Clause) -> Result<(), EngineError> {
+    if let Some(expr) = clause.predicate_where() {
+        if matches!(
+            boolean_operand_check(expr),
+            BooleanOperandCheck::ListReturningBuiltin
+        ) {
+            return Err(list_returning_builtin_error());
+        }
+    }
+    Ok(())
 }
 
 /// The per-node visitor for [`validate_static_operator_types`].
 fn check_static_operator_types(e: &Expr) -> Result<(), EngineError> {
     match e {
-        Expr::Unary(u) if is_boolean_operator(u.op) => require_boolean_literal_operand(&u.expr)?,
+        Expr::Unary(u) if is_boolean_operator(u.op) => require_boolean_operand(&u.expr)?,
         // `||` concatenates strings or lists; any other statically-known
         // literal operand is the compile-time type mismatch live Neo4j
         // reports (42001 with cause 22NB1: "expected to be STRING or LIST
         // but was 'INTEGER'").
-        Expr::Binary(b) if b.op == "||" => {
+        Expr::Binary(b) if is_concat_operator(b.op) => {
             require_string_or_list_literal_operand(&b.left)?;
             require_string_or_list_literal_operand(&b.right)?;
         }
         Expr::Binary(b) if is_boolean_operator(b.op) => {
-            require_boolean_literal_operand(&b.left)?;
-            require_boolean_literal_operand(&b.right)?;
+            require_boolean_operand(&b.left)?;
+            require_boolean_operand(&b.right)?;
         }
         // `=~` compares strings; a statically-known non-string operand is
         // the compile-time 42001 live Neo4j reports
         // (`WHERE a.age =~ 13`, cause 22NB1).
-        Expr::Comparison(c) if c.op == "=~" => {
+        Expr::Comparison(c) if is_regex_operator(c.op) => {
             require_string_literal_operand(&c.left)?;
             require_string_literal_operand(&c.right)?;
         }
@@ -367,5 +388,72 @@ mod tests {
         // SemanticError.
         // A non-static operand is NOT caught by the static pass.
         assert!(parse_and_check_static_ops("UNWIND ['abc'] AS x RETURN x % 2").is_ok());
+    }
+    /// ADR-0715: a builtin call whose catalog-declared return type is a
+    /// list, in a boolean position, is the compile-time coercion
+    /// rejection — the WHERE root and every boolean-operator operand —
+    /// with the reference server's 22N37 sentence. Dynamically-typed shapes (a
+    /// parameter, a property read) keep the runtime conversion, and a
+    /// projection position is never a boolean position.
+    #[test]
+    fn a_list_returning_builtin_call_in_a_boolean_position_rejects() {
+        for query in [
+            "WITH 1 AS x WHERE tail([1, 2, 3]) RETURN x",
+            "MATCH (n) WHERE tail([1, 2, 3]) RETURN n",
+            "RETURN true AND tail([1])",
+            "RETURN NOT tail([1])",
+            "WITH [1] AS l RETURN l = [] OR labels(null)",
+            // Paren-transparent: the wrapped spellings reject exactly
+            // like their bare twins (the literal half's contract).
+            "WITH 1 AS x WHERE (tail([1, 2, 3])) RETURN x",
+            "RETURN true AND (tail([1]))",
+            "RETURN NOT (tail([1]))",
+        ] {
+            let error = parse_and_check_static_ops(query)
+                .expect_err("a list-returning call in a boolean position must reject");
+            assert_eq!(error.kind(), ErrorKind::TypeError, "{query}: {error}");
+            assert!(
+                error.to_string().contains("Cannot coerce LIST to BOOLEAN"),
+                "{query}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_dynamically_typed_and_projection_shapes_keep_their_answers() {
+        for query in [
+            // A parameter and a property read: the deprecated runtime
+            // conversion, pinned by the reference server's passing behavior.
+            "WITH 1 AS x WHERE $list RETURN x",
+            "MATCH (n:R) WHERE n.coll RETURN n",
+            "RETURN true AND $list",
+            // A projection position: returning the list is the point.
+            "RETURN tail([1, 2, 3])",
+            // A comparison against a list result is not a boolean
+            // position for the call itself.
+            "RETURN tail([1]) = [1]",
+            // A non-list builtin is unaffected.
+            "WITH 1 AS x WHERE toString(1) RETURN x",
+        ] {
+            assert!(
+                parse_and_check_static_ops(query).is_ok(),
+                "{query} keeps its answer"
+            );
+        }
+    }
+
+    /// The CALL `WHERE` root answers the same rejection as MATCH/WITH —
+    /// ADR-0715's "wherever a boolean is required", reaching every
+    /// clause-level predicate root the walk hands over.
+    #[test]
+    fn a_call_yield_where_root_rejects_the_list_returning_call() {
+        let error = parse_and_check_static_ops(
+            "CALL db.labels() YIELD label WHERE tail([label]) RETURN label",
+        )
+        .expect_err("a CALL WHERE root is a boolean position");
+        assert!(
+            error.to_string().contains("Cannot coerce LIST to BOOLEAN"),
+            "{error}"
+        );
     }
 }

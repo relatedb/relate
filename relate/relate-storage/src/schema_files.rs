@@ -296,7 +296,7 @@ fn verify_mirror_file(
 /// §1–§3): any other entry — a stray file, an unexpected subdirectory,
 /// a crash-window temp — is drift too. Membership is judged on the raw
 /// entry name against the contract's paths ([`MirrorFile::is_contract_path`]); the untrusted name is escaped
-/// through [`escape_entry_name`] only where it enters the drift error's
+/// through `relate_core::escape_unsafe_output` only where it enters the drift error's
 /// text — presentation never decides identity.
 fn verify_mirror_holds_only_contract_files(target: &StoreTarget) -> Result<()> {
     let names = target
@@ -306,36 +306,10 @@ fn verify_mirror_holds_only_contract_files(target: &StoreTarget) -> Result<()> {
     for name in names {
         let path = format!("{SCHEMA_DIR}/{name}");
         if !MirrorFile::is_contract_path(&path) {
-            return Err(drift(
-                &format!("{SCHEMA_DIR}/{}", escape_entry_name(&name)),
-                NOT_PART_OF_MIRROR,
-            ));
+            return Err(drift(&path, NOT_PART_OF_MIRROR));
         }
     }
     Ok(())
-}
-
-/// One directory-entry name as it may sit inside an error message: the
-/// VFS is untrusted, so a crafted mirror entry carrying newlines or ANSI
-/// escapes must not reach CLI stderr, serve logs, or client bodies
-/// verbatim (line and terminal spoofing). Characters the shared output-safety
-/// policy ([`relate_core::is_unsafe_output_char`]: controls and invisible
-/// bidi/zero-width format marks) render
-/// through `char::escape_default` (`\n`, `\u{1b}`, …); every other
-/// character passes through unchanged, so the operator still reads the
-/// name they would see in a directory listing. (Deliberately narrower
-/// than `relate-core`'s private `escape_for_message`, which escapes
-/// every character: a file name should stay recognizable.)
-fn escape_entry_name(name: &str) -> String {
-    let mut escaped = String::with_capacity(name.len());
-    for c in name.chars() {
-        if relate_core::is_unsafe_output_char(c) {
-            escaped.extend(c.escape_default());
-        } else {
-            escaped.push(c);
-        }
-    }
-    escaped
 }
 
 /// The extra-entry drift verdict — one spelling for both producers (a
@@ -346,6 +320,11 @@ const NOT_PART_OF_MIRROR: &str = "is not part of this store's schema mirror";
 /// repair — deleting the mirror directory lets the open proceed and the
 /// next checkpoint regenerate the mirror from the store's schema.
 fn drift(file: &str, what: &str) -> Error {
+    // The file name is untrusted VFS text — a crafted mirror entry can
+    // carry newlines or ANSI escapes — so it renders through the shared
+    // output-safety escape (a no-op for the static contract paths this
+    // same constructor takes).
+    let file = relate_core::escape_unsafe_output(file);
     Error::storage(format!(
         "schema mirror {file} {what}; delete the {SCHEMA_DIR}/ directory and reopen: \
          the next checkpoint regenerates it from the store's schema"

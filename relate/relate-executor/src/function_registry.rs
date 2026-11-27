@@ -136,6 +136,17 @@ impl FunctionMeta {
     pub(crate) fn is_aggregating(&self) -> bool {
         matches!(self.category, FunctionCategory::Aggregating)
     }
+
+    /// Whether the declared return type is a list — the type-shape
+    /// question asked of the model, the declared-type parse stated once
+    /// here beside the field it reads. ADR-0715's drift test filters on
+    /// this rather than sniffing the string at the use site; test-gated
+    /// because that guard is its one reader today (the
+    /// `parse_and_check_static_ops` precedent).
+    #[cfg(test)]
+    pub(crate) fn returns_list(&self) -> bool {
+        self.return_type.starts_with("LIST")
+    }
 }
 
 /// Every family's table, in scan order. [`function_metas`] reads this one
@@ -310,5 +321,38 @@ mod tests {
                 "{canonical}'s catalogue name disagrees with the alias table's display column"
             );
         }
+    }
+    /// ADR-0715's drift guard: the statically-list-returning names in
+    /// relate-core (the type-discipline fact the front's boolean-position
+    /// rule reads) are exactly this registry's non-aggregating
+    /// `LIST<…>`-returning rows — the shared-arity-table contract, so the
+    /// core table cannot drift from the catalogue and a new list-returning
+    /// builtin is one edit plus a decision.
+    #[test]
+    fn the_core_list_returning_table_matches_the_registry() {
+        let mut registry_list_names: Vec<String> = all_function_metas()
+            .filter(|meta| !meta.is_aggregating())
+            .filter(|meta| meta.returns_list())
+            .map(|meta| meta.name.to_ascii_lowercase())
+            .collect();
+        registry_list_names.sort_unstable();
+        registry_list_names.dedup();
+        // The core table is the asserted list — spelled there, read here,
+        // AS-IS: the table's stated invariant is lower-case entries and
+        // production reads it with an exact `contains` against callers'
+        // lowercased names, so a mixed-case entry must fail here on the
+        // exact comparison production performs — not pass under a
+        // normalization.
+        let mut core_names: Vec<String> = relate_core::list_returning_names()
+            .iter()
+            .map(|name| name.to_string())
+            .collect();
+        core_names.sort_unstable();
+        core_names.dedup();
+        assert_eq!(
+            registry_list_names, core_names,
+            "this registry's non-aggregating LIST rows (left) and \
+             relate-core's list_returns table (right) disagree"
+        );
     }
 }
