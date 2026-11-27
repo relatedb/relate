@@ -48,7 +48,6 @@
 use relate_core::{NodeId, Result};
 
 use crate::ctx::ExecCtx;
-use crate::memory::{memo_budget_bytes, DEFAULT_MEMO_BUDGET_MIB};
 use crate::metrics::MemoCounters;
 use crate::overlay::{memo_table_ceiling, ExecGraph, MemoLive};
 
@@ -82,23 +81,26 @@ pub(crate) struct MemoPolicy {
 
 impl MemoPolicy {
     /// A store-read check (a label or property test): about 20-100 ns,
-    /// under the default budget's table ceiling. Production sites take
-    /// [`Self::moderate`] with the statement's configured budget.
-    pub(crate) const MODERATE: Self =
-        Self::moderate_for(memo_budget_bytes(DEFAULT_MEMO_BUDGET_MIB));
+    /// under the default budget's table ceiling. Test-only: production
+    /// sites take [`Self::moderate`] with the statement's configured budget.
+    #[cfg(test)]
+    pub(crate) const MODERATE: Self = Self::moderate_with(memo_table_ceiling(
+        crate::memory::memo_budget_bytes(crate::memory::DEFAULT_MEMO_BUDGET_MIB),
+    ));
 
     /// [`Self::MODERATE`] with the table ceiling derived from `live`'s
     /// configured budget (ADR-0657).
     pub(crate) fn moderate(live: &MemoLive) -> Self {
-        Self::moderate_for(live.budget())
+        Self::moderate_with(memo_table_ceiling(live.budget()))
     }
 
-    const fn moderate_for(budget: u64) -> Self {
+    /// The one spelling of the moderate shape, over a given ceiling.
+    const fn moderate_with(max_bytes: usize) -> Self {
         Self {
             warm_up: 1024,
             window: 1 << 20,
             min_hit_percent: 10,
-            max_bytes: memo_table_ceiling(budget),
+            max_bytes,
         }
     }
 }
@@ -268,7 +270,8 @@ enum Phase {
 /// module docs for the contract the function must meet.
 pub(crate) struct Memo<T: MemoTable> {
     policy: MemoPolicy,
-    /// The lifecycle phase: warming, active, frozen or disabled.
+    /// The lifecycle phase: warming, active or disabled. Whether a refusal
+    /// froze the table is the ledger's fact ([`MemoLedger::is_frozen`]).
     phase: Phase,
     table: T,
     /// The two-meter books of the table's bytes and the freeze a refusal
@@ -281,6 +284,9 @@ pub(crate) struct Memo<T: MemoTable> {
     stats: MemoStats,
 }
 
+/// Test-only: production memos are always built from the statement's
+/// configured budget ([`Memo::new`]), never the default one.
+#[cfg(test)]
 impl<T: MemoTable> Default for Memo<T> {
     fn default() -> Self {
         Self::new(MemoPolicy::MODERATE, MemoLive::default())
@@ -370,11 +376,10 @@ impl<T: MemoTable> Memo<T> {
         let before = self.table.heap_bytes();
         self.table.insert(key, value);
         self.stats.inserts += 1;
-        let grew = self.table.heap_bytes().saturating_sub(before) as u64;
-        if grew == 0 {
-            return;
-        }
-        self.ledger.settle(meter, grew, 0);
+        // The ledger settles the net: growth charges both meters, an
+        // unchanged allocation touches neither.
+        self.ledger
+            .settle(meter, self.table.heap_bytes() as u64, before as u64);
     }
 
     /// The one hit-rate review, after the policy's window of probes: a

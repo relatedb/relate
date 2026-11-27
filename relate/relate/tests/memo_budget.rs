@@ -53,9 +53,7 @@ const STATEMENTS: [&str; 5] = [
 
 #[test]
 fn identical_rows_at_budgets_0_1_8_32() {
-    let budgets = [0u64, 1, 8, 32];
-    let mut baseline: Option<Vec<Vec<Vec<Value>>>> = None;
-    for budget in budgets {
+    let answers_at = |budget: u64| -> Vec<Vec<Vec<Value>>> {
         let mut conn = open_at(Some(budget));
         conn.query(SEED).unwrap();
         let got: Vec<_> = STATEMENTS.iter().map(|q| rows(&mut conn, q)).collect();
@@ -63,10 +61,15 @@ fn identical_rows_at_budgets_0_1_8_32() {
             got.iter().all(|r| !r.is_empty()),
             "every statement answers rows at budget {budget}"
         );
-        match &baseline {
-            None => baseline = Some(got),
-            Some(first) => assert_eq!(first, &got, "budget {budget} differs from budget 0"),
-        }
+        got
+    };
+    let baseline = answers_at(0);
+    for budget in [1u64, 8, 32] {
+        assert_eq!(
+            baseline,
+            answers_at(budget),
+            "budget {budget} differs from budget 0"
+        );
     }
 }
 

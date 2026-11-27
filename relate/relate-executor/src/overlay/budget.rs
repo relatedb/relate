@@ -1,6 +1,8 @@
-//! The per-statement budget mechanisms (ADR-0395 nested evaluation and
-//! ADR-0463 expression allocation), extracted from the overlay hub: the
-//! constants, their counters, and the [`ExecGraph`] charge/limit seam.
+//! The per-statement budget mechanisms (ADR-0395 nested evaluation,
+//! ADR-0463 expression allocation and the ADR-0657 shared memo budget),
+//! extracted from the overlay hub: the constants, their counters
+//! ([`MemoLive`] for the memo budget, with the one table-ceiling rule,
+//! [`memo_table_ceiling`]), and the [`ExecGraph`] charge/limit seam.
 
 use std::cell::Cell;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -9,7 +11,6 @@ use std::sync::Arc;
 use relate_core::{Error, Result, Value};
 
 use super::ExecGraph;
-use crate::memory::{memo_budget_bytes, DEFAULT_MEMO_BUDGET_MIB};
 
 /// The per-statement nested-evaluation budget (ADR-0395, 1 000 000
 /// since ADR-0670) — the published re-export of the one constant at
@@ -180,9 +181,15 @@ impl MemoLive {
     }
 }
 
+/// A test-only default budget: production views always take their budget
+/// from the store's configured setting ([`ExecGraph::memo_live`]), never a
+/// fabricated one.
+#[cfg(test)]
 impl Default for MemoLive {
     fn default() -> Self {
-        Self::new(memo_budget_bytes(DEFAULT_MEMO_BUDGET_MIB))
+        Self::new(crate::memory::memo_budget_bytes(
+            crate::memory::DEFAULT_MEMO_BUDGET_MIB,
+        ))
     }
 }
 
