@@ -14,7 +14,7 @@ use relate_core::{PropertyMap, Value};
 
 use super::Analyzer;
 use crate::exec::candidates::index_population;
-use crate::exec::kernels::memo::{MemoLedger, MemoPolicy};
+use crate::exec::kernels::memo::MemoLedger;
 use crate::metrics::MemoCounters;
 use crate::overlay::ExecGraph;
 use crate::recency::RecencySlots;
@@ -238,7 +238,7 @@ struct CorpusSlot {
 /// sources are statement text; a procedure call's index names are
 /// runtime data): at most [`MEMO_CAPACITY`] slots, and — the bound that
 /// holds in *bytes* — the charged total of every retained corpus stays
-/// under the kernel memos' own ceiling (`MemoPolicy::moderate`). Every
+/// under the kernel memos' own ceiling (`MemoLive::table_ceiling`). Every
 /// charge is the kernel memo's own settle protocol
 /// (`MemoLedger::settle`): through the statement's retained-container meter
 /// (ADR-0463), into the query's shared live-bytes counter (ADR-0657, so
@@ -317,7 +317,7 @@ impl CorpusMemo {
         // meters by the one comparison — the new corpus against the
         // evicted refund.
         let corpus = Rc::new(Corpus::build(graph, detail, index));
-        let ceiling = MemoPolicy::moderate(state.ledger.live()).max_bytes as u64;
+        let ceiling = state.ledger.live().table_ceiling() as u64;
         if state.ledger.is_frozen() || state.ledger.charged() >= ceiling {
             return corpus;
         }
@@ -353,86 +353,123 @@ mod tests {
         }
     }
 
-    #[test]
-    fn the_memo_keeps_one_corpus_per_named_source() {
+    /// A memo over an empty graph, for the tests that only read the slot
+    /// table and the books.
+    fn with_memo(check: impl FnOnce(&ExecGraph<'_>, &CorpusMemo)) {
         let g = crate::graph::Graph::default();
         let graph = ExecGraph::read(&g);
         let memo = CorpusMemo::new(&graph);
-        let first = memo.corpus(&graph, &detail("a"), Analyzer::Standard);
-        // The same index and analyzer shares the first build.
-        assert!(Rc::ptr_eq(
-            &first,
-            &memo.corpus(&graph, &detail("a"), Analyzer::Standard)
-        ));
-        // A different analyzer tokenizes differently and a different index
-        // holds different documents: each is its own corpus, kept alive
-        // for the statement's lifetime — a COMBINE alternating sources
-        // hits both slots instead of thrashing one.
-        let folding = memo.corpus(&graph, &detail("a"), Analyzer::StandardFolding);
-        assert!(!Rc::ptr_eq(&first, &folding));
-        let other = memo.corpus(&graph, &detail("b"), Analyzer::Standard);
-        assert!(!Rc::ptr_eq(&folding, &other));
-        assert!(Rc::ptr_eq(
-            &other,
-            &memo.corpus(&graph, &detail("b"), Analyzer::Standard)
-        ));
-        // Every scan of the statement's sources still answers the shared
-        // copy — re-scanning the first index after the others hits its
-        // slot (the old one-slot memo would have rebuilt it).
-        assert!(Rc::ptr_eq(
-            &first,
-            &memo.corpus(&graph, &detail("a"), Analyzer::Standard)
-        ));
-        // The capacity bound and the recency policy: fill the table to
-        // the cap, re-use the first-built corpus (its slot refreshes to
-        // the back), then overflow — the eviction victim is the
-        // least-recently-USED slot (a-folding, untouched since built),
-        // not the oldest-built, so retained memory is the cap AND the
-        // still-in-use corpora stay resident.
-        for slot in 0..MEMO_CAPACITY - live_slots(&memo) {
-            memo.corpus(&graph, &detail(&format!("n{slot}")), Analyzer::Standard);
-        }
-        assert_eq!(live_slots(&memo), MEMO_CAPACITY);
-        // The re-use: a-std was touched last of the original three, so
-        // its slot is the freshest — the overflow evicts a-folding.
-        let refreshed = memo.corpus(&graph, &detail("a"), Analyzer::Standard);
-        assert!(Rc::ptr_eq(&first, &refreshed));
-        memo.corpus(&graph, &detail("one-too-many"), Analyzer::Standard);
-        assert_eq!(live_slots(&memo), MEMO_CAPACITY);
-        // a-std survives the overflow (it was just used); the untouched
-        // a-folding is gone — its next scan rebuilds.
-        assert!(Rc::ptr_eq(
-            &first,
-            &memo.corpus(&graph, &detail("a"), Analyzer::Standard)
-        ));
-        assert!(!Rc::ptr_eq(
-            &folding,
-            &memo.corpus(&graph, &detail("a"), Analyzer::StandardFolding)
-        ));
-        // The byte bound: the charged total equals the sum over exactly
-        // the retained slots' own estimates — the overflow's eviction
-        // refunded the evicted slot's charge, so the total never sums
-        // everything ever built.
-        let sum_of_retained = {
-            let state = memo.state.borrow();
-            state.slots.iter().map(|slot| slot.charged).sum::<u64>()
-        };
-        assert_eq!(charged_bytes(&memo), sum_of_retained);
-        assert!(sum_of_retained > 0);
-        // One more overflow: the new charge lands and the evicted refund
-        // holds — the total stays the retained set's sum.
-        memo.corpus(&graph, &detail("n-overflow"), Analyzer::Standard);
-        let state = memo.state.borrow();
-        let sum_after = state.slots.iter().map(|slot| slot.charged).sum::<u64>();
-        assert_eq!(state.ledger.charged(), sum_after);
-        assert_eq!(state.slots.len(), MEMO_CAPACITY);
-        // The shared live counter (ADR-0657): every retained corpus
-        // charges there too, an eviction releases at once, so the
-        // query-wide figure is the same retained sum — never everything
-        // ever built, and visible to the joint bound the kernel memos
-        // charge against.
-        drop(state);
-        assert_eq!(graph.memo_live().live_bytes(), sum_after);
+        check(&graph, &memo);
+    }
+
+    /// The charged sum over exactly the retained slots' own charges.
+    fn retained_sum(memo: &CorpusMemo) -> u64 {
+        memo.state
+            .borrow()
+            .slots
+            .iter()
+            .map(|slot| slot.charged)
+            .sum()
+    }
+
+    #[test]
+    fn the_same_index_and_analyzer_share_one_corpus() {
+        with_memo(|graph, memo| {
+            let first = memo.corpus(graph, &detail("a"), Analyzer::Standard);
+            assert!(Rc::ptr_eq(
+                &first,
+                &memo.corpus(graph, &detail("a"), Analyzer::Standard)
+            ));
+        });
+    }
+
+    #[test]
+    fn a_different_analyzer_or_index_is_its_own_corpus() {
+        with_memo(|graph, memo| {
+            let first = memo.corpus(graph, &detail("a"), Analyzer::Standard);
+            // A different analyzer tokenizes differently and a different
+            // index holds different documents: each is kept alive for the
+            // statement's lifetime — a COMBINE alternating sources hits
+            // both slots instead of thrashing one.
+            let folding = memo.corpus(graph, &detail("a"), Analyzer::StandardFolding);
+            assert!(!Rc::ptr_eq(&first, &folding));
+            let other = memo.corpus(graph, &detail("b"), Analyzer::Standard);
+            assert!(!Rc::ptr_eq(&folding, &other));
+            assert!(Rc::ptr_eq(
+                &other,
+                &memo.corpus(graph, &detail("b"), Analyzer::Standard)
+            ));
+            // Re-scanning the first index after the others hits its slot
+            // (the old one-slot memo would have rebuilt it).
+            assert!(Rc::ptr_eq(
+                &first,
+                &memo.corpus(graph, &detail("a"), Analyzer::Standard)
+            ));
+        });
+    }
+
+    /// The capacity bound and the recency policy: fill the table to the
+    /// cap, re-use the first-built corpus (its slot refreshes to the back),
+    /// then overflow — the eviction victim is the least-recently-USED slot
+    /// (a-folding, untouched since built), not the oldest-built, so
+    /// retained memory is the cap AND the still-in-use corpora stay
+    /// resident.
+    #[test]
+    fn the_overflow_evicts_the_least_recently_used_slot() {
+        with_memo(|graph, memo| {
+            let first = memo.corpus(graph, &detail("a"), Analyzer::Standard);
+            let folding = memo.corpus(graph, &detail("a"), Analyzer::StandardFolding);
+            memo.corpus(graph, &detail("b"), Analyzer::Standard);
+            for slot in 0..MEMO_CAPACITY - live_slots(memo) {
+                memo.corpus(graph, &detail(&format!("n{slot}")), Analyzer::Standard);
+            }
+            assert_eq!(live_slots(memo), MEMO_CAPACITY);
+            // a-std was touched last of the original three, so its slot is
+            // the freshest — the overflow evicts a-folding.
+            let refreshed = memo.corpus(graph, &detail("a"), Analyzer::Standard);
+            assert!(Rc::ptr_eq(&first, &refreshed));
+            memo.corpus(graph, &detail("one-too-many"), Analyzer::Standard);
+            assert_eq!(live_slots(memo), MEMO_CAPACITY);
+            assert!(Rc::ptr_eq(
+                &first,
+                &memo.corpus(graph, &detail("a"), Analyzer::Standard)
+            ));
+            // The untouched a-folding is gone — its next scan rebuilds.
+            assert!(!Rc::ptr_eq(
+                &folding,
+                &memo.corpus(graph, &detail("a"), Analyzer::StandardFolding)
+            ));
+        });
+    }
+
+    /// The byte bound: the charged total equals the sum over exactly the
+    /// retained slots' own estimates — each overflow's eviction refunds the
+    /// evicted slot's charge, so the total never sums everything ever
+    /// built.
+    #[test]
+    fn the_charged_total_is_the_retained_slots_sum() {
+        with_memo(|graph, memo| {
+            for slot in 0..MEMO_CAPACITY + 2 {
+                memo.corpus(graph, &detail(&format!("n{slot}")), Analyzer::Standard);
+            }
+            assert_eq!(charged_bytes(memo), retained_sum(memo));
+            assert!(retained_sum(memo) > 0);
+            assert_eq!(live_slots(memo), MEMO_CAPACITY);
+        });
+    }
+
+    /// The shared live counter (ADR-0657): every retained corpus charges
+    /// there too and an eviction releases at once, so the query-wide figure
+    /// is the same retained sum — never everything ever built, and visible
+    /// to the joint bound the kernel memos charge against.
+    #[test]
+    fn the_shared_live_counter_tracks_the_retained_sum() {
+        with_memo(|graph, memo| {
+            for slot in 0..MEMO_CAPACITY + 2 {
+                memo.corpus(graph, &detail(&format!("n{slot}")), Analyzer::Standard);
+            }
+            assert_eq!(graph.memo_live().live_bytes(), retained_sum(memo));
+        });
     }
 
     /// The retained estimate covers every retained text — the tokens',
