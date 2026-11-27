@@ -10,7 +10,7 @@
 
     <!-- NuGet package -->
     <PackageId>Relate.Net</PackageId>
-    <Version>1.3.1</Version>
+    <Version>1.4.0</Version>
     <Description>.NET client for Relate, the embedded property-graph database, over its typed C ABI. Adapted from Peter Villadsen’s Relate.Net client.</Description>
     <PackageTags>relate;graph;database;cypher;neo4j;embedded</PackageTags>
     <PackageReadmeFile>README.md</PackageReadmeFile>

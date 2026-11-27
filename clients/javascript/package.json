@@ -1,6 +1,6 @@
 {
   "name": "@relate/relate",
-  "version": "1.3.1",
+  "version": "1.4.0",
   "description": "Relate Node.js client (C ABI via koffi)",
   "main": "index.js",
   "license": "Apache-2.0",

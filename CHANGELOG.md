@@ -7,6 +7,310 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.0] — 2026-11-27
+
+### Added
+
+- `EXPLAIN` and `PROFILE` of a `CALL { … } IN TRANSACTIONS` statement render
+  the body's operators as plan children of the `CallSubquery` operator, so
+  the plan shows what each batch runs without re-reading the statement; a
+  plain `CALL { … }` keeps the opaque node. `PROFILE` also reports the batch
+  facts on the operator — batches run, committed, rolled back under the
+  `ON ERROR` policy, and the per-batch peaks (input and output row bytes,
+  scratch, WAL payload) — in the plan table's `Details` marks
+  `[in-tx batches=…]` / `[in-tx-peak …]` and the wire's `InTx*` metric args
+  (ADR-0681).
+- Statements now run under a wall-clock budget, the statement timeout
+  (ADR-0692). The network surfaces default to 30 seconds: a Bolt statement
+  past it fails with `Neo.ClientError.Transaction.TransactionTimedOut`, an
+  HTTP request answers 408, an MCP tool call returns the error text, and a
+  streamed answer ends with the timeout as its in-band error. A request sets
+  its own budget, longer or shorter — Bolt `tx_timeout` in `RUN`/`BEGIN`,
+  HTTP `maxExecutionTime`, MCP `timeout_seconds` — and `relate serve` takes
+  `--query-timeout-secs` (the default) and `--query-timeout-max-secs` (an
+  operator ceiling over every request, `0` = none). The embedded library, the
+  C ABI and the CLI apply no default: `Connection::set_statement_timeout`,
+  `relate_conn_set_statement_timeout`, the CLI's `--timeout` and the new
+  `.timeout [DURATION|off]` dot command, and a per-connection option in the
+  Python (`Connection.statement_timeout`), JavaScript, Go, Java, Swift and .NET
+  clients opt in. A timeout inside `CALL { … } IN TRANSACTIONS` rolls back the
+  in-flight batch, keeps the committed ones, and is never absorbed by
+  `ON ERROR CONTINUE`.
+- Four Neo4j/APOC procedures that client tools call but Relate had no
+  implementation for now work with no client change and no preview opt-in:
+  `db.create.setNodeVectorProperty`, `db.create.setRelationshipVectorProperty`,
+  `apoc.create.addLabels` and `apoc.merge.relationship` (ADR-0699). Each is
+  re-implemented as a Cypher body the query front-end injects and rewrites
+  away — `SHOW PROCEDURES` lists them as `WRITE` procedures with
+  descriptions naming their Cypher form. `neo4j-graphrag`'s
+  `SimpleKGPipeline` writer now runs unmodified against `relate serve`.
+  `EXPLAIN`/`PROFILE` of such a call shows the rewritten subquery rather
+  than a procedure node.
+- Experimental opt-in for the Vortex columnar property store
+  (ADR-0665/0703), default-off everywhere: the `vortex-store` build
+  feature plus `RELATE_PREVIEW=vortex-store`,
+  `OpenOptions::vortex_store`, and the `--vortex-store` CLI flag on query
+  and serve. Attaching changes the storage representation (point reads,
+  equality and aggregate lookups route to a columnar store; writes
+  publish through its delta overlay) — answers, the Cypher dialect, and
+  the checkpoint format are unchanged. Python, JavaScript and the other
+  C-ABI clients opt in through the environment variable only this round.
+
+### Changed
+
+- The HTTP Query API streams an auto-commit statement's rows as the engine
+  produces them (ADR-0682): an answer past the stream threshold is encoded
+  batch by batch into the chunked body, so a multi-million-row result no
+  longer has to fit the server's memory. An error after the chunked head is
+  written in-band as an `errors` member after the rows, and a client that
+  stops reading ends the statement at the socket write timeout
+  (`HttpConfig::write_timeout`).
+- Bolt serves an auto-commit result as a stream: `PULL {n}` is answered from
+  bounded batches the statement produces on demand, so a driver paging a
+  multi-million-row result no longer makes the server buffer it whole, and
+  `DISCARD` finishes the statement without encoding the rest. A statement
+  whose execution fails after rows were delivered now reports the FAILURE at
+  the `PULL` that reached it. A client that stops pulling has its statement
+  stopped after the library-level `ConnLimits::pull_idle_timeout` (default:
+  the idle read timeout); the next `PULL` answers
+  `Neo.ClientError.Transaction.TransactionTimedOut`. `--max-result-bytes`
+  now bounds each streamed batch rather than the whole result, which is no
+  longer held. Statements inside an explicit transaction still buffer.
+- A shortest-path pattern between two label-only endpoints, such as
+  `allShortestPaths((rack:Rack)-[:HOLDS|ROUTES|CONNECTS*]-(router:Router:Egress))`,
+  now lists the end label's nodes and runs the shared multi-source sweep
+  with the early stop (ADR-0690). On a 3,100-node, 10,200-relationship
+  network graph (600 racks, 30 egress routers) the query returns the same
+  58,113 paths in about 0.4 s of CPU instead of about 1.8 s.
+- Per-label and per-type count subqueries such as
+  `CALL (label) { MATCH (n:$(label)) RETURN count(n) }` now answer from the
+  maintained counts instead of scanning the store once per label or type.
+- A pattern comprehension `[(n)-[:R]->(m) WHERE … | f]` evaluates as the
+  `collect { MATCH … WHERE … RETURN f }` subquery that is its meaning
+  (ADR-0685, REL8-1372): one evaluation path with the nested body's
+  planning and the workspace admission's memory bound, instead of a
+  dedicated materializing walk. One reconciliation edge follows subquery
+  rules by design: a var-length relationship slot rebinding an outer
+  single-relationship binding is now the plan-time
+  `GroupVariableReuse` error rather than a null reconciliation (the
+  list-bound and single-hop spellings keep their answers). The path
+  variable keeps its own semantics: `[p = … | …]` shadows an outer name
+  of the same spelling for the comprehension's whole scope, exactly as
+  before (a nested subquery's references included).
+- Bolt's `--query-timeout-secs` now defaults to 30 seconds instead of off.
+  Statements that legitimately run longer set `tx_timeout` per request, or
+  start the server with `--query-timeout-secs 0`.
+- A directed two-hop `MATCH (a)-[:R]->(b)-[:S]->(c) RETURN count(*)` (or
+  `count(c)`) is now answered by one tally per distinct middle node instead of
+  one visit per path: on a 100k-node, 2.4M-edge graph the 58M-path count drops
+  from 7.0 s to 0.29 s with the same answer (ADR-0693). Opposite-direction,
+  undirected and longer chains are unchanged.
+- A grouped count over a fixed pattern whose keys are properties of one node
+  and whose aggregates are plain counts (`MATCH (f)-[:R]->(p) RETURN
+  p.name, count(f)`) now counts per key node and collapses nodes with equal
+  key values at the end, instead of hashing a key per binding: a 2.4M-edge
+  in-degree top-3 runs in about half the time with the same rows.
+- `ON CREATE SET labels(n) = …` keeps the merge pattern's own labels on the node it created: the overwrite unions the pattern's names into the written set, so re-running the same `MERGE` matches instead of creating a second node (ADR-0695). Plain `SET labels(n) =`, the `ON MATCH` arm, and `+=` / `-=` are unchanged.
+- Cached plans now survive commits that do not touch them: a statement's plan
+  is re-planned only when a schema change or a graph replacement lands, when a
+  label, relationship type or property key the plan reads drifts past twice its
+  planned cardinality, or when a drifted plan's measured execution work degrades
+  past twice its baseline. Previously every applied commit invalidated every
+  cached plan.
+- The `planCache` result metadata every surface reports (CLI, Bolt, HTTP, Rust)
+  spells its re-plan outcome `replan` instead of `replan-generation-mismatch`,
+  and the value now means one of four causes rather than any commit: a schema
+  change or graph replacement, a commit that created an absent name the plan
+  resolved, a degraded plan grade, or the per-key value statistics the plan
+  read changing (ADR-0700).
+- `ORDER BY … LIMIT` over a node scan is much faster on large graphs. A
+  candidate the top-k window would reject now costs its sort keys only, with
+  no projected row built, and an `ORDER BY id(n)` page over a labeled scan
+  (with an optional property comparison in `WHERE`) stops scanning once the
+  page is full. `MATCH (n:Label) RETURN n.k ORDER BY id(n) LIMIT 100` over
+  100,000 nodes went from about 52 ms to about 1.5 ms. Answers are unchanged,
+  and a projection or `WHERE` that can raise on a row past the page keeps its
+  full scan and still raises.
+- Vector `SEARCH` (and `db.index.vector.queryNodes`) now reads the indexed
+  vectors from a packed `f32` matrix cached per index and refreshed
+  incrementally on writes, instead of re-reading every candidate node's
+  property map per query: a 10,000-node × 384-dimension index drops from
+  19–61 ms to ~2–5 ms per search, independent of how many other properties
+  the indexed nodes carry, and the speed holds across writes to those nodes
+  (an access-counter `SET` costs one row refresh, not a rebuild). Scores and
+  answers are bit-identical; every case the matrix declines — FLOAT64
+  vectors, older pinned readers, views with uncommitted writes — takes the
+  previous scan unchanged (ADR-0705).
+
+### Fixed
+
+- The Linux installer refuses a system the release binary cannot run:
+  `install.sh` checks the running glibc (`getconf`, `ldd --version` as
+  the fallback) against the documented 2.35 floor and dies before
+  downloading anything — naming the floor, the distro floor (Debian 12+,
+  Ubuntu 22.04+, Fedora 36+), and the build-from-source and Python-wheel
+  alternatives — instead of installing a binary the dynamic loader
+  refuses at exec. A musl Linux, or any version the preflight cannot
+  determine, is refused the same way (REL8-1841).
+- `LIMIT n` without `ORDER BY` over a variable-length or quantified
+  pattern now returns `min(n, total)` rows: the frontier-NFA rung's capped
+  emission reconstructed one witness path per reached (start, end) pair,
+  and when the LIMIT exceeded the pair count it returned that pair-level
+  list as the whole answer, dropping every further path. Counts and writes
+  behind such a `LIMIT` were wrong (`RETURN p LIMIT 100` over four paths
+  returned one row; `WITH a, z LIMIT 100 RETURN count(*)` answered 1). An
+  unfilled cap now falls through to the walker's cap rider, and PROFILE
+  names the reason `short-cap`.
+- `count(*)`, grouped counts and `count(DISTINCT …)` over a pattern whose
+  relationship variable is bound by an earlier clause (`WITH r`, `UNWIND`, a
+  `CALL` body, a failed `OPTIONAL MATCH`) now honor the pin instead of counting
+  every relationship of the pattern's type.
+- `WITH … ORDER BY / SKIP / LIMIT … WHERE` filters the page the projection
+  body produced, as Neo4j does, instead of taking the page from the filtered
+  rows: `WITH x ORDER BY x LIMIT 5 WHERE x > 3` over 1..20 now answers
+  `[4, 5]`, and a write fed by such a clause no longer receives a row the
+  page cut.
+- A POINT-index distance seek at or beyond a quarter circumference (~10,018 km)
+  no longer drops points in the far hemisphere: the WGS-84 envelope took its
+  latitude band from the angular radius clamped at a hemisphere, so a seek from
+  0°,-10° silently omitted an 89°N point 11,021 km away, while the same
+  statement answered correctly before `CREATE POINT INDEX` and with a spelling
+  that defeats the index. Such radii now read the full posting set and the
+  residual predicate filters it.
+- `toString()` and `toStringOrNull()` now render list values in display
+  form (`RETURN toString([1, 2])` → `'[1, 2]'`) instead of raising a
+  compile-time `InvalidArgumentValue` — homogeneous list literals
+  included, matching the Cypher 25 spec corpus. A byte array stays the
+  one value `toString()` rejects; `EXPLAIN` and never-evaluated `CASE`
+  arms containing such calls no longer fail the statement.
+- `CALL { … } IN [CONCURRENT] TRANSACTIONS OF $batchSize ROWS` rejects a
+  FLOAT batch size parameter (`NumberOutOfRange`) instead of silently
+  truncating a whole FLOAT like `1.0` to its integer, and `IN $c
+  CONCURRENT TRANSACTIONS` rejects a FLOAT concurrency with the integer
+  TypeError instead of passing it as its truncated value — both matching
+  live Neo4j (22N03)
+- `CALL { … } IN TRANSACTIONS` in a `NEXT` part that follows a writing
+  part is now rejected at compile time with
+  `WriteBeforeCallInTransactions` (42I25) instead of running: the parts
+  of a chained statement are one statement, so a writing part precedes
+  a batched subquery exactly like a write clause does. A batched part
+  followed by a reading or batched part keeps working.
+- A result value that is small in memory but exponential once expanded
+  (`reduce(acc = [1], x IN range(1, 60) | [acc, acc])`) is refused with the
+  expression-memory-limit error instead of hanging the renderer, and a
+  `table` or `markdown` cell longer than 4096 characters is cut with a
+  trailing `…` (ADR-0691, REL8-641).
+- An aggregating `WITH`'s trailing `WHERE` — the HAVING form, whose
+  predicate carries an aggregate call — now filters the page the
+  projection body produced instead of the groups before it, matching
+  live Neo4j: `UNWIND [1,1,1,2,2,3] AS x WITH x AS g, count(*) AS c
+  ORDER BY g DESC LIMIT 2 WHERE count(*) > 2 RETURN collect(g) AS gs`
+  answers `[]` (was `[1]`), and a write fed by such a clause no longer
+  receives rows the page had cut (REL8-2135).
+- Go client: `Date`, `LocalTime`, `Time`, `LocalDateTime`, `DateTime`,
+  `Duration`, `Point` and `Vector` parameters bind as their Cypher kinds
+  through the typed C putters — previously they silently bound as property
+  maps, so a value read from a result never round-tripped as a parameter.
+  A `DateTime` with a `Zone` binds by that zone (the offset is re-resolved
+  at that wall clock); entity values (`Node`, `Relationship`, `Path`)
+  refuse as parameters — pass `.Properties` (or a path's elements)
+  explicitly.
+- `LOAD CSV … CALL (row) { … } IN TRANSACTIONS` now runs: `LOAD CSV` only
+  reads a file, but the write-before-batched-subquery check counted it as a
+  write and refused the bulk-load idiom with
+  `WriteBeforeCallInTransactions`. A real write before the batched call is
+  still refused.
+
+### Notes
+
+- Experimental Vortex columnar property store behind the new `PropStore`
+  seam (REL8-1982): the engine's default property path is unchanged; the
+  store is an open-time option (`vortex` snapshot format) whose
+  implementation lives in the workspace-excluded experiment crate
+  `testing/relate-vortex-lab`, keeping the crates.io publish closure
+  vortex-free. A report-only CI lane publishes the measurement kernels,
+  the LDBC SF0.1 and pokec-shaped numbers, and the engine before/after
+  A/B; the dependency decision and its crates.io-release exit condition
+  are recorded in the publish-closure ADR.
+- Release tooling fix: the Chocolatey package's nuspec declares the
+  license through `licenseUrl` (the SPDX URL) instead of the
+  `<license>` element, which `choco pack` refuses (CHCU0002) — the
+  v1.3.0 Chocolatey publish failed on it.
+- Release tooling fix: the Chocolatey install script imports
+  `Microsoft.PowerShell.Utility` explicitly — Chocolatey's PowerShell
+  host does not auto-load it on every host version, and the installer's
+  SHA256SUMS check died with "Get-FileHash is not recognized" on the
+  v1.3.0 publish.
+- Release tooling fix: the Chocolatey install script computes the
+  binary's SHA-256 through the .NET crypto classes instead of
+  `Get-FileHash` — Chocolatey's PowerShell host does not reliably load
+  the Utility module (an explicit import did not survive it either),
+  and the v1.3.0 install died at the SHA256SUMS gate on it.
+- Release tooling fix: the release-notes prompt names the two output
+  guard patterns the generation model kept quoting from changelog
+  entries — connection-string schemes (`neo4j+s://host:port`) are
+  refused as off-host URLs, and log lines embedding `host:port` as
+  unaudited execution destinations, fenced or not; each rule carries
+  the paraphrase the model should write instead.
+- Release tooling fix: the release-notes prompt forbids `curl`, `wget`
+  and `git clone` in unfenced prose — the output guard reads any line
+  carrying a fetch verb as execution-shaped and refuses it without an
+  audited destination; the mechanism is named in prose and the command
+  rides in a fenced example.
+- Release tooling fix: the release-notes prompt separates package-manager
+  command words from registry domain spellings — the output guard audits
+  every bare domain on a line carrying `npm`, `pip`, `cargo`, `brew` or
+  kin, and the registries' own domains are not allowlisted, so prose
+  pairing them refused as an unaudited destination; registries get their
+  domain-free names instead.
+- Test-infrastructure change: `relate/relate` and `surfaces/relate-cli` build
+  their shareable test files as one `tests/integration/` binary per crate
+  instead of one Cargo test target per file, so a one-line engine edit no
+  longer relinks 195 + 58 engine-sized binaries. 149 relate files merge (46
+  stay separate) and 55 relate-cli files merge (5 stay separate); the layout,
+  the isolation rules and the generator are in
+  `docs/testing/test-binaries.md` and `scripts/merge-test-binaries.py`, and
+  `scripts/tests/test_merge_test_binaries.py` holds each committed `main.rs`
+  equal to the generator's output (REL8-2187, from the #563 prototype).
+- The wasm bundle's npm manifest and the files its build produces are
+  now guarded: `cargo xtask check-boundaries` fails when a `js/` helper
+  is missing from `package.json.template`'s `files` array, a `files`
+  entry names no file the build produces, or an `exports` subpath points
+  outside `files`; the build copies the whole `js/` directory so there is
+  one inventory to keep in step.
+- The Go client's standalone recipe (one link-time variable,
+  `CGO_LDFLAGS="-L<dir>"`, with the module's own header and
+  `-lrelate_ffi`) is documented in `clients/go/README.md` and
+  `docs/api/go/spec.md`, and proven by `scripts/check-go-standalone.sh`
+  in `make test-go`.
+- Dependency batch: parquet and arrow-array 60.2.0, flate2 1.1.11, rstar 0.13.1,
+  pyo3 0.30.1 (the Python bindings migrate to its renamed API), and the
+  setup-dotnet, setup-uv, amazon-ecr-login, setup-go and
+  maven-failsafe-plugin bumps.
+- Planner (REL8-2217, ADR-0694 proposed): predicates no index serves
+  (unindexed equality and ranges, function-wrapped equality such as
+  `tolower(x) = tolower($p)`) now narrow their endpoint's estimate through one
+  documented default-selectivity table, tagged as a default rather than a
+  measurement, so a multi-pattern `MATCH` anchors on the selective side. No
+  query answers change.
+- Executor (REL8-2253, ADR-0701 proposed): the two-pattern comma hub join now
+  engages only when its one enumeration of the second pattern is estimated no
+  dearer than the nested loop's per-row expansions, so a selective first
+  pattern no longer pays a full scan of the second (graph-benchmark Q6 comma
+  form 147 -> ~22 ms). No query answers change.
+- Release tooling change: the Java client now publishes to Maven Central
+  with every ordinary release (`publish-maven-central` in `release.yml`
+  gates on `!offline` alone, ADR-0704) instead of behind the manual
+  `registries` opt-in. The npm/PyPI/crates.io legs keep the opt-in;
+  `publish-registries.yml` with `maven=true` remains the recovery arm.
+- Release tooling fix: a repo-signing-key rotation landed without
+  re-signing the committed fixture, turning every PR's
+  `review-scripts-test` lane red since. New
+  `repo-signing-fixture-refresh.yml` re-signs the fixture from the
+  `REPO_GPG_KEY` secret and opens a PR; the lane now also runs on the
+  key and fixture paths so a rotation cannot slip past it again
+  (RELEASING.md "Repository signing key" carries the rotation runbook).
+
 ## [1.3.0] — 2026-11-25
 
 ### Added
@@ -1138,8 +1442,9 @@ First release of Relate — the embedded, in-memory property graph engine
 with an openCypher query contract, WAL + snapshot durability, and Bolt
 serving. See the README for the full surface list.
 
-[Unreleased]: https://github.com/relatedb/relate/compare/v1.3.0...HEAD
+[Unreleased]: https://github.com/relatedb/relate/compare/v1.4.0...HEAD
 
+[1.4.0]: https://github.com/relatedb/relate/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/relatedb/relate/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/relatedb/relate/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/relatedb/relate/compare/v1.0.2...v1.1.0
