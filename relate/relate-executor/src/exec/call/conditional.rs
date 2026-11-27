@@ -1,16 +1,20 @@
 //! CIP-135 conditional (`WHEN … THEN …`) branches: one bucket per branch,
-//! the taken branch run on its driving row, and the row-shape fact the
-//! NEXT-stage seeding reads.
+//! the taken branch run on its driving row. The row-shape classification
+//! lives in `super::super::row_production` — the classification home —
+//! and the branch-set model in `super::super::conditional_branches`;
+//! this module keeps the executor.
 
 use std::collections::BTreeMap;
 
 use relate_core::{Result, Value};
-use relate_ir::{Expr, Query};
+use relate_ir::Query;
 
 use crate::ctx::QueryCtx;
 
 use super::{execute_query_seeded_in_scope, project_row, BodyScope};
 use crate::eval::{bool_or_null, eval};
+use crate::exec::conditional_branches::ConditionalBranches;
+use crate::exec::row_production::body_projects_rows;
 use crate::exec::scope::refresh_rows;
 use crate::exec::{materialize_rows_strict, QueryResult};
 use crate::overlay::ExecGraph;
@@ -25,11 +29,10 @@ use crate::row::Row;
 /// [`relate_planner::conditional_declared_columns`], whose empty seed is
 /// the same one the conditional's validation uses, so the executor's
 /// materialization and the plan agree by construction.
-pub(crate) fn exec_conditional(
+pub(in crate::exec) fn exec_conditional(
     graph: &ExecGraph<'_>,
     rows: Vec<Row>,
-    branches: &[(Expr, Query)],
-    else_query: Option<&Query>,
+    branches: &ConditionalBranches<'_>,
     params: &BTreeMap<String, Value>,
     qctx: QueryCtx<'_>,
 ) -> Result<(Vec<Row>, QueryResult)> {
@@ -39,20 +42,20 @@ pub(crate) fn exec_conditional(
     // retaining container: each driving row's production is charged to the
     // running total before its rows land (ADR-0463), the same per-row
     // charge the feed spine's hold bills.
-    let mut buckets: Vec<Vec<Row>> = vec![Vec::new(); branches.len() + 1];
+    let mut buckets: Vec<Vec<Row>> = vec![Vec::new(); branches.bucket_count()];
     let mut retained = graph.retain_bytes(0)?;
     // CIP-135's conditional is a per-row operator: a driving row's branch
     // predicate is evaluated against the state its predecessors left (the
     // taken branch body ran already), so a branch that writes is visible to
     // the next row's `WHEN` and a branch aggregates one incoming row at a
-    // time — the NEXT-stage scenarios' "sees updates made by the branch of
-    // a previous row" shape.
+    // time — the NEXT-stage scenarios' "sees updates made by the branch of a
+    // previous row" shape.
     for mut row in rows {
         // The row's element bindings were captured by the previous stage;
         // a predecessor's branch may have relabelled or changed them since,
         // so the predicate and the body read them again from the graph.
         refresh_rows(graph, std::slice::from_mut(&mut row));
-        let Some((index, query)) = taken_branch(graph, &row, branches, else_query, params)? else {
+        let Some((index, query)) = taken_branch(graph, &row, branches, params)? else {
             continue;
         };
         // The driving row is the branch body's importing scope: its bindings
@@ -73,14 +76,17 @@ pub(crate) fn exec_conditional(
         // A body that projects no statement result (a write-only / `FINISH`
         // / DDL body) contributes no rows: its surviving seed row is a
         // pass-through, never a result. The branch still ran, so its writes
-        // stand.
+        // stand. The fact is read where it is used, on the taken branch's
+        // own body — the same [`body_projects_rows`] classification the
+        // seeding fold short-circuits over.
         if body_projects_rows(query) {
             retained.add_rows(graph, result.rows.len(), result.columns.len())?;
             append_query_rows(&mut buckets[index], result);
         }
     }
     let rows: Vec<Row> = buckets.into_iter().flatten().collect();
-    let columns = relate_planner::conditional_declared_columns(branches, else_query)?;
+    let (raw_branches, raw_else) = branches.raw();
+    let columns = relate_planner::conditional_declared_columns(raw_branches, raw_else)?;
     // The shared clause-exit tail records this clause's PROFILE tick from
     // the returned rows, so the projection runs on a copy: moving the cells
     // out here would make the operator report the nulled slots'
@@ -95,16 +101,16 @@ pub(crate) fn exec_conditional(
 
 /// The row's one taken branch, in source order — its bucket index and
 /// query. `None` when no predicate holds and there is no `ELSE`: nothing
-/// runs for the row. The `ELSE` body's index is `branches.len()`, one past
-/// the last `WHEN` bucket.
+/// runs for the row. The `ELSE` body's index is one past the last `WHEN`
+/// bucket.
 fn taken_branch<'q>(
     graph: &ExecGraph<'_>,
     row: &Row,
-    branches: &'q [(Expr, Query)],
-    else_query: Option<&'q Query>,
+    branches: &ConditionalBranches<'q>,
     params: &BTreeMap<String, Value>,
 ) -> Result<Option<(usize, &'q Query)>> {
-    for (index, (predicate, query)) in branches.iter().enumerate() {
+    let (raw_branches, else_query) = branches.raw();
+    for (index, (predicate, query)) in raw_branches.iter().enumerate() {
         let value = eval(graph, row, predicate, params)?;
         // A `WHEN` predicate is a boolean: the one requiring-site policy
         // (`eval::bool_or_null`) leaves the branch untaken on null/false and
@@ -114,31 +120,10 @@ fn taken_branch<'q>(
             return Ok(Some((index, query)));
         }
     }
-    Ok(else_query.map(|query| (branches.len(), query)))
+    Ok(else_query.map(|query| (branches.else_index(), query)))
 }
 
-/// Whether a conditional branch body projects a statement result of its own
-/// — the rows a taken branch contributes. A body concluding in a write-only
-/// clause, a `FINISH`, schema DDL or a row-less catalog command has none
-/// (`super::super::part_projects_rows`). A body that is itself a NEXT chain
-/// is judged by its final stage.
-fn body_projects_rows(query: &Query) -> bool {
-    super::stage_projects_rows(&query.final_stage().parts)
-}
-
-/// Whether a conditional clause projects rows in any branch — the fact the
-/// NEXT-stage seeding policy reads: a conditional whose branches are all
-/// unit bodies is itself unit output, so an empty result still seeds the
-/// next stage with one row (ADR-0287) instead of ending the chain.
-pub(crate) fn conditional_produces_rows(
-    branches: &[(Expr, Query)],
-    else_query: Option<&Query>,
-) -> bool {
-    branches.iter().any(|(_, body)| body_projects_rows(body))
-        || else_query.is_some_and(body_projects_rows)
-}
-
-pub(crate) fn append_query_rows(out: &mut Vec<Row>, result: QueryResult) {
+fn append_query_rows(out: &mut Vec<Row>, result: QueryResult) {
     for values in result.rows {
         out.push(project_row(&result.columns, &values).collect());
     }

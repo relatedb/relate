@@ -56,6 +56,21 @@ impl Query {
     ///
     /// The one IR spelling of the fact: the planner's subquery-scope fold
     /// and the redundant-`OPTIONAL` notification detector both read it.
+    ///
+    /// The executor keeps a twin descent — relate-executor's
+    /// `clause_spills_rows` over the planner's `clause_projects_rows`
+    /// table, recursing into nested bodies through its
+    /// `body_projects_rows` — for the run-time merge and seeding policies.
+    /// The two deliberately differ by layer (this fold speaks `RETURN`-only
+    /// vocabulary with a first-branch stand-in; the executor folds the
+    /// planner's full clause table with any-branch/any-arm breadth) and
+    /// agree only under the shared invariants both sides must preserve in
+    /// lockstep: the FINAL-stage cursor (a NEXT-chained body is judged by
+    /// its final stage, never its first), the branch/arm representative
+    /// agreement (every `WHEN` branch and UNION arm carries the same export
+    /// shape, so the first-branch stand-in and the any-branch fold answer
+    /// alike), and this descent's own arm set — a new nested-body arm here
+    /// needs its twin arm there, and vice versa.
     pub fn projects_columns(&self) -> bool {
         // A `Query` invariantly carries at least one part (the executor
         // spells the same invariant at its `stage_export_columns` sites); an

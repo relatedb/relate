@@ -12,9 +12,10 @@ use std::collections::BTreeMap;
 use relate_core::{Result, Value};
 use relate_ir::{Clause, Query};
 
-use super::{execute_query_seeded, row_product, scope_seed, stage_projects_rows, SubquerySpec};
+use super::{execute_query_seeded, row_product, scope_seed, SubquerySpec};
 use crate::ctx::QueryCtx;
 use crate::exec::call::in_transactions::ChargedRows;
+use crate::exec::row_production::body_projects_rows;
 use crate::overlay::ExecGraph;
 use crate::row::Row;
 
@@ -36,7 +37,7 @@ use crate::row::Row;
 ///   nested invocation — per-row by construction. The legacy
 ///   importing-`WITH` form keeps the per-row path with it;
 /// - a projecting body (a trailing clause the canonical table says
-///   spills rows — [`stage_projects_rows`], the same classification the
+///   spills rows — [`body_projects_rows`], the same classification the
 ///   per-row merge consults, never inferred from the clause set) merges
 ///   each body row back onto its originating outer row, a lineage the
 ///   pass does not track. A terminal `LOAD CSV` projects and stays
@@ -48,7 +49,7 @@ use crate::row::Row;
 /// coincidence and the smaller-batch remedy are recorded once in ADR-0669.
 pub fn batch_pass_admission(query: &Query) -> bool {
     query.is_single_flat_part()
-        && !stage_projects_rows(&query.final_stage().parts)
+        && !body_projects_rows(query)
         && !relate_planner::query_any_clause(query, &mut |clause| {
             matches!(clause, Clause::With { .. }) || relate_planner::clause_is_ddl_command(clause)
         })
