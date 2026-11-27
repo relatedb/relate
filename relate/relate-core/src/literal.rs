@@ -50,14 +50,29 @@ impl LiteralValueKind {
     /// The kind's Cypher type-name spelling — the one vocabulary the static
     /// rules' rejection details render.
     pub fn name(self) -> &'static str {
+        self.spellings().0
+    }
+
+    /// The kind's name as live's `Type mismatch: … but was <Type>`
+    /// sentences spell it (CamelCase, not [`Self::name`]'s UPPER wire
+    /// name) — the rendering the static argument checks use when they
+    /// quote a kind in an authored mismatch sentence (other sites render
+    /// their own live texts).
+    pub fn camel_name(self) -> &'static str {
+        self.spellings().1
+    }
+
+    /// The kind's two spellings — the UPPER wire name and live's CamelCase
+    /// mismatch-text name — from one table, so a variant is named once.
+    fn spellings(self) -> (&'static str, &'static str) {
         match self {
-            Self::Null => "NULL",
-            Self::Boolean => "BOOLEAN",
-            Self::Integer => "INTEGER",
-            Self::Float => "FLOAT",
-            Self::String => "STRING",
-            Self::List => "LIST",
-            Self::Map => "MAP",
+            Self::Null => ("NULL", "Null"),
+            Self::Boolean => ("BOOLEAN", "Boolean"),
+            Self::Integer => ("INTEGER", "Integer"),
+            Self::Float => ("FLOAT", "Float"),
+            Self::String => ("STRING", "String"),
+            Self::List => ("LIST", "List"),
+            Self::Map => ("MAP", "Map"),
         }
     }
 

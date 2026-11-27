@@ -18,7 +18,7 @@ use super::static_literal::{
     require_static_type, require_static_type_kind, static_type_outside, LIST_OR_NULL,
     STRING_OR_LIST_OR_NULL, STRING_OR_NULL,
 };
-use super::static_reduce::check_reduce_temporal_arithmetic;
+use super::static_reduce::{check_reduce_accumulator_type, check_reduce_temporal_arithmetic};
 
 /// The boolean-operand rule's predicate, shared by the operator gate here and
 /// `static_calls`' `allReduce()` predicate check: a statically-known type
@@ -126,14 +126,16 @@ fn check_static_operator_types(e: &Expr) -> Result<(), EngineError> {
         // A list quantifier's arithmetic rule: its decision lives in
         // `static_arithmetic` beside every piece it reads.
         Expr::Quantifier(q) => check_quantifier_arithmetic(q)?,
-        // The `reduce` analogue: a numerically-initialised accumulator
-        // combined by an arithmetic operator with an element of a list
-        // *literal* of temporal constructor calls is the front-end type fault
-        // live Neo4j reports for the same statement (probed 2026.10.1,
-        // `reduce(a = 1, b in [date()] | a + b)` -> 42001 SyntaxError). Only
-        // the statically decidable numeric-vs-temporal pair qualifies; every
+        // The `reduce` static rules, one arm per policy in
+        // `static_reduce`: the temporal-arithmetic fault (probed 2026.10.1,
+        // `reduce(a = 1, b in [date()] | a + b)` -> 42001 SyntaxError) and
+        // the accumulator/body unification (`reduce(a = 1, b in ['s'] |
+        // 's')` -> 22G03). Only statically decidable shapes qualify; every
         // other operand shape keeps the executor's runtime TypeError.
-        Expr::Reduce(r) => check_reduce_temporal_arithmetic(r)?,
+        Expr::Reduce(r) => {
+            check_reduce_temporal_arithmetic(r)?;
+            check_reduce_accumulator_type(r)?;
+        }
         _ => {}
     }
     Ok(())
