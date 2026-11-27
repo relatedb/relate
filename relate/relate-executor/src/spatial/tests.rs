@@ -294,37 +294,52 @@ fn srid_must_be_a_known_integer() {
     .is_err());
 }
 
+/// Each case is a map whose SRID disagrees with its dimension or key
+/// family; the label names the disagreement.
 #[test]
 fn srid_must_match_dimension_and_family() {
-    // 2D srid with z present.
-    assert!(point(&[
-        ("x", Value::Int(1)),
-        ("y", Value::Int(2)),
-        ("z", Value::Int(3)),
-        ("srid", Value::Int(7203)),
-    ])
-    .is_err());
-    // 3D srid without z.
-    assert!(point(&[
-        ("x", Value::Int(1)),
-        ("y", Value::Int(2)),
-        ("srid", Value::Int(9157)),
-    ])
-    .is_err());
-    // Geographic keys with a cartesian srid.
-    assert!(point(&[
-        ("latitude", Value::Int(59)),
-        ("longitude", Value::Int(18)),
-        ("srid", Value::Int(7203)),
-    ])
-    .is_err());
-    // 3D geographic srid without z/height.
-    assert!(point(&[
-        ("latitude", Value::Int(59)),
-        ("longitude", Value::Int(18)),
-        ("srid", Value::Int(4979)),
-    ])
-    .is_err());
+    let cases: [(&str, &[(&str, Value)]); 4] = [
+        (
+            "2D srid with z present",
+            &[
+                ("x", Value::Int(1)),
+                ("y", Value::Int(2)),
+                ("z", Value::Int(3)),
+                ("srid", Value::Int(7203)),
+            ],
+        ),
+        (
+            "3D srid without z",
+            &[
+                ("x", Value::Int(1)),
+                ("y", Value::Int(2)),
+                ("srid", Value::Int(9157)),
+            ],
+        ),
+        (
+            "geographic keys with a cartesian srid",
+            &[
+                ("latitude", Value::Int(59)),
+                ("longitude", Value::Int(18)),
+                ("srid", Value::Int(7203)),
+            ],
+        ),
+        (
+            "3D geographic srid without z/height",
+            &[
+                ("latitude", Value::Int(59)),
+                ("longitude", Value::Int(18)),
+                ("srid", Value::Int(4979)),
+            ],
+        ),
+    ];
+    for (label, pairs) in cases {
+        assert!(point(pairs).is_err(), "{label}");
+    }
+}
+
+#[test]
+fn srid_accepts_matching_dimension_and_family() {
     // Cartesian keys accept any of the four srids, dimension-checked.
     let (srid, x, y, z) = srid_xyz(
         &point(&[
