@@ -14,6 +14,7 @@
 use relate_ir::{orient, pattern_prop_key, var_prop, BinaryOp, Expr, NodePattern};
 use relate_names::{NamedToken, SmallName, Token};
 
+use super::estimate::Basis;
 use crate::stats::{PatternStats, Provenance};
 
 /// Equality (`=`) or a function-wrapped equality of one property.
@@ -60,15 +61,6 @@ impl Side {
             Side::Upper => Side::Lower,
         }
     }
-}
-
-/// Where a selectivity came from, ordered by trust: the default table is
-/// the least trustworthy basis, then the statistics' provenance. A priced
-/// endpoint carries the least trustworthy basis of its terms.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) enum Basis {
-    Default,
-    Statistic(Provenance),
 }
 
 /// What one conjunct says about the start node's property: a fixed

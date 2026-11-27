@@ -82,29 +82,47 @@ pub fn range_seek_gated(window: u64, scan_rows: Option<u64>) -> bool {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Estimate {
     Measured(u128),
-    /// A sampled `CONTAINS` seed: `rows` the sampled output estimate,
-    /// `scan` the label-bucket rows the unindexed filter still pays.
-    SampleScan {
+    /// A seed whose unseekable filter still pays the whole-label scan: `rows`
+    /// the estimated output, `scan` the label rows the filter reads, and
+    /// `basis` where `rows` came from — a sampled `CONTAINS` count, the
+    /// key statistics, or the default table. The walk compounds the two
+    /// costs as `max(scan, output x degree)` (ADR-0474).
+    Scanned {
         rows: u128,
         scan: u128,
-    },
-    /// Label rows scaled by the selectivity the key statistics give the
-    /// node's unindexed predicates: a statistic, tagged with the least
-    /// trustworthy provenance among its terms, carrying the whole-label scan
-    /// the unseekable filter still pays.
-    Statistic {
-        rows: u128,
-        scan: u128,
-        provenance: Provenance,
-    },
-    /// Label rows scaled by the default selectivity table for predicates
-    /// no statistic could price — a default, never a measurement. Like the sampled `CONTAINS` seed it
-    /// carries the whole-label scan the unseekable filter still pays.
-    Defaulted {
-        rows: u128,
-        scan: u128,
+        basis: Basis,
     },
     Rank(u128),
+}
+
+/// Where an estimate's rows came from, ordered by trust: a larger variant
+/// is more trustworthy. The ordering gates strategies and breaks ties
+/// between orientations the cost model prices alike; it never overrides a
+/// strictly cheaper cost (a default can win an anchor it genuinely prices
+/// lower).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Basis {
+    /// An unmeasured rank sentinel: no label count at all.
+    Rank,
+    /// The default selectivity table (ADR-0694).
+    Default,
+    /// A sampled count (a `CONTAINS` scan sample).
+    Sampled,
+    /// The per-key statistics, tagged with their own provenance (ADR-0696).
+    Statistic(Provenance),
+    /// A count read off an index or the label's own row count.
+    Measured,
+}
+
+impl Estimate {
+    /// The trust the estimate's rows carry.
+    pub fn basis(self) -> Basis {
+        match self {
+            Estimate::Measured(_) => Basis::Measured,
+            Estimate::Scanned { basis, .. } => basis,
+            Estimate::Rank(_) => Basis::Rank,
+        }
+    }
 }
 
 /// The where clause as its conjunct list — the ladder's CONTAINS level
@@ -384,17 +402,17 @@ fn contains_hits<'a>(
         .min_by_key(|count| count.rows())
         .map(|count| match count {
             ContainsCount::TextIndex(rows) => Estimate::Measured(u128::from(rows)),
-            ContainsCount::SampleScan { rows, scan } => Estimate::SampleScan {
+            ContainsCount::SampleScan { rows, scan } => Estimate::Scanned {
                 rows: u128::from(rows),
                 scan: u128::from(scan),
+                basis: Basis::Sampled,
             },
         })
 }
 
 /// The label level: the label's rows, scaled by the selectivity of the
 /// node's predicates that no measured level priced — a
-/// [`Estimate::Statistic`] when every term came from the key statistics,
-/// a [`Estimate::Defaulted`] when any term fell to the default table —
+/// [`Estimate::Scanned`] whose basis is the least trustworthy term's —
 /// else the plain [`Estimate::Measured`] label count. `None` without a
 /// label count.
 fn label_rung<'a>(
@@ -416,13 +434,10 @@ fn label_rung<'a>(
     Some(match selectivity::price(&ctx, unpriced) {
         Some(priced) => {
             let rows = selectivity::scale_rows(scan, priced.selectivity);
-            match priced.basis {
-                selectivity::Basis::Default => Estimate::Defaulted { rows, scan },
-                selectivity::Basis::Statistic(provenance) => Estimate::Statistic {
-                    rows,
-                    scan,
-                    provenance,
-                },
+            Estimate::Scanned {
+                rows,
+                scan,
+                basis: priced.basis,
             }
         }
         None => Estimate::Measured(scan),

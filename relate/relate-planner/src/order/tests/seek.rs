@@ -171,9 +171,10 @@ fn the_range_window_ranks_between_equality_and_contains() {
     // Without the window the sampled compound is the level (the control).
     assert_eq!(
         estimate_of("MATCH (n:N) WHERE n.w CONTAINS 'needle' RETURN n", &stats),
-        Estimate::SampleScan {
+        Estimate::Scanned {
             rows: 1,
-            scan: 1_000
+            scan: 1_000,
+            basis: Basis::Sampled
         }
     );
 }
