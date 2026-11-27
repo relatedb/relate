@@ -8,14 +8,19 @@ use super::clock::ClockKind;
 use super::construct::date_from_week;
 use super::duration::parse_duration_iso;
 use super::duration_pattern::parse_duration_pattern;
+use super::field::first_month_of_quarter;
 use super::pattern::{invalid_value, parse_instant_pattern};
 use super::zone::{
     parse_offset, resolve_wall_forward, sub_offset, zone_kind, zone_offset_mismatch, OverlapPolicy,
     WrittenZone,
 };
-use super::{range_err, weekday_from_i, CivilZonedFields, Temporal};
+use super::{decimal_comma_as_dot, range_err, weekday_from_i, CivilZonedFields, Temporal};
 
 pub fn parse_iso(kind: &str, s: &str) -> Result<Temporal> {
+    // The one literal-entry trim: the offset scans and the form parsers
+    // all read the trimmed text (the leaf parsers' own trims are
+    // idempotent).
+    let s = s.trim();
     match kind {
         "date" => parse_date_str(s),
         // One arm and one parser per time kind: a `localtime` literal never
@@ -29,6 +34,23 @@ pub fn parse_iso(kind: &str, s: &str) -> Result<Temporal> {
         "duration" => parse_duration_iso(s),
         _ => Err(Error::ty(format!("unknown temporal kind {kind}"))),
     }
+}
+
+/// Whether a `-` split is a compact time's offset rather than part of its
+/// fraction: the body is a digits-and-separator run under
+/// [`decimal_comma_as_dot`], and the tail is a non-empty offset by the one
+/// grammar [`zone::parse_offset`] owns — so the offset spelling set has
+/// exactly one owner, in prose as well as in code.
+fn compact_time_offset(body: &str, off: &str) -> bool {
+    // The offset half reads the one grammar `zone::parse_offset` owns —
+    // a second offset spelling here could disagree with the parser that
+    // consumes the split (an empty tail is not an offset: the grammar
+    // reads it as zero, this predicate must not).
+    decimal_comma_as_dot(body)
+        .chars()
+        .all(|c| c.is_ascii_digit() || c == '.')
+        && !off.is_empty()
+        && parse_offset(off).is_ok()
 }
 
 /// Whether a time literal carries an offset marker: a `+`/`Z` suffix, or a
@@ -91,6 +113,33 @@ fn parse_civil_ymd(s: &str) -> Option<(i64, u32, u32)> {
     let month = parts.next()?.parse().ok()?;
     let day = parts.next()?.parse().ok()?;
     Some((year, month, day))
+}
+
+/// The ISO quarter date form `YYYYQn` — the first day of that quarter,
+/// as a built date (the fall-through family's contract, like
+/// [`parse_week_date`] beside it). Live-verified contract (2026.10.1): a
+/// leading `+` is optional (the caller strips it), the year is exactly
+/// four unsigned digits, `Q` is uppercase and the quarter 1-4 — lowercase
+/// `q`, short years and `-` signs are rejections, never quarter
+/// spellings. The month is [`first_month_of_quarter`], the field
+/// module's one derivation of the quarter→month relation.
+fn quarter_date(t: &str) -> Option<NaiveDate> {
+    let b: &[u8; 6] = t.as_bytes().try_into().ok()?;
+    match *b {
+        // The guard proves the four year digits, so the year reads
+        // straight off them — no second (infallible) parse to keep in
+        // step with the pattern.
+        [a, b_, c, d, b'Q', q @ b'1'..=b'4'] if [a, b_, c, d].iter().all(u8::is_ascii_digit) => {
+            let year = i32::from(a - b'0') * 1000
+                + i32::from(b_ - b'0') * 100
+                + i32::from(c - b'0') * 10
+                + i32::from(d - b'0');
+            let month = first_month_of_quarter(u32::from(q - b'0'))
+                .expect("the byte pattern bounds the quarter to 1..=4");
+            NaiveDate::from_ymd_opt(year, month, 1)
+        }
+        _ => None,
+    }
 }
 
 fn parse_date_str(s: &str) -> Result<Temporal> {
@@ -159,31 +208,37 @@ pub fn padded_iso_date_value(s: &str) -> Option<Value> {
     NaiveDate::from_ymd_opt(year, month, day).map(|d| Value::Temporal(Temporal::Date(d)))
 }
 
+/// The date-part spellings `parse_date_flexible` accepts, in try order:
+/// the quarter form, the dashed and compact ISO calendars, the year-month,
+/// compact year-month and year-alone completions, then the week and
+/// ordinal forms. One entry per spelling — adding one is a row, not a
+/// branch in the chain.
+const DATE_FORMS: &[fn(&str) -> Option<NaiveDate>] = &[
+    quarter_date,
+    |t| NaiveDate::parse_from_str(t, "%Y-%m-%d").ok(),
+    |t| NaiveDate::parse_from_str(t, "%Y%m%d").ok(),
+    |t| {
+        (t.len() == 7 && t.as_bytes().get(4) == Some(&b'-'))
+            .then(|| NaiveDate::from_ymd_opt(t[..4].parse().ok()?, t[5..].parse().ok()?, 1))
+            .flatten()
+    },
+    |t| {
+        (t.len() == 6 && t.chars().all(|c| c.is_ascii_digit()))
+            .then(|| NaiveDate::parse_from_str(&format!("{t}01"), "%Y%m%d").ok())
+            .flatten()
+    },
+    |t| {
+        (t.len() == 4 && t.chars().all(|c| c.is_ascii_digit()))
+            .then(|| NaiveDate::from_ymd_opt(t.parse().ok()?, 1, 1))
+            .flatten()
+    },
+    parse_week_date,
+    parse_ordinal_date,
+];
+
 fn parse_date_flexible(s: &str) -> Option<NaiveDate> {
     let t = s.trim().trim_start_matches('+');
-    if let Ok(d) = NaiveDate::parse_from_str(t, "%Y-%m-%d") {
-        return Some(d);
-    }
-    if let Ok(d) = NaiveDate::parse_from_str(t, "%Y%m%d") {
-        return Some(d);
-    }
-    if t.len() == 7 && t.as_bytes().get(4) == Some(&b'-') {
-        if let (Ok(y), Ok(m)) = (t[..4].parse::<i32>(), t[5..].parse::<u32>()) {
-            return NaiveDate::from_ymd_opt(y, m, 1);
-        }
-    }
-    if t.len() == 6 && t.chars().all(|c| c.is_ascii_digit()) {
-        if let Ok(d) = NaiveDate::parse_from_str(&format!("{t}01"), "%Y%m%d") {
-            return Some(d);
-        }
-    }
-    if t.len() == 4 && t.chars().all(|c| c.is_ascii_digit()) {
-        return NaiveDate::from_ymd_opt(t.parse().ok()?, 1, 1);
-    }
-    if let Some(d) = parse_week_date(t) {
-        return Some(d);
-    }
-    parse_ordinal_date(t)
+    DATE_FORMS.iter().find_map(|form| form(t))
 }
 
 fn parse_week_date(s: &str) -> Option<NaiveDate> {
@@ -236,9 +291,14 @@ fn parse_localdatetime_str(s: &str) -> Result<Temporal> {
     Err(Error::ty(format!("cannot parse localdatetime '{s}'")))
 }
 
-fn parse_naive_time(s: &str) -> Result<NaiveTime> {
+fn parse_naive_time(input: &str) -> Result<NaiveTime> {
+    // The decimal-separator policy at the time-of-day funnel; the parsed
+    // text carries the normalized separator while a rejection quotes the
+    // caller's own spelling. The literal-entry trim is [`parse_iso`]'s —
+    // every caller here already carries trimmed text.
+    let s = decimal_comma_as_dot(input);
     for fmt in ["%H:%M:%S%.f", "%H:%M:%S", "%H:%M", "%H%M%S", "%H%M"] {
-        if let Ok(t) = NaiveTime::parse_from_str(s, fmt) {
+        if let Ok(t) = NaiveTime::parse_from_str(&s, fmt) {
             return Ok(t);
         }
     }
@@ -274,7 +334,7 @@ fn parse_naive_time(s: &str) -> Result<NaiveTime> {
             }
         }
     }
-    Err(Error::ty(format!("cannot parse time '{s}'")))
+    Err(Error::ty(format!("cannot parse time '{input}'")))
 }
 
 pub fn datetime_from_epoch(seconds: i64, nanos: i64) -> Result<Temporal> {
@@ -343,13 +403,7 @@ fn split_offset(s: &str) -> (&str, Option<&str>) {
             if s[..i].contains('T') || s[..i].contains(':') {
                 return (&s[..i], Some(&s[i..]));
             }
-            let body = &s[..i];
-            let off = &s[i + 1..];
-            let compact_time = body.chars().all(|c| c.is_ascii_digit() || c == '.');
-            let offset_ok = off.contains(':')
-                && off.chars().all(|c| c.is_ascii_digit() || c == ':')
-                || off.chars().all(|c| c.is_ascii_digit()) && matches!(off.len(), 2 | 4);
-            if compact_time && offset_ok {
+            if compact_time_offset(&s[..i], &s[i + 1..]) {
                 return (&s[..i], Some(&s[i..]));
             }
         }

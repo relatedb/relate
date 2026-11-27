@@ -7,8 +7,8 @@ use crate::{Error, Result};
 use super::arith::negate_fields;
 use super::exact::{DurationTiers, ExactAccumulator};
 use super::{
-    range_err, DurationField, Temporal, MONTHS_PER_YEAR, NANOS_PER_HOUR, NANOS_PER_MINUTE,
-    NANOS_PER_SECOND,
+    decimal_comma_as_dot, range_err, DurationField, Temporal, MONTHS_PER_YEAR, NANOS_PER_HOUR,
+    NANOS_PER_MINUTE, NANOS_PER_SECOND,
 };
 
 /// The one spelling of each ISO-duration shape rejection, so a sibling spelling
@@ -25,7 +25,10 @@ fn invalid_duration_date() -> Error {
     Error::ty("invalid duration date")
 }
 
-pub(super) fn parse_duration_iso(s: &str) -> Result<Temporal> {
+pub(super) fn parse_duration_iso(input: &str) -> Result<Temporal> {
+    // The parsed text carries the normalized separator; a rejection
+    // quotes the caller's own spelling.
+    let s = decimal_comma_as_dot(input);
     let raw = s.trim();
     let (neg, body) = match raw.strip_prefix('-') {
         Some(rest) => (true, rest),
@@ -37,7 +40,7 @@ pub(super) fn parse_duration_iso(s: &str) -> Result<Temporal> {
     // per-letter case pair.
     let folded = body.to_ascii_uppercase();
     let Some(body) = folded.strip_prefix('P') else {
-        return Err(Error::ty(format!("cannot parse duration '{s}'")));
+        return Err(Error::ty(format!("cannot parse duration '{input}'")));
     };
     // A present-but-empty time half is the dangling `T` of `PT`/`P1YT`, and
     // an entirely empty body (`P`) names no component either. Both used to

@@ -361,6 +361,19 @@ fn time_to_nanos(t: NaiveTime) -> i64 {
     t.num_seconds_from_midnight() as i64 * 1_000_000_000 + t.nanosecond() as i64
 }
 
+/// The ISO decimal separator policy for temporal literals: a `,` is
+/// accepted wherever a `.` fraction goes (live 2026.10.1), and no temporal
+/// literal grammar has another comma — so the one normalization, borrowed
+/// when no comma is present, serves the time-of-day and duration parsers
+/// alike.
+pub(super) fn decimal_comma_as_dot(s: &str) -> std::borrow::Cow<'_, str> {
+    if s.contains(',') {
+        std::borrow::Cow::Owned(s.replace(',', "."))
+    } else {
+        std::borrow::Cow::Borrowed(s)
+    }
+}
+
 /// Nanoseconds of the UTC clock time a `Time` denotes. Deliberately *not*
 /// wrapped at midnight: an offset can push the wall clock out of the day, and
 /// the ordering contract is this signed value plus the offset. The lowest
