@@ -209,12 +209,11 @@ fn index_row(
 ) -> Row {
     let options = stored_options(ctx.index_options, &idx.name);
     let entity = EntityKind::from_relationship_flag(facts.relationship);
-    let index_statement = index_statement(detail, &idx.name, options);
     // A constraint's backing index shows the owning constraint's CREATE
     // CONSTRAINT (Neo4j parity); every standalone index shows its own.
     let create_statement = match backing {
         Some(def) => super::constraints::constraint_statement_for(def, ctx.current, ctx.derived),
-        None => index_statement,
+        None => index_statement(detail, &idx.name, options),
     };
     // The options column always carries an `indexConfig` entry in Neo4j's
     // shape; the stored map omits it for kinds that carry no config. The

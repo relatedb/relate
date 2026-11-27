@@ -12,11 +12,14 @@
 //! and no execution order can change it) and restarted at every statement
 //! entry beside the other per-statement state; a row key is internal
 //! exactly when it is in the `__` namespace and the statement never
-//! declared it. Every synthetic prefix is chosen through
-//! [`SpelledNames::uncolliding_prefix`], so no synthetic column can ever
+//! declared it. The synthetic row-column prefixes (`__ord`, `__a`,
+//! `__agg_c`, and the `__node` / `__trail` seats) are chosen through
+//! [`SpelledNames::uncolliding_prefix`], so none of those columns can ever
 //! carry a declared name: a name declared only inside a nested body is
 //! declared statement-wide, and no executor-made column elsewhere can be
-//! mistaken for it.
+//! mistaken for it. The one fixed spelling is the anonymous shortest-path
+//! binding (`__shortest_path`, exec/shortest_eval.rs), which stays
+//! hidden as an internal key unless the statement itself spells it.
 
 use std::cell::RefCell;
 use std::collections::HashSet;
