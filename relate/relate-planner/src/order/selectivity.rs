@@ -5,9 +5,10 @@
 //! prices those predicates: an equality of an unindexed key from the key's
 //! statistics (the heavy-value count or rows over distinct values, with the
 //! answer's provenance), a function-wrapped equality (`tolower(p.gender)`)
-//! from the raw distinct count, and everything else from one documented
-//! default table (an equality keeps a tenth of the rows, a one-sided range
-//! a third). The result says which: [`crate::Estimate::Statistic`] when
+//! from the raw distinct count, a range with a literal bound from the
+//! key's numeric extremes (values assumed uniform between them), and
+//! everything else from one documented default table (an equality keeps a
+//! tenth of the rows, a one-sided range a third). The result says which: [`crate::Estimate::Statistic`] when
 //! every term came from statistics, [`crate::Estimate::Defaulted`] when any
 //! term fell to the table — never a measurement.
 
@@ -15,6 +16,7 @@ use relate_ir::{orient, pattern_prop_key, var_prop, BinaryOp, Expr, NodePattern}
 use relate_names::{NamedToken, SmallName, Token};
 
 use super::estimate::Basis;
+use crate::literal::static_arg_value;
 use crate::stats::{PatternStats, Provenance};
 
 /// Equality (`=`) or a function-wrapped equality of one property.
@@ -65,11 +67,12 @@ impl Side {
 
 /// What one conjunct says about the start node's property: a fixed
 /// selectivity with its basis, or a one-sided range bound that may pair
-/// with its opposite on the same property.
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// with its opposite on the same property. A bound carries its literal
+/// value when it has one (a parameter has none at plan time).
+#[derive(Clone, Copy, Debug)]
 enum Term<'a> {
     Scalar(f64, Basis),
-    Bound(&'a SmallName, Side),
+    Bound(Property<'a>, Side, Option<f64>),
 }
 
 /// A selectivity and the least trustworthy basis of its terms.
@@ -96,7 +99,7 @@ fn comparison<'a>(expr: &'a Expr, var: &SmallName) -> Option<(Property<'a>, Bina
 /// The property a comparison targets: its key beside the plan-resolved
 /// token, and whether a function sits between the comparison and the
 /// property.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 struct Property<'a> {
     key: &'a SmallName,
     token: Token,
@@ -163,6 +166,41 @@ impl Context<'_> {
         ))
     }
 
+    /// Selectivity of the window `lo..=hi` (either end open) over the
+    /// key's numeric `min..max`, assuming values spread uniformly between
+    /// them — the assumption that makes the answer a sketch whatever the
+    /// provenance of the extremes. The smallest per-label answer (a
+    /// multi-label node is the conjunction); `None` when no label's
+    /// statistics hold a non-degenerate numeric range.
+    fn range(
+        &self,
+        property: &NamedToken,
+        lo: Option<f64>,
+        hi: Option<f64>,
+    ) -> Option<(f64, Basis)> {
+        let fraction = self
+            .node
+            .labels
+            .iter()
+            .filter_map(|label| self.stats.key_stats(label, property))
+            .filter_map(|key| {
+                Some((
+                    key.min.as_ref()?.as_number()?,
+                    key.max.as_ref()?.as_number()?,
+                ))
+            })
+            // a degenerate or non-finite range (a key holding an infinity)
+            // has no meaningful spread to price over
+            .filter(|(min, max)| min.is_finite() && max.is_finite() && max > min)
+            .map(|(min, max)| {
+                let lo = lo.unwrap_or(min).max(min);
+                let hi = hi.unwrap_or(max).min(max);
+                ((hi - lo) / (max - min)).clamp(MIN_SELECTIVITY, 1.0)
+            })
+            .min_by(f64::total_cmp)?;
+        Some((fraction, Basis::Statistic(Provenance::Sketched)))
+    }
+
     fn fraction(&self, rows: u64) -> f64 {
         (rows as f64 / (self.label_rows.max(1) as f64)).clamp(MIN_SELECTIVITY, 1.0)
     }
@@ -202,7 +240,15 @@ pub(crate) fn price<'a>(
             }
         }
     }
-    (len > 0).then(|| combine(&terms[..len]))
+    (len > 0).then(|| combine(ctx, &terms[..len]))
+}
+
+/// A literal bound as a number, through the crate's one literal walk (a
+/// plan-cache placeholder resolves to its literal, a sign unwraps). A
+/// caller's own parameter and any non-numeric constant have no value at
+/// plan time.
+fn literal_bound(expr: &Expr) -> Option<f64> {
+    static_arg_value(expr)?.as_number()
 }
 
 /// An equality of the property: from statistics when they speak (the
@@ -239,7 +285,7 @@ pub(crate) fn scale_rows(rows: u128, selectivity: f64) -> u128 {
 /// s3^(1/8)`. That sits between full independence (a product, which
 /// collapses a multi-property filter to near zero) and full correlation
 /// (the minimum).
-fn combine(terms: &[Term<'_>]) -> Priced {
+fn combine(ctx: &Context<'_>, terms: &[Term<'_>]) -> Priced {
     let mut selectivities = [1.0_f64; MAX_TERMS];
     let mut n = 0;
     let mut basis = Basis::Statistic(Provenance::Exact);
@@ -250,16 +296,8 @@ fn combine(terms: &[Term<'_>]) -> Priced {
         }
         let (selectivity, term_basis) = match *term {
             Term::Scalar(s, term_basis) => (s, term_basis),
-            Term::Bound(key, side) => {
-                let partner = (i + 1..terms.len())
-                    .find(|&j| !consumed[j] && terms[j] == Term::Bound(key, side.opposite()));
-                match partner {
-                    Some(j) => {
-                        consumed[j] = true;
-                        (RANGE_PAIR, Basis::Default)
-                    }
-                    None => (RANGE_ONE_SIDED, Basis::Default),
-                }
+            Term::Bound(property, side, bound) => {
+                price_window(ctx, terms, &mut consumed, i, (property, side, bound))
             }
         };
         selectivities[n] = selectivity;
@@ -271,11 +309,50 @@ fn combine(terms: &[Term<'_>]) -> Priced {
     let selectivity = selectivities
         .iter()
         .take(BACKOFF_TERMS)
-        .zip([1.0, 0.5, 0.25, 0.125])
-        .map(|(s, exponent)| s.powf(exponent))
+        .zip(0..)
+        // each term is weighted by half the previous exponent: 1, 1/2, 1/4, ..
+        .map(|(s, k)| s.powf(0.5_f64.powi(k)))
         .product::<f64>()
         .clamp(MIN_SELECTIVITY, 1.0);
     Priced { selectivity, basis }
+}
+
+/// The selectivity of the window one bound opens: its opposite-side bound
+/// on the same property later in `terms`, when unconsumed, closes it (and
+/// is marked consumed). A window with a literal end prices from the key's
+/// extremes; anything else falls to the default table.
+fn price_window(
+    ctx: &Context<'_>,
+    terms: &[Term<'_>],
+    consumed: &mut [bool],
+    at: usize,
+    (property, side, bound): (Property<'_>, Side, Option<f64>),
+) -> (f64, Basis) {
+    let partner = (at + 1..terms.len()).find_map(|j| match terms[j] {
+        Term::Bound(other, other_side, other_bound)
+            if !consumed[j] && other.key == property.key && other_side == side.opposite() =>
+        {
+            Some((j, other_bound))
+        }
+        _ => None,
+    });
+    if let Some((j, _)) = partner {
+        consumed[j] = true;
+    }
+    let paired = partner.map(|(_, other_bound)| other_bound);
+    let (lo, hi) = match (side, paired) {
+        (Side::Lower, Some(other)) => (bound, other),
+        (Side::Upper, Some(other)) => (other, bound),
+        (Side::Lower, None) => (bound, None),
+        (Side::Upper, None) => (None, bound),
+    };
+    let from_stats = (lo.is_some() || hi.is_some())
+        .then(|| ctx.range(&property.named(), lo, hi))
+        .flatten();
+    from_stats.unwrap_or(match paired {
+        Some(_) => (RANGE_PAIR, Basis::Default),
+        None => (RANGE_ONE_SIDED, Basis::Default),
+    })
 }
 
 /// One conjunct as a term on `var`'s property, or `None` when it is not a
@@ -291,8 +368,8 @@ fn conjunct_term<'a>(ctx: &Context<'_>, expr: &'a Expr, var: &SmallName) -> Opti
         BinaryOp::Lt | BinaryOp::Lte | BinaryOp::Gt | BinaryOp::Gte if property.wrapped => {
             scalar(RANGE_ONE_SIDED)
         }
-        BinaryOp::Lt | BinaryOp::Lte => Term::Bound(property.key, Side::Upper),
-        BinaryOp::Gt | BinaryOp::Gte => Term::Bound(property.key, Side::Lower),
+        BinaryOp::Lt | BinaryOp::Lte => Term::Bound(property, Side::Upper, literal_bound(constant)),
+        BinaryOp::Gt | BinaryOp::Gte => Term::Bound(property, Side::Lower, literal_bound(constant)),
         BinaryOp::In => {
             let k = match constant {
                 Expr::List(items) => items.len() as f64,
