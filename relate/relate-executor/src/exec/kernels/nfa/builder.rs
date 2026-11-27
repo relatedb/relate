@@ -16,7 +16,7 @@ use super::guards::{
 };
 use super::{
     chain_positions, epsilon_closure, epsilon_index, plain_rel, quantified_admissible,
-    var_length_quantified, FrontierNfa, Hop, NfaTransition, Position, STATE_CEILING,
+    var_length_quantified, ChainHop, ChainPosition, FrontierNfa, NfaTransition, STATE_CEILING,
 };
 
 /// The hop-length range of a compiled segment: fixed iff
@@ -38,6 +38,19 @@ impl Len {
             },
         })
     }
+}
+
+/// Which admission a chain or pattern node position gets — the one
+/// vocabulary of [`Builder::admit_node`].
+#[derive(Clone, Copy)]
+pub(super) enum NodeRole {
+    /// An interior node: admitted by the rung (guard or plain).
+    Interior,
+    /// The pattern's first or last node: admitted by the caller.
+    CallerBoundary,
+    /// A chain body's first or last node: plain under the auto rung, the
+    /// round split's guard under the forced rung.
+    ChainBoundary,
 }
 
 /// The compilation builder: allocates states under the ceiling and
@@ -132,7 +145,8 @@ impl<'a> Builder<'a> {
         to: u32,
         types: Vec<u32>,
         direction: Direction,
-    ) {
+    ) -> usize {
+        let index = self.tables.transitions.len();
         self.tables.transitions.push(NfaTransition {
             from,
             to,
@@ -140,6 +154,7 @@ impl<'a> Builder<'a> {
             direction,
             accepts: false,
         });
+        index
     }
 
     /// One epsilon (rel-free skip) edge.
@@ -455,21 +470,26 @@ impl<'a> Builder<'a> {
         let mut last_rel_transition = None;
         for position in positions {
             match position {
-                Position::Node { node, boundary } => {
+                ChainPosition::Node { node, boundary } => {
                     // Under the forced rung the boundary positions' guards
                     // were attached by the split above (or carry none);
                     // under the auto rung every chain node is an inner
                     // node of the v1 vocabulary. The interior ones attach
                     // here, to the state the preceding hop allocated for
                     // the position.
-                    self.admit_chain_node(node, boundary, current)?;
+                    let role = if boundary {
+                        NodeRole::ChainBoundary
+                    } else {
+                        NodeRole::Interior
+                    };
+                    self.admit_node(node, role, current)?;
                     node_states.push((node.variable.clone(), current));
                 }
-                Position::Hop { hop, last, .. } => {
+                ChainPosition::Hop { hop, last, .. } => {
                     // The final hop is the one the close target serves.
                     let exit = if last { last_target } else { None };
                     match hop {
-                        Hop::Rel(rel) if rel.var_length => {
+                        ChainHop::Rel(rel) if rel.var_length => {
                             // The nested var-length rel: predicates on
                             // the traversed edges decline before the
                             // normalization drops them.
@@ -479,25 +499,21 @@ impl<'a> Builder<'a> {
                             (current, len) =
                                 self.nest(&var_length_quantified(rel), current, exit, len)?;
                         }
-                        Hop::Rel(rel) => {
+                        ChainHop::Rel(rel) => {
                             if !plain_rel(rel) {
                                 return None;
                             }
-                            let to = if last {
-                                last_target.or_else(|| self.alloc())
-                            } else {
-                                self.alloc()
-                            }?;
+                            let to = exit.or_else(|| self.alloc())?;
                             let types = self.interned(rel)?;
-                            self.push_transition(current, to, types, rel.direction);
-                            last_rel_transition = Some(self.tables.transitions.len() - 1);
+                            last_rel_transition =
+                                Some(self.push_transition(current, to, types, rel.direction));
                             current = to;
                             len = len.plus(Len {
                                 min: 1,
                                 max: Some(1),
                             })?;
                         }
-                        Hop::Quantified(quantified) => {
+                        ChainHop::Quantified(quantified) => {
                             // A nested quantified group — unconstructible
                             // by the parser (the `NestedQuantification`
                             // rule), but the IR shape exists; the same
@@ -524,13 +540,28 @@ impl<'a> Builder<'a> {
 /// The builder's guard emission — the forced rung's half of the
 /// construction, beside the admission rules it applies.
 impl Builder<'_> {
-    /// The interior-node admission policy, one spelling for the pattern
-    /// walk and the chain walk: under the forced rung the node compiles
+    /// The node-admission policy, one entry point for the pattern walk
+    /// and the chain walk, by the node's [`NodeRole`]. An interior node
+    /// admits through the walk's rung: under the forced rung it compiles
     /// to the guard of `state`, the state its position occupies (a plain
     /// node to none); under the auto rung it must carry no admission
     /// facts at all (`plain_node` — the v1 NFA has no node-admission
-    /// surface). `None` declines.
-    pub(super) fn admit_interior(&mut self, node: &NodePattern, state: u32) -> Option<()> {
+    /// surface). A pattern-boundary node is the caller's. A chain
+    /// boundary node admits like an interior one under the auto rung
+    /// (every chain node is an inner node of the v1 vocabulary), and
+    /// under the forced rung carries no guard here (the round split
+    /// attached it). `None` declines.
+    pub(super) fn admit_node(
+        &mut self,
+        node: &NodePattern,
+        role: NodeRole,
+        state: u32,
+    ) -> Option<()> {
+        match role {
+            NodeRole::CallerBoundary => return Some(()),
+            NodeRole::ChainBoundary if self.forced => return Some(()),
+            NodeRole::ChainBoundary | NodeRole::Interior => {}
+        }
         if !self.forced {
             return plain_node(node);
         }
@@ -538,18 +569,6 @@ impl Builder<'_> {
             self.guard(state, guard);
         }
         Some(())
-    }
-
-    /// The chain walk's admission matrix, one spelling: an interior node
-    /// always admits through [`Self::admit_interior`]; a boundary node
-    /// does too under the auto rung (every chain node is an inner node
-    /// of the v1 vocabulary), and under the forced rung carries no guard
-    /// here (the round split attached it).
-    fn admit_chain_node(&mut self, node: &NodePattern, boundary: bool, state: u32) -> Option<()> {
-        if boundary && self.forced {
-            return Some(());
-        }
-        self.admit_interior(node, state)
     }
 
     /// The round boundary's states for one chain emission entered at
