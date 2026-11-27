@@ -197,26 +197,26 @@ fn composed_command(
     plan: &LogicalPlan,
     label: fn(&Clause) -> Option<&'static str>,
 ) -> Option<&'static str> {
-    let standalone = plan.single_part().is_some();
-    for part in plan.parts() {
+    let standalone = plan.single_part();
+    // The standalone part is the one walk: its command is judged by position
+    // and followers. Any other shape (a `UNION` arm or a `NEXT` stage) is
+    // composed the moment any part carries the command.
+    let mut parts = standalone
+        .into_iter()
+        .chain(plan.parts().filter(|_| standalone.is_none()));
+    parts.find_map(|part| {
         let mut clauses = part
             .iter()
             .skip_while(|clause| crate::clause_kind::clause_is_routing(clause));
-        let Some((index, label)) = clauses
+        let (index, label) = clauses
             .by_ref()
             .enumerate()
-            .find_map(|(index, clause)| label(clause).map(|label| (index, label)))
-        else {
-            continue;
-        };
-        let composed = !standalone
+            .find_map(|(index, clause)| label(clause).map(|label| (index, label)))?;
+        let composed = standalone.is_none()
             || index != 0
             || clauses.any(|clause| !matches!(clause, Clause::Return { .. }));
-        if composed {
-            return Some(label);
-        }
-    }
-    None
+        composed.then_some(label)
+    })
 }
 
 /// The `SHOW DATABASE[S]` spelling a clause is, or `None` for every other
