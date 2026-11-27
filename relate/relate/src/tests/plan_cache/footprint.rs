@@ -55,7 +55,7 @@ fn a_cached_entry_carries_and_refreshes_its_plans_footprint() {
     }
     // A schema change re-plans through the epoch and the fresh footprint
     // records the live count.
-    c.query("CREATE INDEX user_id FOR (n:User) ON (n.id)")
+    c.query("CREATE INDEX user_name FOR (n:User) ON (n.name)")
         .unwrap();
     c.query("MATCH (n:User {id: 2}) RETURN n.name AS name")
         .unwrap();
@@ -327,7 +327,7 @@ fn a_schema_change_replans_through_the_epoch() {
     };
     assert_eq!(read(&mut c, 1), crate::PlanCacheOutcome::Miss);
     let epoch = db.shared().lock_token_changes().epoch();
-    c.query("CREATE INDEX user_id FOR (n:User) ON (n.id)")
+    c.query("CREATE INDEX user_name FOR (n:User) ON (n.name)")
         .unwrap();
     assert_eq!(
         db.shared().lock_token_changes().epoch(),
@@ -347,15 +347,12 @@ fn a_schema_change_replans_through_the_epoch() {
 #[test]
 fn an_inserted_entry_carries_the_plan_epoch() {
     let (db, mut c) = users();
-    assert_eq!(
-        db.shared().lock_token_changes().epoch(),
-        0,
-        "the fixture ran no DDL"
-    );
+    // the fixture's own index DDL moved the epoch; the entry carries it
+    let epoch = db.shared().lock_token_changes().epoch();
     c.query("MATCH (n:User {id: 1}) RETURN n.name AS name")
         .unwrap();
     let entries = crate::plan_cache::lock(&db.inner);
-    assert_eq!(entries.front_epoch(), Some(0));
+    assert_eq!(entries.front_epoch(), Some(epoch));
     assert_eq!(entries.front_dirty(), Some(false));
 }
 
@@ -430,7 +427,7 @@ fn schema_changes_advance_the_generation() {
         vec![vec![Value::String("ada".into())]]
     );
     let stamped = db.inner.stats_generation.current();
-    c.query("CREATE INDEX user_id FOR (n:User) ON (n.id)")
+    c.query("CREATE INDEX user_name FOR (n:User) ON (n.name)")
         .unwrap();
     assert_eq!(db.inner.stats_generation.current(), stamped + 1);
     // The cached shape replans against the index and stays correct.

@@ -14,6 +14,13 @@ fn users() -> (Database, Connection) {
     let mut c = db.connect().unwrap();
     c.query("CREATE (:User {id: 1, name: 'ada'}), (:User {id: 2, name: 'bob'}), (:User {id: 3, name: 'cy'})")
         .unwrap();
+    // `id` is indexed so the equality lookups below price from the index,
+    // not from the lazily built per-key statistics (ADR-0696, ADR-0700): a
+    // statement that read those would replan once as they publish, which
+    // is the statistics epoch's rule, tested in `plan_cache_stats_epoch`,
+    // not the footprint and admission rules these tests are about.
+    c.query("CREATE INDEX user_id FOR (n:User) ON (n.id)")
+        .unwrap();
     (db, c)
 }
 

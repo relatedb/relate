@@ -7,7 +7,7 @@ use relate_ir::{orient, pattern_prop_key, var_prop_named, BinaryOp, Expr, NodePa
 use relate_names::{NamedToken, SmallName};
 
 use super::selectivity;
-use crate::stats::{ContainsCount, PatternStats};
+use crate::stats::{ContainsCount, PatternStats, Provenance};
 
 /// Synthetic row counts for the rank fallback. A higher rank is cheaper,
 /// and a known row count below the label sentinel beats an unknown label.
@@ -87,6 +87,15 @@ pub enum Estimate {
     SampleScan {
         rows: u128,
         scan: u128,
+    },
+    /// Label rows scaled by the selectivity the key statistics give the
+    /// node's unindexed predicates: a statistic, tagged with the least
+    /// trustworthy provenance among its terms, carrying the whole-label scan
+    /// the unseekable filter still pays.
+    Statistic {
+        rows: u128,
+        scan: u128,
+        provenance: Provenance,
     },
     /// Label rows scaled by the default selectivity table for predicates
     /// no statistic could price — a default, never a measurement. Like the sampled `CONTAINS` seed it
@@ -382,25 +391,40 @@ fn contains_hits<'a>(
         })
 }
 
-/// The label level: the label's rows, scaled by the default selectivity
-/// of the node's predicates that no measured level priced (a table, not
-/// a statistic) as a [`Estimate::Defaulted`], else the plain
-/// [`Estimate::Measured`] label count. `None` without a label count.
+/// The label level: the label's rows, scaled by the selectivity of the
+/// node's predicates that no measured level priced — a
+/// [`Estimate::Statistic`] when every term came from the key statistics,
+/// a [`Estimate::Defaulted`] when any term fell to the default table —
+/// else the plain [`Estimate::Measured`] label count. `None` without a
+/// label count.
 fn label_rung<'a>(
     node: &NodePattern,
     where_conjuncts: impl Iterator<Item = &'a Expr>,
     stats: &dyn PatternStats,
 ) -> Option<Estimate> {
-    let scan = u128::from(label_hits(node, stats)?);
+    let label_rows = label_hits(node, stats)?;
+    let scan = u128::from(label_rows);
     // A conjunct the stats price is a measurement the label count already
     // answers for (a window the crossover gate declined); only the rest
-    // reaches the table.
+    // reaches the pricing.
     let unpriced = where_conjuncts.filter(|expr| !priced_by_stats(expr, node, stats));
-    Some(match selectivity::default_selectivity(node, unpriced) {
-        Some(selectivity) => Estimate::Defaulted {
-            rows: selectivity::scale_rows(scan, selectivity),
-            scan,
-        },
+    let ctx = selectivity::Context {
+        node,
+        label_rows,
+        stats,
+    };
+    Some(match selectivity::price(&ctx, unpriced) {
+        Some(priced) => {
+            let rows = selectivity::scale_rows(scan, priced.selectivity);
+            match priced.basis {
+                selectivity::Basis::Default => Estimate::Defaulted { rows, scan },
+                selectivity::Basis::Statistic(provenance) => Estimate::Statistic {
+                    rows,
+                    scan,
+                    provenance,
+                },
+            }
+        }
         None => Estimate::Measured(scan),
     })
 }

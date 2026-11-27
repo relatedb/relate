@@ -2,7 +2,12 @@
 //! predicate narrows its endpoint's estimate as a [`Estimate::Defaulted`]
 //! (never a measurement), and a measured level still outranks it.
 
+use std::sync::Arc;
+
+use relate_names::NamedToken;
+
 use super::*;
+use crate::stats::{ContainsCount, KeyStats, PatternStats, Provenance, RowEstimate};
 
 /// A 10 000-row `Person` label and no other statistic: every predicate
 /// below is one no index serves.
@@ -131,6 +136,17 @@ fn a_constant_written_first_still_pairs_with_the_opposite_bound() {
 }
 
 #[test]
+fn a_wrapped_bound_does_not_pair_with_a_plain_one() {
+    // `toLower(p.name) >= 'a'` and `p.name <= 'z'` bound different values,
+    // so they are two one-sided terms, not one pair
+    // 0.3 and 0.3: 0.3 * 0.3^(1/2) = 0.1643 -> 1 644 rows
+    assert_eq!(
+        defaulted_rows("MATCH (p:Person) WHERE toLower(p.name) >= 'a' AND p.name <= 'z' RETURN p"),
+        1_644
+    );
+}
+
+#[test]
 fn a_property_map_value_that_reads_another_variable_is_not_a_filter() {
     assert_eq!(
         estimate_of(
@@ -147,4 +163,168 @@ fn a_nondeterministic_zero_argument_call_is_not_a_constant_filter() {
         estimate_of("MATCH (p:Person) WHERE p.score > rand() RETURN p", &LABELS),
         Estimate::Measured(10_000)
     );
+}
+
+/// A stats stub that answers the per-key statistics (ADR-0696) for
+/// `Person.city` / `Person.gender` and nothing else beyond the label rows.
+struct KeyStub {
+    estimate: Option<(u64, Provenance)>,
+    distinct: Option<u64>,
+}
+
+impl PatternStats for KeyStub {
+    fn label_rows(&self, (label, _): &NamedToken) -> Option<u64> {
+        label.with_str(|text| rows_of(&[("Person", 10_000), ("Company", 2_000)], text))
+    }
+    fn equality_rows(&self, _: &NamedToken, _: &NamedToken, _: &Expr) -> Option<u64> {
+        None
+    }
+    fn contains_rows(&self, _: &NamedToken, _: &NamedToken, _: &Expr) -> Option<ContainsCount> {
+        None
+    }
+    fn rel_type_rows(&self, (rel_type, _): &NamedToken) -> Option<u64> {
+        rel_type.with_str(|text| rows_of(&[("WORKS_AT", 500_000)], text))
+    }
+    fn equality_estimate(
+        &self,
+        _: &NamedToken,
+        property: &NamedToken,
+        _: &Expr,
+    ) -> Option<RowEstimate> {
+        self.estimate
+            .filter(|_| property.0 == "city")
+            .map(|(rows, provenance)| RowEstimate { rows, provenance })
+    }
+    fn key_stats(&self, _: &NamedToken, property: &NamedToken) -> Option<Arc<KeyStats>> {
+        self.distinct
+            .filter(|_| property.0 == "gender")
+            .map(|distinct| {
+                Arc::new(KeyStats {
+                    provenance: Provenance::Sketched,
+                    count: 10_000,
+                    declined: 0,
+                    distinct,
+                    min: None,
+                    max: None,
+                    numeric_count: 0,
+                    int_sum: 0,
+                    float_sum: 0.0,
+                    heavy: Vec::new(),
+                })
+            })
+    }
+}
+
+const NO_STATS: KeyStub = KeyStub {
+    estimate: None,
+    distinct: None,
+};
+
+#[test]
+fn an_unindexed_equality_prices_from_the_key_statistics() {
+    let stats = KeyStub {
+        estimate: Some((3, Provenance::Sketched)),
+        ..NO_STATS
+    };
+    assert_eq!(
+        estimate_of("MATCH (p:Person) WHERE p.city = 'London' RETURN p", &stats),
+        Estimate::Statistic {
+            rows: 3,
+            scan: 10_000,
+            provenance: Provenance::Sketched
+        }
+    );
+    // the folded property map prices the same way
+    assert_eq!(
+        estimate_of("MATCH (p:Person {city: 'London'}) RETURN p", &stats),
+        Estimate::Statistic {
+            rows: 3,
+            scan: 10_000,
+            provenance: Provenance::Sketched
+        }
+    );
+}
+
+#[test]
+fn without_key_statistics_the_default_table_answers() {
+    assert_eq!(
+        estimate_of(
+            "MATCH (p:Person) WHERE p.city = 'London' RETURN p",
+            &NO_STATS
+        ),
+        Estimate::Defaulted {
+            rows: 1_000,
+            scan: 10_000
+        }
+    );
+}
+
+#[test]
+fn a_function_wrapped_equality_prices_from_the_raw_distinct_count() {
+    let stats = KeyStub {
+        distinct: Some(2),
+        ..NO_STATS
+    };
+    assert_eq!(
+        estimate_of(
+            "MATCH (p:Person) WHERE toLower(p.gender) = toLower($g) RETURN p",
+            &stats
+        ),
+        Estimate::Statistic {
+            rows: 5_000,
+            scan: 10_000,
+            provenance: Provenance::Sketched
+        }
+    );
+}
+
+#[test]
+fn the_least_trustworthy_term_names_the_basis() {
+    // one statistic-priced equality and one defaulted range: the endpoint
+    // is a default, not a statistic
+    let stats = KeyStub {
+        estimate: Some((3, Provenance::UpperBound)),
+        ..NO_STATS
+    };
+    match estimate_of(
+        "MATCH (p:Person) WHERE p.city = 'x' AND p.age > 3 RETURN p",
+        &stats,
+    ) {
+        Estimate::Defaulted { scan, .. } => assert_eq!(scan, 10_000),
+        other => panic!("expected the default basis, got {other:?}"),
+    }
+    // two statistic-priced terms carry the less trustworthy provenance
+    let stats = KeyStub {
+        estimate: Some((3, Provenance::UpperBound)),
+        distinct: Some(2),
+    };
+    match estimate_of(
+        "MATCH (p:Person) WHERE p.city = 'x' AND toLower(p.gender) = 'm' RETURN p",
+        &stats,
+    ) {
+        Estimate::Statistic { provenance, .. } => assert_eq!(provenance, Provenance::Sketched),
+        other => panic!("expected a statistic, got {other:?}"),
+    }
+}
+
+/// The plan the stats pick: which label the walk starts from.
+fn seed_label(cypher: &str, stats: &dyn PatternStats) -> String {
+    first_label(&patterns_of(cypher, stats)[0])
+}
+
+#[test]
+fn a_skewed_key_flips_the_plan_the_default_table_would_pick() {
+    const Q: &str = "MATCH (p:Person)-[:WORKS_AT]->(c:Company) WHERE p.city = 'London' RETURN p";
+    // no statistics: the table keeps a tenth of the Persons, so the walk
+    // from the filtered Person end (a tenth of the 500 000 WORKS_AT
+    // edges) undercuts the unfiltered Company end (all of them)
+    assert_eq!(seed_label(Q, &NO_STATS), "Person");
+    // the key's statistics say the value is every Person's: the filter
+    // removes nothing, both ends walk all the edges, and the tie goes to
+    // the smaller seed scan — the Company end — so the plan flips
+    let everyone = KeyStub {
+        estimate: Some((10_000, Provenance::Exact)),
+        ..NO_STATS
+    };
+    assert_eq!(seed_label(Q, &everyone), "Company");
 }

@@ -4,18 +4,18 @@
 //! consulted them does not — composed with ADR-0687's footprint rules,
 //! which decide the commit half of freshness.
 //!
-//! No production planner rung consults the statistics yet, so these tests
-//! drive the consult through the store's test seam
+//! These tests drive the consult through the store's test seam
 //! (`Shared::test_plan_consult`): every plan-time adapter of the store
-//! then consults `key_stats` for the configured `(label, property)`, the
-//! way a planner rung will.
+//! then consults `key_stats` for the configured `(label, property)`, so
+//! the statements here need not shape their predicates to reach the
+//! planner's unindexed-equality rung (ADR-0696).
 
 use crate::{Connection, Database, PlanCacheOutcome};
 
 const COUNT_C1: &str = "MATCH (n:City {country: 'C1'}) RETURN count(n) AS c";
 const COUNT_C2: &str = "MATCH (n:City {country: 'C2'}) RETURN count(n) AS c";
 /// A statement of a different template: it shares the store, not the plan.
-const PEOPLE: &str = "MATCH (p:Person {id: 1}) RETURN p.id AS id";
+const PEOPLE: &str = "MATCH (p:Person) RETURN count(p) AS c";
 
 /// 60 cities over six countries, and a person.
 fn store() -> (Database, Connection) {
