@@ -64,6 +64,10 @@ pprof = { version = "0.15", default-features = false, features = ["flamegraph", 
 relate-storage = { workspace = true }
 
 [features]
+# The A/B property-store attach hook (`AttachHook`, ADR-0665): the type
+# names the engine's `Database`, so the facade rides this feature instead
+# of every default build of the shared test helpers.
+attach = ["dep:relate"]
 bolt = ["dep:relate-bolt"]
 # The in-process profiler (`profiler.rs`): query-latency's `sampling`
 # feature and `bulk-loadtest --sample` forward it. Named for the module it

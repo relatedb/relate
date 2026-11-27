@@ -53,9 +53,14 @@ relate-engine-api = { path = "../../relate/relate-engine-api" }
 relate-executor = { path = "../../relate/relate-executor", features = ["vortex-store"] }
 relate-storage = { path = "../../relate/relate-storage", features = ["vortex-store"] }
 relate-query-latency = { path = "../relate-query-latency" }
+# The stress drivers: the sandbox differential suite (graph-examples) and the
+# read-only loadtests (datasets), both driven with the store attached through
+# the same ADR-0665 hook the query suite carries.
+relate-datasets = { path = "../relate-datasets" }
+relate-graph-examples = { path = "../relate-graph-examples" }
 # The workspace's one seeded PRNG (`rng::Rng`), so the kernels' streams match
 # relate-test-support's instead of the lab re-deriving them.
-relate-test-support = { path = "../relate-test-support" }
+relate-test-support = { path = "../relate-test-support", features = ["attach"] }
 
 [dev-dependencies]
 tempfile = "3"

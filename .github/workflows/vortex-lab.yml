@@ -20,6 +20,9 @@ on:
     paths:
       - "testing/relate-vortex-lab/**"
       - "testing/relate-query-latency/**"
+      - "testing/relate-datasets/**"
+      - "testing/relate-graph-examples/**"
+      - "testing/relate-test-support/**"
       - "relate/relate-executor/**"
       - "relate/relate-storage/**"
       - "relate/relate/**"
@@ -28,6 +31,9 @@ on:
     paths:
       - "testing/relate-vortex-lab/**"
       - "testing/relate-query-latency/**"
+      - "testing/relate-datasets/**"
+      - "testing/relate-graph-examples/**"
+      - "testing/relate-test-support/**"
       - "relate/relate-executor/**"
       - "relate/relate-storage/**"
       - "relate/relate/**"

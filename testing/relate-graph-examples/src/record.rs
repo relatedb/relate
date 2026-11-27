@@ -32,10 +32,18 @@ pub enum SkipReason {
 /// the reason text for `Dialect`.
 impl std::fmt::Display for SkipReason {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.text())
+    }
+}
+
+impl SkipReason {
+    /// The reason as its one owned text ([`SkipReason::Display`] and
+    /// [`Outcome::payload`] both consume it, so the two cannot drift).
+    fn text(&self) -> &'static str {
         match self {
-            SkipReason::Gds => write!(f, "Gds"),
-            SkipReason::Apoc => write!(f, "Apoc"),
-            SkipReason::Dialect(reason) => write!(f, "{reason}"),
+            SkipReason::Gds => "Gds",
+            SkipReason::Apoc => "Apoc",
+            SkipReason::Dialect(reason) => reason,
         }
     }
 }
@@ -118,7 +126,7 @@ impl QueryResult {
     /// statement (a dataset-level setup failure, a pull verification)
     /// renders the missing part as `-` — via [`Self::line_text`] and
     /// [`Self::statement_id_text`], the one definitions of that rule.
-    pub(crate) fn id(&self) -> String {
+    pub fn id(&self) -> String {
         format!(
             "{}:{}:{}",
             self.dataset,
@@ -192,6 +200,36 @@ pub struct Summary {
     /// Statements whose reference run exceeded its timebox — reported as
     /// inconclusive, never fatal.
     pub inconclusive_timebox: usize,
+}
+
+impl Outcome {
+    /// The outcome's one-word kind — the discriminator a stable run-to-run
+    /// diff line prints (the sandbox A/B driver's `OUT` lines), the
+    /// rendering counterpart of [`Summary::record`]'s count arm beside it.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Outcome::Pass => "Pass",
+            Outcome::PassWithOrderNote(_) => "OrderNote",
+            Outcome::Fail(_) => "Fail",
+            Outcome::Skipped(_) => "Skip",
+            Outcome::SetupFailed(_) => "SetupFailed",
+            Outcome::InconclusiveTimebox(_) => "Inconclusive",
+        }
+    }
+
+    /// The outcome's payload: the "why" of a non-pass, `None` for a plain
+    /// pass. A skip renders its reason through [`SkipReason`]'s one text
+    /// (the same text [`std::fmt::Display`] writes).
+    pub fn payload(&self) -> Option<&str> {
+        match self {
+            Outcome::Pass => None,
+            Outcome::PassWithOrderNote(why)
+            | Outcome::Fail(why)
+            | Outcome::SetupFailed(why)
+            | Outcome::InconclusiveTimebox(why) => Some(why),
+            Outcome::Skipped(reason) => Some(reason.text()),
+        }
+    }
 }
 
 impl Summary {
@@ -319,6 +357,47 @@ mod tests {
         let mut r = record(Outcome::Pass);
         r.statement = None;
         let _ = r.statement_text();
+    }
+
+    /// The run-to-run diff rendering: every variant's one-word kind and
+    /// its payload (the why of a non-pass, `None` for a plain pass). A
+    /// skip's payload is its reason's own text, never a `Debug` spelling.
+    #[test]
+    fn outcome_kind_and_payload_cover_every_variant() {
+        assert_eq!(Outcome::Pass.kind(), "Pass");
+        assert_eq!(Outcome::Pass.payload(), None);
+        let cases = [
+            (
+                Outcome::PassWithOrderNote("list order differs".into()),
+                "OrderNote",
+                "list order differs",
+            ),
+            (
+                Outcome::Fail("row 2 differs".into()),
+                "Fail",
+                "row 2 differs",
+            ),
+            (
+                Outcome::SetupFailed("pull failed".into()),
+                "SetupFailed",
+                "pull failed",
+            ),
+            (
+                Outcome::InconclusiveTimebox("reference timeout".into()),
+                "Inconclusive",
+                "reference timeout",
+            ),
+            (
+                Outcome::Skipped(SkipReason::Dialect("no USE in CE")),
+                "Skip",
+                "no USE in CE",
+            ),
+            (Outcome::Skipped(SkipReason::Gds), "Skip", "Gds"),
+        ];
+        for (outcome, kind, payload) in cases {
+            assert_eq!(outcome.kind(), kind);
+            assert_eq!(outcome.payload(), Some(payload));
+        }
     }
 
     /// The one grouping derivation: first-seen dataset order, every record
