@@ -588,7 +588,7 @@ pub(crate) fn match_paths(
                     next_meter.push(row, used.len());
                 }
                 next_charge.resize(next_meter.bytes)?;
-                relate_core::tokens::peak_hold("expand");
+                relate_core::tokens::peak_hold(relate_core::tokens::peak_families::EXPAND);
             }
             next.extend(matched);
         }
@@ -598,7 +598,7 @@ pub(crate) fn match_paths(
             }
             if account {
                 next_charge.resize_with(|| crate::workspace::binding_bytes(&next))?;
-                relate_core::tokens::peak_hold("expand");
+                relate_core::tokens::peak_hold(relate_core::tokens::peak_families::EXPAND);
             }
         }
         current = next;

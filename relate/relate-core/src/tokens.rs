@@ -401,6 +401,20 @@ pub fn current_receipt(outcome: TokenOutcome) -> Option<ExecutionReceipt> {
     with_ledger(|ledger| ledger.receipt(outcome))
 }
 
+/// The workspace families [`peak_hold`] is called with, and the values
+/// `RELATE_PEAK_HOLD_FAMILY` selects between — one named set, so a call
+/// site and the load-test harness cannot drift on a spelling.
+pub mod peak_families {
+    /// Aggregation group state.
+    pub const AGGREGATION: &str = "aggregation";
+    /// Pattern expansion row buffers.
+    pub const EXPAND: &str = "expand";
+    /// Sort buffers.
+    pub const SORT: &str = "sort";
+    /// Write-side scratch for `CREATE`.
+    pub const CREATE: &str = "create";
+}
+
 /// Test hook for the processing-memory load test. Unset in production.
 /// After a named workspace family reaches RELATE_PEAK_HOLD_LOGICAL_BYTES,
 /// the process logs its live reservation and sleeps so a sampler can read
@@ -536,7 +550,16 @@ mod tests {
         assert!(poll().is_ok());
         assert!(current_receipt(TokenOutcome::Success).is_none());
         assert!(workspace_meter().is_none());
-        peak_hold("sort");
+        peak_hold(peak_families::SORT);
+    }
+
+    #[test]
+    fn peak_families_keep_their_selector_spellings() {
+        // `RELATE_PEAK_HOLD_FAMILY` values the load-test harness passes.
+        assert_eq!(peak_families::AGGREGATION, "aggregation");
+        assert_eq!(peak_families::EXPAND, "expand");
+        assert_eq!(peak_families::SORT, "sort");
+        assert_eq!(peak_families::CREATE, "create");
     }
 
     #[test]

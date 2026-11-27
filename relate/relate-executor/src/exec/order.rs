@@ -374,7 +374,7 @@ pub(crate) fn cmp_sort_keys(
 /// live workspace and before the key vector is built.
 fn hold_sort_rows(rows: &[Row]) -> Result<relate_core::tokens::WorkspaceCharge> {
     let charge = crate::workspace::charge_row_buffer(rows)?;
-    relate_core::tokens::peak_hold("sort");
+    relate_core::tokens::peak_hold(relate_core::tokens::peak_families::SORT);
     Ok(charge)
 }
 
@@ -384,7 +384,7 @@ fn hold_sort_keys<'a>(
     let charge = relate_core::tokens::WorkspaceCharge::retain_with(|| {
         crate::workspace::sort_key_columns(keys)
     })?;
-    relate_core::tokens::peak_hold("sort");
+    relate_core::tokens::peak_hold(relate_core::tokens::peak_families::SORT);
     Ok(charge)
 }
 
