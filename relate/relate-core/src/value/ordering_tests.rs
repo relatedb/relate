@@ -2,67 +2,33 @@
 //! `value::ordering` (REL8-2030): the recorded prevention for the comparator
 //! class, where a pair of values with no ordering arm compared `Equal`.
 
-use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
 
+use super::test_fixtures::{list, map, node_at, rel_at};
 use super::*;
-use crate::value::PropertyMap;
-use crate::{Node, NodeId, Path, RelId, Relationship};
+use crate::{Node, NodeId, Path, RelId};
 
 fn node(id: NodeId) -> Value {
-    Value::Node(Arc::new(Node {
-        id,
-        labels: Arc::new(Vec::new()),
-        properties: Arc::new(PropertyMap::new()),
-    }))
+    Value::from_node(node_at(id, &[], &[]))
 }
 
 fn relationship(id: RelId) -> Value {
-    Value::Relationship(Arc::new(Relationship {
-        id,
-        start: 1,
-        end: 2,
-        rel_type: "R".into(),
-        properties: Arc::new(PropertyMap::new()),
-    }))
+    Value::from_relationship(rel_at(id, 1, 2, "R", &[]))
 }
 
 fn path(node_ids: &[NodeId]) -> Value {
-    let nodes: Vec<Node> = node_ids
-        .iter()
-        .map(|&id| Node {
-            id,
-            labels: Arc::new(Vec::new()),
-            properties: Arc::new(PropertyMap::new()),
-        })
-        .collect();
-    let start = node_ids[0];
+    // A chain, not a star: `rels[i]` connects the adjacent pair
+    // `nodes[i]`/`nodes[i+1]` — the shape `Path::walk`'s arrow policy and
+    // every path consumer assume — with rel ids clear of the node ids.
+    let nodes: Vec<Node> = node_ids.iter().map(|&id| node_at(id, &[], &[])).collect();
     let rels = nodes
-        .iter()
-        .skip(1)
-        .map(|n| Relationship {
-            id: n.id,
-            start,
-            end: n.id,
-            rel_type: "R".into(),
-            properties: Arc::new(PropertyMap::new()),
-        })
+        .windows(2)
+        .enumerate()
+        .map(|(i, pair)| rel_at(10 + i as RelId, pair[0].id, pair[1].id, "R", &[]))
         .collect();
-    Value::Path(Arc::new(Path { nodes, rels }))
-}
-
-fn map(entries: &[(&str, Value)]) -> Value {
-    let map: BTreeMap<String, Value> = entries
-        .iter()
-        .map(|(k, v)| ((*k).to_string(), v.clone()))
-        .collect();
-    Value::Map(Arc::new(map))
-}
-
-fn list(values: &[Value]) -> Value {
-    Value::List(Arc::new(values.to_vec()))
+    Value::from_path(Path { nodes, rels })
 }
 
 fn temporal(t: Temporal) -> Value {
