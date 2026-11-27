@@ -118,23 +118,22 @@ fn starred(head: &str, tail: &str, step: &Step, k: usize) -> String {
 }
 
 impl Step {
-    /// Whether a chain of `k` hops between a bare head and a bare tail
-    /// engages a kernel: the cost gate declines every unlabelled chain,
-    /// except the two-hop tally fold, which carries no cost gate.
-    fn bare_scan_engages(&self, k: usize) -> ExpectedEngagement {
-        if k == 2 && self.tally_shape {
+    /// Whether a chain of `k` hops engages a kernel — the one engagement
+    /// policy. The two-hop tally fold carries no cost gate, so a directed
+    /// same-way two-hop count engages whatever the scan; otherwise a
+    /// `bare_scan` (an unlabelled head and tail) is declined outright by
+    /// the cost gate, and any other chain engages from the step's stated
+    /// first `k`.
+    fn engages(&self, k: usize, bare_scan: bool) -> ExpectedEngagement {
+        let engaged = if k == 2 && self.tally_shape {
+            true
+        } else {
+            !bare_scan && self.spelled_engages_from.is_some_and(|from| k >= from)
+        };
+        if engaged {
             ExpectedEngagement::Engaged
         } else {
             ExpectedEngagement::Declined
-        }
-    }
-
-    /// Whether the spelled-out form at `k` hops engages a kernel — the
-    /// one spelling of the step's policy, consulted by every sweep.
-    fn spelled_engages(&self, k: usize) -> ExpectedEngagement {
-        match self.spelled_engages_from {
-            Some(from) if k >= from => ExpectedEngagement::Engaged,
-            _ => ExpectedEngagement::Declined,
         }
     }
 }
@@ -160,7 +159,7 @@ fn chain_count_matches_the_walker_on_adversarial_shapes() {
                     );
                     let spelled_query = spelled(head, tail, step, k);
                     let spelled_rows =
-                        differential(&g, &spelled_query, step.spelled_engages(k)).rows;
+                        differential(&g, &spelled_query, step.engages(k, false)).rows;
                     assert_eq!(spelled_rows, starred_rows, "{spelled_query}");
                 }
             }
@@ -174,7 +173,7 @@ fn chain_count_matches_the_walker_on_adversarial_shapes() {
     for tail in LABELLED_TAILS {
         for step in all_steps() {
             for k in 2..=MAX_CHAIN_HOPS {
-                let engages = step.spelled_engages(k);
+                let engages = step.engages(k, false);
                 differential(&g, &spelled(BARE_HEAD, tail, step, k), engages);
             }
         }
@@ -186,7 +185,7 @@ fn chain_count_matches_the_walker_on_adversarial_shapes() {
     // gate (its memory is the distinct middle nodes, not the stages).
     for step in all_steps() {
         for k in 2..=MAX_CHAIN_HOPS {
-            let engages = step.bare_scan_engages(k);
+            let engages = step.engages(k, true);
             differential(&g, &starred(BARE_HEAD, BARE_TAIL, step, k), engages);
             differential(&g, &spelled(BARE_HEAD, BARE_TAIL, step, k), engages);
         }
