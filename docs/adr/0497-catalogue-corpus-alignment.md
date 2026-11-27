@@ -1021,3 +1021,10 @@ all five conflicts (§5).
   this table's `catalog-only` row is gone. It is a void no-op (the engine
   applies index updates synchronously); the alignment rule itself is
   unchanged.
+
+## Later references
+
+[ADR-0703](./0703-vortex-store-preview-gate.md) adds the taxonomy's
+next gate-location class after the four recorded here: a
+storage-representation row (`vortex-store`), gated at `Database::open`
+rather than at a parse, dispatch or name-admission point.

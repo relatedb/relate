@@ -250,6 +250,19 @@ fn common_segments() -> Vec<CommonSegment> {
                        negates an enabled environment default"
             .to_string(),
     });
+    #[cfg(feature = "vortex-store")]
+    segments.push(CommonSegment {
+        usage: " [--vortex-store]",
+        flags: &["--vortex-store"],
+        rows: "  --vortex-store
+                       Attach the experimental Vortex columnar property
+                       store (ADR-0665/0703) at the serve open: every
+                       served surface reads through it, answers and the
+                       dialect unchanged. Needs the vortex-store build
+                       feature; the same opt-in is
+                       RELATE_PREVIEW=vortex-store"
+            .to_string(),
+    });
     segments.push(CommonSegment {
         usage: " [--logical-graph-size-limit SIZE]",
         flags: &["--logical-graph-size-limit"],

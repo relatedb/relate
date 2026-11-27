@@ -144,6 +144,11 @@ pub(crate) struct OpenResolved {
     /// handle. The shape rules read it at admission; tightening the unset
     /// limit defaults is deferred to the PR-B follow-up.
     pub(crate) safe_mode: bool,
+    /// ADR-0703's resolved vortex-store opt-in, carried so the follower's
+    /// reload — which builds a fresh graph — re-attaches the store instead
+    /// of silently dropping it while the banner still claims it. The
+    /// feature fork lives in `open::attach_resolved_store`, the one reader.
+    pub(crate) vortex_store: bool,
     /// Peak-token admission (ADR-0452). On when a positive concurrent
     /// logical-workspace limit was set. Off, reservations do not refuse.
     pub(crate) budget: Arc<token_budget::TokenBudget>,

@@ -4,6 +4,7 @@
 //! they pin (LABS-392); both files follow the skill_cmd dir-module
 //! pattern to stay under the repo's 1k-line file budget.
 
+use super::banner::*;
 #[cfg(feature = "mcp")]
 use super::spawn::mcp_config;
 use super::*;
@@ -22,8 +23,14 @@ fn bind_reports_the_os_assigned_port_for_port_zero() {
 
 #[test]
 fn non_loopback_warning_only_fires_off_loopback() {
+    // The predicate is `setup`'s hoisted bind-posture fact; the test
+    // derives it the same way and passes the fact, as the caller does.
+    use relate_serve::is_loopback_host;
     for host in ["127.0.0.1", "localhost", "::1", "[::1]", "127.0.1.1"] {
-        assert!(non_loopback_warning(host).is_none(), "{host}");
+        assert!(
+            non_loopback_warning(is_loopback_host(host), &format!("--host {host}")).is_none(),
+            "{host}"
+        );
     }
     // A hostname that merely STARTS with a loopback address is not
     // loopback — the parse-based predicate must not be fooled.
@@ -34,7 +41,8 @@ fn non_loopback_warning_only_fires_off_loopback() {
         "docker0",
         "127.0.0.1.evil.com",
     ] {
-        let warning = non_loopback_warning(host).expect(host);
+        let warning =
+            non_loopback_warning(is_loopback_host(host), &format!("--host {host}")).expect(host);
         assert!(warning.contains("WARNING"), "{warning}");
         assert!(warning.contains("PLAINTEXT"), "{warning}");
         assert!(warning.contains(host), "{warning}");

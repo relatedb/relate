@@ -196,6 +196,7 @@ fn main() {
         concurrent_logical_workspace_limit,
         max_traversal_depth,
         safe,
+        vortex_store,
         max_rows,
         agent,
         width,
@@ -430,6 +431,9 @@ fn main() {
             expression_memo_budget: None,
             max_traversal_depth,
             safe_mode,
+            // ADR-0703: the experimental store's opt-in (the flag exists
+            // only in feature builds; `false` carries nothing).
+            vortex_store,
             follow_gap: Default::default(),
         },
         namespace,

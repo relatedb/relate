@@ -69,6 +69,12 @@ mod shard_codec;
 /// this module compiles without the Vortex dependency.
 pub(crate) mod vortex;
 
+/// The Vortex codec's vortex-typed half (ADR-0665), compiled only behind
+/// the `vortex-store` feature (ADR-0703) and installed into the
+/// [`shard_codec`] registry (ADR-0677).
+#[cfg(feature = "vortex-store")]
+pub(crate) mod vortex_shard;
+
 /// The Vortex store's payload manifest — the JSON object naming the row
 /// shards beside the shared envelope.
 pub(crate) const GRAPH_VORTEX_META: &str = "graph.vortex.json";

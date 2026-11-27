@@ -92,6 +92,67 @@ pub(crate) fn open_store_scoped(
     Ok((opened, tracker.peak_bytes()))
 }
 
+/// ADR-0703's opt-in, resolved at the fail-before-lease boundary: the
+/// typed field or the preview row. A feature-less build fails closed
+/// here, leaving no directory or WAL behind; a feature build installs
+/// the shard codec HERE, before the parse's codec availability check
+/// reads the registry — a Vortex snapshot store found on disk or
+/// requested by name must meet the installed codec, never the
+/// not-compiled refusal.
+fn resolve_vortex_store(opts: &OpenOptions, preview: &PreviewFeatures) -> Result<bool> {
+    let on = opts.vortex_store || preview.enabled(relate_core::PreviewFeature::VortexStore);
+    #[cfg(not(feature = "vortex-store"))]
+    if on {
+        return Err(Error::storage(
+            "vortex property store is not compiled into this build \
+             (enable the \"vortex-store\" cargo feature)",
+        ));
+    }
+    #[cfg(feature = "vortex-store")]
+    if on {
+        relate_storage::install_vortex_shard_codec();
+    }
+    Ok(on)
+}
+
+/// ADR-0703's re-attach, the reload's degrade form: the same attach, but
+/// a refusal returns the note the reload prints instead of the error the
+/// open propagates — the open's fail-closed refusal was the opt-in
+/// moment; continuity is the reload's own job, and the next reload
+/// retries the attach.
+pub(crate) fn reattach_resolved_store(graph: &Graph, on: bool) -> Option<String> {
+    attach_resolved_store(graph, on).err().map(|error| {
+        format!(
+            "the experimental Vortex property store could not re-attach \
+                 after a reload ({error}); queries continue on the compact records"
+        )
+    })
+}
+
+/// ADR-0703's resolved opt-in attaches the experimental store to a
+/// freshly loaded graph — the open's own and every follower reload — so
+/// the generic reload never spells the feature. The feature fork lives
+/// here alone; the preflight's fail-closed refusal means a non-feature
+/// build never reaches a call with the opt-in on. The two callers hold
+/// the one stated policy for a refusal: the open propagates it (the
+/// opt-in moment fails closed), the follower's reload prints
+/// [`reattach_resolved_store`]'s note and continues.
+pub(crate) fn attach_resolved_store(graph: &Graph, on: bool) -> Result<()> {
+    #[cfg(feature = "vortex-store")]
+    if on {
+        relate_executor::attach_vortex_store(graph)?;
+    }
+    #[cfg(not(feature = "vortex-store"))]
+    {
+        // The loud refusal is `resolve_vortex_store`'s (the preflight);
+        // this arm is unreachable with the opt-in on — stated, not
+        // assumed, so the pair can never disagree silently.
+        debug_assert!(!on);
+        let _ = (graph, on);
+    }
+    Ok(())
+}
+
 /// The preflight-resolved open knobs, in one named carrier: the validated
 /// LOAD CSV policy, the memory limit, the traversal-depth admission limit
 /// (LABS-610), the commit durability policy (ADR-0470), the store's
@@ -128,6 +189,13 @@ struct OpenKnobs {
     wal_payload_limit: u64,
     token_limits: token_budget::TokenLimits,
     load_threads: LoadThreads,
+    /// ADR-0703's resolved vortex-store opt-in: the typed field or the
+    /// preview row. Resolved here, before the parse leases anything, and
+    /// carried to the attach sites (the open's own graph and a follower's
+    /// reload). The feature fork lives in the two named steps —
+    /// `resolve_vortex_store` and `attach_resolved_store` — so the
+    /// carrier itself is unconditional.
+    vortex_store: bool,
 }
 
 impl Database {
@@ -273,6 +341,8 @@ impl Database {
         // The product-rename guard (ADR-0517): a still-set CYPHERLITE_* name
         // fails closed before any knob resolves it as unset.
         reject_cypherlite_env()?;
+        let preview = resolve_preview_features()?;
+        let vortex_store = resolve_vortex_store(opts, &preview)?;
         Ok(OpenKnobs {
             csv_policy: Self::load_csv_policy(opts)?,
             logical_graph_size_limit: resolve_memory_limit(opts)?,
@@ -281,7 +351,7 @@ impl Database {
             expression_memory_limit: resolve_expression_memory_limit(opts)?,
             expression_memo_budget: resolve_expression_memo_budget(opts)?,
             durability_mode: resolve_durability_mode(opts)?,
-            preview: resolve_preview_features()?,
+            preview,
             pattern_engine: resolve_pattern_engine()?,
             snapshot_codec: resolve_snapshot_codec(opts)?,
             codec_config: resolve_codec_config(opts)?,
@@ -290,6 +360,7 @@ impl Database {
             wal_payload_limit: resolve_wal_payload_limit(opts)?,
             token_limits: resolve_token_limits(opts)?,
             load_threads: resolve_load_threads(opts)?,
+            vortex_store,
         })
     }
 
@@ -336,6 +407,7 @@ impl Database {
             wal_payload_limit,
             token_limits,
             load_threads,
+            vortex_store,
         } = knobs;
         let (
             ScreenedOpen {
@@ -361,6 +433,13 @@ impl Database {
         // pre-share store-level bundle, so every namespace and session of
         // the store routes alike and a follower keeps it across a reload.
         graph.configure_pattern_engine(pattern_engine);
+        // ADR-0703: the resolved opt-in attaches the store on the
+        // quiescent, freshly loaded graph (the store's snapshot
+        // semantics). The resolution, the fail-closed refusal and the
+        // codec install all happened in the preflight, before the store
+        // existed; the knob reaches a follower's reload the same way
+        // (a reload builds a fresh graph and re-attaches there).
+        attach_resolved_store(&graph, vortex_store)?;
         // ADR-0120 §2/§4: the loaded document is the store's ontology
         // state. It drives the WAL segment magic explicitly (over the
         // scanned active segment's default); no document keeps today's
@@ -380,6 +459,7 @@ impl Database {
             logical_graph_size_limit,
             max_traversal_depth,
             safe_mode: opts.safe_mode,
+            vortex_store,
             budget,
             bulk_batch_threshold,
             bulk_batch_budget,

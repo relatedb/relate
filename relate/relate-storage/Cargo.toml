@@ -18,6 +18,10 @@ parquet = ["dep:arrow", "dep:parquet", "dep:bytes"]
 # needs no unchecked access; `unaligned` lets the archive sit in a plain
 # byte buffer (ADR-0537).
 rkyv-codec = ["dep:rkyv", "dep:lz4_flex", "dep:indexmap"]
+# EXPERIMENTAL, default off (ADR-0703): the Vortex snapshot codec's shard
+# byte serialization (ADR-0665/0677) — the encode/decode pair installed
+# into the shard-codec registry, with the Vortex dependency it needs.
+vortex-store = ["dep:vortex"]
 [dependencies]
 relate-catalog = { workspace = true }
 relate-core = { workspace = true }
@@ -45,6 +49,11 @@ parquet = { workspace = true, optional = true }
 # access (the flat value table keeps the archived type non-recursive, which
 # is what `bytecheck` needs; ADR-0537).
 rkyv = { version = "0.8", default-features = false, features = ["std", "alloc", "bytecheck", "unaligned"], optional = true }
+# The Vortex array machinery the experimental snapshot codec's shard
+# encode/decode (ADR-0665) serializes through: `files` for the vortex file
+# format reader/writer; zstd (default) stays off — no native C++ build
+# rides the feature. Optional: the vortex-store feature alone turns it on.
+vortex = { version = "0.95", default-features = false, features = ["files"], optional = true }
 # The rkyv codec's name dictionary: one insertion-ordered set serves both
 # the id→name and name→id directions, so a name is stored once.
 indexmap = { workspace = true, optional = true }

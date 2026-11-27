@@ -18,6 +18,28 @@ store at open. `close`,
 Empty directories honor `RELATE_SNAPSHOT_FORMAT`.
 See the user book [Python Library](../../reference/python-library.md).
 
+## Experimental storage preview (ADR-0703)
+
+The Vortex columnar property store (ADR-0665) is experimental: an
+alternative storage representation behind the engine's property-store
+seam — point reads and the equality and aggregate lookups route to it,
+writes publish through its delta overlay; answers, the Cypher dialect and
+the checkpoint format are unchanged. The binding has no per-open switch;
+set the environment spelling before the **first** open:
+
+```python
+import os
+os.environ["RELATE_PREVIEW"] = "vortex-store"
+```
+
+`RELATE_PREVIEW` is process-global and read once, so **every**
+`relate.connect` / `relate.Database` in that process attaches the store,
+not one open. It needs a build with the `vortex-store` cargo feature
+enabled (the default builds do not carry it); any opt-in on another build
+fails the open with `vortex property store is not compiled into this build
+(enable the "vortex-store" cargo feature)`, never silently ignored. A typed
+per-open opt-in is a recorded follow-up. See ADR-0703.
+
 ## Parameters (ADR-0219)
 
 `Database.execute` / `execute_arrow` (and the DB-API `Connection.execute` /

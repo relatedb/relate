@@ -71,6 +71,10 @@ default = ["full"]
 full = ["repl", "pull", "push", "skill", "upgrade", "telemetry", "fetch-params", "remote-database", "parquet", "info", "http", "mcp", "bolt", "agent-context", "extensions", "extension-install", "eggs"]
 agent = ["skill", "pull", "push", "fetch-params", "remote-database", "info", "agent-context", "extensions", "extension-install"]
 minimal = []
+# EXPERIMENTAL, default off (ADR-0703): the `--vortex-store` flag and the
+# open wiring it sets — forwards to the engine's vortex-store feature. A
+# flag whose feature is off is an unknown flag.
+vortex-store = ["relate/vortex-store"]
 repl = ["dep:rustyline"]
 pull = ["dep:relate-load"]
 # `relate push` (ADR-0401): pull's mirror over the same Query API v2

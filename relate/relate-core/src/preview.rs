@@ -8,7 +8,7 @@
 //! error naming the known names — never a silent ignore.
 //!
 //! Only syntax-extending features gate: a purely additive function name
-//! never needs the opt-in, so it never lands in this registry. Three
+//! never needs the opt-in, so it never lands in this registry. Four
 //! gate classes are recorded exceptions. (a) ADR-0378, widened by
 //! ADR-0593: a built-in surface whose contract tracks a non-final
 //! external spec — the `ontology` row gates the `db.ontology.*`
@@ -25,7 +25,11 @@
 //! the name-gate rule in namespace form, so a hidden database is
 //! indistinguishable from an unknown one at every resolution site: listed
 //! by no catalog, rejected by the site's own unknown-database path, never
-//! the authored error. None of the exceptions is general — additive
+//! the authored error. (d) ADR-0703: a *storage representation* — the
+//! `vortex-store` row gates an experimental property store's attach at
+//! `Database::open` itself, so its disabled form is not an error at all:
+//! the default compact records answer unchanged, and no statement can ask
+//! for the store by name. None of the exceptions is general — additive
 //! function names and surfaces on our own pinned contract still never
 //! gate. Each gated feature checks the gate where it would otherwise be
 //! parsed or dispatched; while disabled a syntax or procedure-family check
@@ -265,6 +269,21 @@ preview_feature_registry! {
          node. Gates the `||` operator over path operands at evaluation; the disabled \
          form is the existing `||` operand type error, not the authored error.",
         "path-concatenation",
+        [GateSite::GatedElsewhere]
+    ),
+    (
+        VortexStore,
+        "The Vortex columnar property store (ADR-0665), experimental: an \
+         alternative storage representation behind the executor's PropStore \
+         seam. The registry's first storage-representation row (ADR-0703): \
+         the gate is at `Database::open`, not at a parse or dispatch site — \
+         the row attaches the store for every open in the process (the typed \
+         `OpenOptions::vortex_store` field opts in one open), and a build \
+         without the `vortex-store` cargo feature fails the open closed \
+         naming the feature. While disabled nothing changes: the default \
+         compact records answer, and no statement can ask for the store, so \
+         there is no authored disabled-error.",
+        "vortex-store",
         [GateSite::GatedElsewhere]
     ),
 }

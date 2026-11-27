@@ -46,9 +46,8 @@ pub enum Cmp {
     Ge,
 }
 
-/// A pushed predicate: leaves are column comparisons, and/or compose. The
-/// key is any borrow, the same boundary the trait's key arguments take, so a
-/// computed column name binds like a literal one.
+/// A pushed predicate: leaves are column comparisons, and/or compose.
+/// The key stays borrowed — every other key argument in this seam is.
 #[derive(Debug)]
 pub enum Pred<'a> {
     Cmp { key: &'a str, op: Cmp, val: i64 },

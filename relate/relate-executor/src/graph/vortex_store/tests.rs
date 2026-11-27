@@ -6,10 +6,8 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use relate_core::{NodeId, Value};
-use relate_executor::{Graph, PropStore};
 
 use super::*;
-use crate::seam::{to_value, Val};
 
 struct Row {
     labels: Vec<&'static str>,
@@ -239,4 +237,25 @@ fn concurrent_cold_point_reads_agree() {
     for other in &results[1..] {
         assert_eq!(&results[0], other);
     }
+}
+
+#[test]
+fn the_row_space_admission_refuses_a_sparse_id_space() {
+    // Dense: n live ids end at n-1.
+    let dense: Vec<NodeId> = (0..1000).collect();
+    assert_eq!(super::build::row_space(&dense).unwrap(), 1000);
+    // Sparse: one id far past the live count trips the bound (the bound
+    // tolerates deletion gaps of 4x plus 64k headroom).
+    let sparse = vec![0, 1, 2, (1 << 20) + 7];
+    assert!(super::build::row_space(&sparse).is_err());
+}
+
+#[test]
+fn the_dense_structure_admission_refuses_an_over_budget_product() {
+    // A real graph's product sits far below the budget.
+    assert!(super::build::admit_dense(100_000, 16).is_ok());
+    // The crafted sparse-keys shape — keys meeting rows — trips it.
+    let rows = 1 << 20;
+    let keys = 1 << 20;
+    assert!(super::build::admit_dense(rows, keys).is_err());
 }

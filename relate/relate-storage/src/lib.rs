@@ -33,6 +33,11 @@ pub use codec::markdown::recorded_body_properties;
 pub use codec::markdown::MarkdownBodyProperties;
 pub use codec::open_config::CodecOpenConfig;
 pub use codec::vortex::shard_object_name;
+/// The Vortex shard codec's install hook (ADR-0665), compiled only behind
+/// the `vortex-store` feature (ADR-0703).
+#[cfg(feature = "vortex-store")]
+#[doc(hidden)]
+pub use codec::vortex_shard::install as install_vortex_shard_codec;
 pub use codec::SnapshotCodecKind;
 /// The shard-codec install hook the experiment crate calls (ADR-0665),
 /// with the encode/decode types its signature names.

@@ -1,24 +1,28 @@
-//! The Vortex snapshot codec's shard serialization (ADR-0665): one
+//! The Vortex shard codec's vortex-typed half (ADR-0665): one
 //! single-column Vortex file per row window, written to a byte buffer and
 //! read back the same way. This is the half that links the Vortex crate;
-//! relate-storage keeps the layout (the payload manifest, the shard file
-//! names, the orphan retirement) and calls back through its shard-codec
-//! registry.
+//! `super::vortex` keeps the storage-general layout (the payload manifest,
+//! the shard file names, the orphan retirement) and reaches this half only
+//! through the process-wide shard-codec registry (ADR-0677).
 //!
-//! [`install`] registers the pair, so a store opened after it resolves the
-//! `vortex` codec instead of failing closed.
+//! Compiled only behind the `vortex-store` feature (ADR-0703), so a build
+//! that does not opt in never links the Vortex tree. [`install`] registers
+//! the pair, so a store opened after it resolves the `vortex` codec instead
+//! of failing closed.
 
 use relate_core::{Error, Result};
-use relate_storage::install_shard_codec;
 
-/// Install the Vortex shard encode/decode pair into relate-storage's
-/// process-wide registry. Idempotent: the first install wins.
+use super::install_shard_codec;
+
+/// Install the Vortex shard encode/decode pair into the process-wide
+/// shard-codec registry. Idempotent: the first install wins.
+#[doc(hidden)]
 pub fn install() {
     install_shard_codec(encode, decode);
 }
 
 /// Encode rows as a single-column Vortex file in memory — the writer's
-/// bytes are handed to relate-storage's VFS, so no host file is touched.
+/// bytes are handed to the store's VFS, so no host file is touched.
 fn encode(rows: &[String]) -> Result<Vec<u8>> {
     use vortex::array::arrays::varbin::VarBinArray;
     use vortex::array::IntoArray;
@@ -104,6 +108,17 @@ fn vortex_error(error: impl std::fmt::Display) -> Error {
 #[cfg(test)]
 mod tests {
     use super::{decode, encode};
+
+    #[test]
+    fn encode_decode_round_trips_rows() {
+        let rows: Vec<String> = ["{\"id\":1}", "", "ünïcode", "\"quoted\""]
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+        let bytes = encode(&rows).expect("encode");
+        assert!(!bytes.is_empty());
+        assert_eq!(decode(&bytes).expect("decode"), rows);
+    }
 
     #[test]
     fn a_zero_row_shard_still_carries_the_file_framing() {

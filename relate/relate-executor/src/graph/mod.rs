@@ -72,12 +72,16 @@ mod prop_read;
 mod prop_store;
 pub use prop_store::{PropFold, PropStore, PublishedRow};
 mod query_stats;
+#[cfg(feature = "vortex-store")]
+mod vortex_store;
 pub use pin::SnapshotPin;
 #[cfg(test)]
 use pin::PIN_ACQUIRE_RETRIES;
 #[cfg(test)]
 use pin::PIN_CLAIMING;
 use pin::{PIN_FREE, PIN_SLOTS};
+#[cfg(feature = "vortex-store")]
+pub use vortex_store::{attach_vortex_store, VortexStore};
 mod rebuild;
 mod redo_preflight;
 mod rel_postings;

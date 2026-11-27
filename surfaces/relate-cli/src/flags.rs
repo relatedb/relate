@@ -97,6 +97,11 @@ pub(crate) struct Flags {
     /// given — the ladder (flag, then `RELATE_SAFE_MODE`, then off)
     /// resolves after the no-side-effect exits.
     pub safe: Option<bool>,
+    /// `--vortex-store` (ADR-0703): the experimental columnar property
+    /// store's opt-in — `false` unless the flag was given. The arm that
+    /// parses it exists only in `vortex-store` feature builds, so the
+    /// flag is an unknown flag everywhere else.
+    pub vortex_store: bool,
     /// `--max-rows`; `None` when absent (the default policy is resolved in
     /// `row_cap`, after help/version/lifecycle exits).
     pub max_rows: Option<usize>,
@@ -157,6 +162,7 @@ impl Default for Flags {
             concurrent_logical_workspace_limit: None,
             max_traversal_depth: None,
             safe: None,
+            vortex_store: false,
             max_rows: None,
             agent: None,
             width: None,
@@ -571,6 +577,17 @@ fn apply_session_flag(
             // LABS-680 (ADR-0477): value-less, last one wins, resolved with
             // the environment after the no-side-effect exits.
             state.safe = Some(arg == "--safe");
+            true
+        }
+        #[cfg(feature = "vortex-store")]
+        "--vortex-store" => {
+            // ADR-0703: the experimental Vortex columnar property store —
+            // value-less, no negation (the store off IS the default; the
+            // open fails closed on a feature-less build). The arm exists
+            // only in feature builds: without it the flag falls through to
+            // the unknown-flag error, so `--help` never advertises what
+            // the build cannot serve.
+            state.vortex_store = true;
             true
         }
         "--namespace" => {

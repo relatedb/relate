@@ -1,10 +1,10 @@
 //! Vortex in-memory columnar property-store experiment (ADR-0665).
 //!
 //! The round-1 measurement kernels (`bench`, `store`, `colstore`, `seam`,
-//! `ops`), plus the engine integration (`engine`): the Vortex-backed
-//! `PropStore` and shard codec the executor and storage seams dispatch to.
-//! Never a shipped surface — the published crates carry only the seams, and
-//! this crate is the one that links the Vortex fork.
+//! `ops`), plus the engine glue (`engine`): the attach and codec-install
+//! calls onto the product crates' `vortex-store` feature (ADR-0703). The
+//! store and the codec themselves live in relate-executor and relate-storage
+//! now; this crate measures them and is never a shipped surface.
 //!
 //! The binaries are `relate-vortex-lab` (the kernel suite) and
 //! `relate-vortex-ab` (the engine A/B: default store vs Vortex store over the

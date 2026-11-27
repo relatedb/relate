@@ -256,3 +256,13 @@ dependency layout: the vortex-typed store and codec move out of the
 published crates into the workspace-excluded `testing/relate-vortex-lab`,
 leaving a `PropStore` trait and a shard-codec registry as the only seams.
 The experiment itself (the adopt/drop question) is unchanged.
+
+## Later references
+
+[ADR-0703](./0703-vortex-store-preview-gate.md) wires the experiment's
+opt-in: the `vortex-store` cargo feature (default-off, following
+ADR-0537's rkyv flag shape), the `OpenOptions::vortex_store` field, the
+`RELATE_PREVIEW=vortex-store` registry row and the CLI flag, with the
+store adapter moving from the experiment crate into the feature-gated
+product crates. The engine seam this ADR defines is unchanged — the
+gate only changes who attaches the store, never what it answers.

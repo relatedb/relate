@@ -78,9 +78,12 @@ use std::sync::Arc;
 use crate::serve_args::McpMode;
 use crate::serve_args::ServeCmd;
 
+mod banner;
+
 #[cfg(feature = "surface")]
 mod spawn;
 
+use banner::{kind_banner_lines, non_loopback_warning};
 #[cfg(feature = "bolt")]
 use spawn::BoltSurface;
 #[cfg(feature = "http")]
@@ -93,45 +96,6 @@ use spawn::{McpRole, McpSurface};
 /// hostname must not pass), re-used by the container entrypoint so the two
 /// loopback postures cannot drift.
 use relate_serve::is_loopback_host;
-
-/// The ADR-0306 §5 startup banner line for a non-writable access mode:
-/// exactly one line naming the mode. `None` for a writable serve, which
-/// adds no banner line. [`setup`] fronts the line onto the banner Vec;
-/// [`run`]'s one banner loop prints it.
-fn access_banner_line(access: relate::OpenMode) -> Option<&'static str> {
-    match access {
-        relate::OpenMode::Writable => None,
-        relate::OpenMode::ReadOnly => Some(
-            "serve: opened the store read-only — no writer lease and \
-             never creates the store; every write fails",
-        ),
-        relate::OpenMode::Follow => Some(
-            "serve: opened the store read-only and following the WAL — \
-             the writer's committed frames appear as they land",
-        ),
-        // LABS-903 (ADR-0500): the `--load` memory turn-into — the source
-        // loaded into the in-memory store, released after the load.
-        relate::OpenMode::Ephemeral => Some(
-            "serve: loaded the store into memory — read-only, the source \
-             released after the load; every write fails",
-        ),
-    }
-}
-
-/// The loud plaintext-posture warning for a non-loopback `--host`
-/// (ADR-0248): `serve` has no TLS, so binding beyond loopback exposes the
-/// surfaces — under the one shared credential — to the network. `None` on
-/// loopback.
-fn non_loopback_warning(host: &str) -> Option<String> {
-    if is_loopback_host(host) {
-        return None;
-    }
-    Some(format!(
-        "serve: WARNING: --host {host} exposes the PLAINTEXT HTTP/MCP/Bolt surfaces to the network — \
-         serve has no TLS; anyone who can reach the ports can present credentials. \
-         Keep 127.0.0.1 or front the server with TLS."
-    ))
-}
 
 /// Render `--host` beside a port — the surface startup lines (the
 /// Neo4j-format `Bolt enabled on host:port.` / `HTTP enabled on
@@ -421,6 +385,9 @@ fn store_options(cmd: &ServeCmd) -> Result<relate::OpenOptions, i32> {
     // (`--safe`/`--no-safe` over `RELATE_SAFE_MODE` over off), so a bad
     // environment value is a usage error here rather than a failed open.
     options.safe_mode = or_report_as(2, crate::flags::safe_mode_from_env_checked(cmd.safe))?;
+    // ADR-0703: the experimental store's opt-in — the serve open's one
+    // flag-set field (the arm exists only in feature builds).
+    options.vortex_store = cmd.vortex_store;
     // ADR-0470: the commit durability policy resolves the same way
     // (`--durability-mode` over `RELATE_DURABILITY_MODE` over the
     // engine default `full`), so a bad value is a usage error here rather
@@ -571,11 +538,10 @@ fn setup(cmd: &ServeCmd) -> Result<Ready, i32> {
     // arm takes it from here.
     #[cfg(feature = "mcp")]
     if cmd.is_stdio_only() {
-        // The stdio-only banner is the ADR-0306 §5 access-mode line
-        // alone, pushed directly (round 3, F-1-3): nothing binds, so no
-        // host warning and no listener prologue exist for this kind.
-        let mut banner = Vec::new();
-        banner.extend(access_banner_line(cmd.access).map(str::to_string));
+        // The stdio-only banner is the kind-invariant lines alone (round
+        // 3, F-1-3): nothing binds, so no host warning and no listener
+        // prologue exist for this kind.
+        let banner = kind_banner_lines(db.vortex_store_attached(), cmd.access);
         return Ok(Ready {
             db: Arc::new(db),
             banner,
@@ -646,7 +612,8 @@ fn setup(cmd: &ServeCmd) -> Result<Ready, i32> {
     // plaintext-posture warning first — listener-prologue content (round
     // 3, F-1-3), pushed here where the listeners have bound, so a
     // stdio-only run, which binds nothing, never warns about exposing
-    // surfaces — then the ADR-0306 §5 access-mode line, then the auth
+    // surfaces — then the ADR-0306 §5 access-mode line, then the ADR-0703
+    // vortex-store note when a store attached, then the auth
     // lines, then the ADR-0333 unlimited-cap warning when it fires
     // (round 4, F-4-1/F-4-3), appended here where the cap is resolved, so
     // run's one banner print carries the whole prologue and never
@@ -657,8 +624,10 @@ fn setup(cmd: &ServeCmd) -> Result<Ready, i32> {
     let bind_loopback = is_loopback_host(&cmd.host);
     let bind_description = format!("--host {}", cmd.host);
     let mut banner = Vec::new();
-    banner.extend(non_loopback_warning(&cmd.host));
-    banner.extend(access_banner_line(cmd.access).map(str::to_string));
+    banner.extend(non_loopback_warning(bind_loopback, &bind_description));
+    // The kind-invariant lines (access mode, the ADR-0703 vortex-store
+    // note) share the stdio-only return's one home.
+    banner.extend(kind_banner_lines(db.vortex_store_attached(), cmd.access));
     banner.extend(auth_banner);
     banner.extend(relate_serve::unlimited_cap_warning(
         admission.connection_cap.max(),

@@ -6,9 +6,8 @@
 //!
 //! 1. **lock-free** — one `OnceLock<Arc<Vec<i64>>>`: hit = one acquire load;
 //!    a cold race decodes once (the store's adopted design).
-//! 2. **`RwLock<Option<Arc<Vec>>>`** — readers share the lock; a cold race
-//!    double-checks.
-//! 3. **`Mutex<Option<Arc<Vec>>>`** — every reader serializes.
+//! 2. **`RwLock<HashMap>`** — readers share the lock; a cold race double-checks.
+//! 3. **`Mutex<HashMap>`** — every reader serializes.
 //! 4. **per-thread** — each worker owns a full copy: no sharing, N × resident.
 //!
 //! Per arm: hit ns/op for point and 64-row batch reads at 1, 2, 4, 8 threads,
@@ -16,6 +15,7 @@
 //! (the per-thread arm priced at N × the single cache). Every section prints
 //! the load stamp: the box is shared, so a bare ns/op is not evidence.
 
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Barrier, Mutex, OnceLock, RwLock};
@@ -68,56 +68,60 @@ pub fn run(out_dir: &Path, iters: u64) -> Result<(), Box<dyn std::error::Error>>
         |_, i| batch_sum(cache.get().expect("warmed"), i, rows),
     );
 
-    // ---- arm 2: RwLock<Option<Arc<Vec>>> ----
+    // ---- arm 2: RwLock<HashMap> ----
     let counter = AtomicUsize::new(0);
-    let rw: RwLock<Option<Arc<Vec<i64>>>> = RwLock::new(None);
+    let rw: RwLock<HashMap<u32, Arc<Vec<i64>>>> = RwLock::new(HashMap::new());
     let before = live_bytes();
     cold_stampede(|| {
-        if rw.read().expect("rwlock").is_some() {
+        if rw.read().expect("rwlock").contains_key(&0) {
             return;
         }
         let mut write = rw.write().expect("rwlock");
-        write.get_or_insert_with(|| decode(&column, &session, &counter));
+        write
+            .entry(0)
+            .or_insert_with(|| decode(&column, &session, &counter));
     });
     let resident = live_bytes().saturating_sub(before);
     report(
-        "RwLock<Option<Arc<Vec>>>",
+        "RwLock<HashMap>",
         resident,
         counter.load(Ordering::Relaxed),
         point_iters,
         batch_iters,
         |_, i| {
             let guard = rw.read().expect("rwlock");
-            guard.as_ref().expect("warmed")[spread_row(i, rows)]
+            guard[&0][spread_row(i, rows)]
         },
         |_, i| {
             let guard = rw.read().expect("rwlock");
-            batch_sum(guard.as_ref().expect("warmed"), i, rows)
+            batch_sum(&guard[&0], i, rows)
         },
     );
 
-    // ---- arm 3: Mutex<Option<Arc<Vec>>> ----
+    // ---- arm 3: Mutex<HashMap> ----
     let counter = AtomicUsize::new(0);
-    let mutex: Mutex<Option<Arc<Vec<i64>>>> = Mutex::new(None);
+    let mutex: Mutex<HashMap<u32, Arc<Vec<i64>>>> = Mutex::new(HashMap::new());
     let before = live_bytes();
     cold_stampede(|| {
         let mut guard = mutex.lock().expect("mutex");
-        guard.get_or_insert_with(|| decode(&column, &session, &counter));
+        guard
+            .entry(0)
+            .or_insert_with(|| decode(&column, &session, &counter));
     });
     let resident = live_bytes().saturating_sub(before);
     report(
-        "Mutex<Option<Arc<Vec>>>",
+        "Mutex<HashMap>",
         resident,
         counter.load(Ordering::Relaxed),
         point_iters,
         batch_iters,
         |_, i| {
             let guard = mutex.lock().expect("mutex");
-            guard.as_ref().expect("warmed")[spread_row(i, rows)]
+            guard[&0][spread_row(i, rows)]
         },
         |_, i| {
             let guard = mutex.lock().expect("mutex");
-            batch_sum(guard.as_ref().expect("warmed"), i, rows)
+            batch_sum(&guard[&0], i, rows)
         },
     );
 

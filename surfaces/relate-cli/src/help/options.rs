@@ -226,6 +226,19 @@ pub(crate) const OPTION_ENTRIES: &[OptionEntry] = &[
         ],
         flags: &["--safe", "--no-safe"],
     },
+    #[cfg(feature = "vortex-store")]
+    OptionEntry {
+        headline: "  --vortex-store      Attach the experimental Vortex columnar property store",
+        continuation: &[
+            "                       (ADR-0665/0703) at open: point reads and the equality and",
+            "                       aggregate lookups route to it, writes publish through",
+            "                       its delta overlay; answers and the Cypher dialect are",
+            "                       unchanged. Needs the vortex-store build feature; the",
+            "                       same opt-in is RELATE_PREVIEW=vortex-store (then on for",
+            "                       every open in the process).",
+        ],
+        flags: &["--vortex-store"],
+    },
     OptionEntry {
         headline: "  --agent-mode         Force agent ergonomics on (the row cap's default and the",
         continuation: &[
