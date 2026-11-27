@@ -14,7 +14,8 @@ use relate_model::EntityKind;
 
 use crate::ctx::ExecCtx;
 use crate::exec::candidates::{
-    index_population, ranked_candidates, resolve_search_index, TopWindow,
+    expect_enumerated_candidate, index_population, ranked_candidates, resolve_search_index,
+    TopWindow,
 };
 use crate::exec::ddl_options::index_config;
 use crate::exec::search_filters::{
@@ -23,7 +24,9 @@ use crate::exec::search_filters::{
 use crate::overlay::ExecGraph;
 use crate::row::Row;
 use crate::vector_config::{StorableMetric, StoredVectorConfig};
-use crate::vector_similarity::{similarity_values, value_coord, value_coords, PreparedQuery};
+use crate::vector_similarity::{
+    similarity_row, similarity_values, value_coord, value_coords, PreparedQuery,
+};
 
 pub(crate) fn vector_operand(value: &Value) -> Result<Option<Vec<f64>>> {
     let values = match value {
@@ -169,22 +172,42 @@ pub(crate) fn scan_candidates(
     filters: &[PreparedSearchFilter<'_>],
 ) -> Result<Vec<(Value, f64)>> {
     let ExecCtx { graph, .. } = ctx;
+    // The per-search query facts (ADR-0256 hoist, stellar round 2 bundle):
+    // norm and zero-guard are shared by every candidate's cosine.
+    let prepared = PreparedQuery::prepare(query);
+    // ADR-0705: the packed matrix answers when it can serve this view
+    // exactly; otherwise the `Value` sweep runs unchanged.
+    let top = match matrix_window(graph, scan, &prepared, limit, filters).transpose()? {
+        Some(top) => top,
+        None => value_window(graph, scan, &prepared, limit, filters)?,
+    };
+    // The survivors materialize through the one ranked composition
+    // (exec::candidates), with the kind the caller passed.
+    Ok(ranked_candidates(graph, kind, top.into_sorted_rows()))
+}
+
+/// The `Value` sweep (ADR-0256): the top-k window filled from the shared
+/// index population — every live entity the index covers, already gated
+/// by the population's own per-kind label/type policies — scored per
+/// candidate and filter-gated, [`matrix_window`]'s twin over `Value`
+/// coordinate lists. The unfiltered path never materializes a `Value`
+/// per scored candidate — only the ≤ limit survivors become entities in
+/// `scan_candidates`'s tail. Filtered (CIP-235 `WITH`) searches still
+/// evaluate properties per scored candidate and take the same flat path.
+fn value_window(
+    graph: &ExecGraph<'_>,
+    scan: &VectorScan,
+    prepared: &PreparedQuery<'_>,
+    limit: usize,
+    filters: &[PreparedSearchFilter<'_>],
+) -> Result<TopWindow> {
     let VectorScan {
         detail,
         property,
         metric,
     } = scan;
-    // The per-search query facts (ADR-0256 hoist, stellar round 2 bundle):
-    // norm and zero-guard are shared by every candidate's cosine.
-    let prepared = PreparedQuery::prepare(query);
-    // ADR-0256: the unfiltered path never materializes a `Value` per scored
-    // candidate — only the ≤ limit survivors become entities below.
-    // Filtered (CIP-235 `WITH`) searches still evaluate properties per
-    // scored candidate and take the same flat path.
     // The one per-candidate scan body: indexed-property read, coordinate
-    // parse, score, filter gate. The label and type gating is
-    // [`index_population`]'s own contract — this scan drives the body
-    // once per enumerated member and knows no per-kind arms.
+    // parse, score, filter gate.
     let candidate_score = |id: i64, properties: &PropertyMap| -> Result<Option<f64>> {
         let Some(value) = properties.get(property) else {
             return Ok(None);
@@ -192,7 +215,7 @@ pub(crate) fn scan_candidates(
         let Some(coords) = value_coords(value) else {
             return Ok(None);
         };
-        let Some(score) = similarity_values(*metric, &prepared, coords) else {
+        let Some(score) = similarity_values(*metric, prepared, coords) else {
             return Ok(None);
         };
         if !search_filter_passes(graph, id, properties, filters)? {
@@ -204,20 +227,69 @@ pub(crate) fn scan_candidates(
     // front's 42N14), so its window is the LIMIT alone — the caller's
     // growth loop pages the survivors (ADR-0678).
     let mut top = TopWindow::new(0, limit);
-    // The one fetch-gate-push sweep, spelled directly over the shared
-    // index population (exec::candidates): every live entity the index
-    // covers, already gated by the population's own per-kind label/type
-    // policies — the indexed-property read, coordinate parse, score and
-    // filter gate live in `candidate_score`, the window push here.
+    // The one fetch-gate-push sweep.
     for (id, properties) in index_population(graph, detail) {
         if let Some(score) = candidate_score(id, &properties)? {
             top.push(score, id);
         }
     }
-    // The survivors materialize through the one ranked composition
-    // (exec::candidates), with the kind the caller passed.
-    let candidates = ranked_candidates(graph, kind, top.into_sorted_rows());
-    Ok(candidates)
+    Ok(top)
+}
+
+/// The packed-matrix scan (ADR-0705): the same top-k window the `Value`
+/// scan fills, from the node index's packed `f32` rows. `None` when the
+/// matrix cannot serve this search exactly — a relationship or
+/// multi-label index, or a view with uncommitted writes of its own — or
+/// declines it ([`crate::graph::Graph::with_vector_matrix`]); the caller
+/// then scans `Value`s.
+///
+/// Filters keep their pre-ranking semantics: a row is scored first, and
+/// only a row the window would retain has its properties read and its
+/// filters checked, so a row that fails never enters the window and the
+/// next-best passing rows fill it — the `Value` scan's answer, without
+/// reading the properties of rows that could not place.
+fn matrix_window(
+    graph: &ExecGraph<'_>,
+    scan: &VectorScan,
+    prepared: &PreparedQuery<'_>,
+    limit: usize,
+    filters: &[PreparedSearchFilter<'_>],
+) -> Option<Result<TopWindow>> {
+    let VectorScan {
+        detail,
+        property,
+        metric,
+    } = scan;
+    let [label] = detail.labels.as_slice() else {
+        return None;
+    };
+    if detail.relationship || !graph.has_no_pending_writes() {
+        return None;
+    }
+    let dim = prepared.dimension();
+    graph
+        .base()
+        .with_vector_matrix(label, property, graph.snapshot_ts(), dim, |matrix| {
+            let mut top = TopWindow::new(0, limit);
+            for (id, row) in matrix.rows() {
+                let Some(score) = similarity_row(*metric, prepared, row) else {
+                    continue;
+                };
+                if !filters.is_empty() {
+                    if !top.admits(score, id) {
+                        continue;
+                    }
+                    // The matrix serves this snapshot, so the row's node is
+                    // visible in it.
+                    let node = expect_enumerated_candidate(graph.node(id), id);
+                    if !search_filter_passes(graph, id, &node.properties, filters)? {
+                        continue;
+                    }
+                }
+                top.push(score, id);
+            }
+            Ok(top)
+        })
 }
 
 #[cfg(test)]

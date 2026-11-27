@@ -149,10 +149,19 @@ impl<'a> ExecGraph<'a> {
     /// two checks is closed by the under-lock re-check, so no
     /// out-of-snapshot write leaks into the count.
     pub(crate) fn sees_exact_base_stats(&self) -> bool {
-        self.scratch
-            .is_none_or(|scratch| scratch.borrow().has_no_changes())
+        self.has_no_pending_writes()
             && !self.base.in_write_window()
             && self.pinned_ts == self.base.commit_ts()
+    }
+
+    /// Whether this view reads its committed snapshot unchanged: no write
+    /// scratch, or one with no changes yet (an explicit transaction always
+    /// carries a scratch, even when it only reads). The vector matrix
+    /// (ADR-0705) serves only such views; a view with its own uncommitted
+    /// writes scans `Value`s, which read those writes.
+    pub(crate) fn has_no_pending_writes(&self) -> bool {
+        self.scratch
+            .is_none_or(|scratch| scratch.borrow().has_no_changes())
     }
 
     /// The store's `RELATE_PREVIEW`-resolved set (ADR-0371), the

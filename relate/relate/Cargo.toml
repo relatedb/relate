@@ -46,7 +46,7 @@ indexmap = { workspace = true }
 web-time = { workspace = true }
 
 [dev-dependencies]
-relate-executor = { workspace = true }
+relate-executor = { workspace = true, features = ["test-hooks"] }
 tempfile = { workspace = true }
 crc32fast = { workspace = true }
 relate-test-support = { workspace = true, features = ["durability", "fold_shapes", "nested_eval", "pokec", "read_log", "vfs_walk"] }

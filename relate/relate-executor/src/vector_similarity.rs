@@ -37,46 +37,148 @@ fn dot_unrolled(a: &[f64], b: &[f64]) -> f64 {
     dot
 }
 
-/// The scan score for the stored metric — the dispatch is exhaustive
-/// over [`StorableMetric`], so the narrowing, the dispatch, and the
-/// kernels it selects cannot drift apart (one authority: the type).
-/// Every skip contract lives here: an empty or length-mismatched query,
-/// a non-finite coordinate, and the all-zero cosine candidate all skip
-/// (None). The zero-query guard is cosine's only (a zero query has no
-/// direction; euclidean distance stays defined).
+/// The scan score for the stored metric — the `Value`-coordinate entry
+/// point of [`similarity`], the one kernel below both scan paths.
 pub(crate) fn similarity_values(
     metric: StorableMetric,
     query: &PreparedQuery<'_>,
     candidate: &[Value],
 ) -> Option<f64> {
-    if query.coords.is_empty() || query.coords.len() != candidate.len() {
+    similarity(metric, query, candidate.len(), |i| {
+        value_coord(&candidate[i])
+    })
+}
+
+/// The scan score of one packed `f32` row (the vector matrix, ADR-0705):
+/// [`similarity_values`]' twin over a row packed from an f32-exact
+/// `VECTOR` — the same kernel, the row's coordinates widened to the
+/// `f64` the `Value` walk reads, so the score is bit-identical. The row
+/// was finiteness-checked when it was packed; the skip contracts left
+/// here are the query's guards and the all-zero cosine candidate.
+pub(crate) fn similarity_row(
+    metric: StorableMetric,
+    query: &PreparedQuery<'_>,
+    row: &[f32],
+) -> Option<f64> {
+    similarity(metric, query, row.len(), |i| Some(f64::from(row[i])))
+}
+
+/// The one scan score (ADR-0705): the query's length and zero guards,
+/// the exhaustive [`StorableMetric`] dispatch and the CIP-121/CIP-214
+/// rounding chains, over a reader-parameterized coordinate source — the
+/// `Value` walk's fallible [`value_coord`] or the packed row's
+/// infallible widen. Monomorphized per entry point, so the two
+/// coordinate sources keep their own codegen and stay bit-identical by
+/// construction, not by maintenance. Every skip contract lives here: an
+/// empty or length-mismatched query, a non-finite coordinate, and the
+/// all-zero cosine candidate all skip (None). The zero-query guard is
+/// cosine's only (a zero query has no direction; euclidean distance
+/// stays defined).
+fn similarity(
+    metric: StorableMetric,
+    query: &PreparedQuery<'_>,
+    len: usize,
+    reader: impl Fn(usize) -> Option<f64>,
+) -> Option<f64> {
+    if query.coords.is_empty() || query.coords.len() != len {
         return None;
     }
     match metric {
         StorableMetric::Cosine if query.zero => None,
-        StorableMetric::Cosine => cosine_similarity_values(query.coords, query.norm, candidate),
-        StorableMetric::Euclidean => euclidean_similarity_values(query.coords, candidate),
+        StorableMetric::Cosine => Some(cosine_score(cosine_lanes(
+            query.coords,
+            query.norm,
+            len,
+            reader,
+        )?)),
+        StorableMetric::Euclidean => Some(euclidean_score(euclidean_squared_lanes(
+            query.coords,
+            len,
+            reader,
+        )?)),
     }
 }
 
-/// The CIP-121 cosine score for the scan path (ADR-0256), with the
-/// float32-rounded `(cos + 1) / 2` chain the pre-ADR-0256 kernel applied.
-/// Private: the dispatch in [`similarity_values`] is the module's one
-/// entry point, so no caller can bypass the skip contracts it owns
-/// (stellar round 3, visibility hygiene).
-fn cosine_similarity_values(query: &[f64], query_norm: f64, candidate: &[Value]) -> Option<f64> {
-    let cos = round_f32(cosine_raw_values(query, query_norm, candidate)?);
-    Some(round_f32((cos + 1.0) / 2.0))
+/// The one eight-lane cosine pass (ADR-0705): dot lanes and
+/// candidate-norm lanes over `len` coordinates, with `reader(i)` reading
+/// the coordinate at `i` — the `Value` walk's fallible [`value_coord`]
+/// or the packed row's infallible widen. Monomorphized per caller, so
+/// each twin keeps its own codegen and the two spellings stay
+/// bit-identical by construction, not by maintenance. The caller
+/// guarantees `len == query.len()` ([`similarity`]'s length guard).
+fn cosine_lanes(
+    query: &[f64],
+    query_norm: f64,
+    len: usize,
+    reader: impl Fn(usize) -> Option<f64>,
+) -> Option<f64> {
+    let mut dot = [0.0f64; 8];
+    let mut norm = [0.0f64; 8];
+    let mut any_nonzero = false;
+    let mut i = 0;
+    while i + 8 <= len {
+        for lane in 0..8 {
+            let c = reader(i + lane)?;
+            dot[lane] += query[i + lane] * c;
+            norm[lane] += c * c;
+            any_nonzero |= c != 0.0;
+        }
+        i += 8;
+    }
+    let mut dot_sum: f64 = dot.iter().sum();
+    let mut norm_sum: f64 = norm.iter().sum();
+    while i < len {
+        let c = reader(i)?;
+        dot_sum += query[i] * c;
+        norm_sum += c * c;
+        any_nonzero |= c != 0.0;
+        i += 1;
+    }
+    if !any_nonzero {
+        return None;
+    }
+    Some(dot_sum / (query_norm * norm_sum.sqrt()))
 }
 
-/// The CIP-214 euclidean score for the scan path (ADR-0256), with the
-/// float32-rounded `1 / (1 + d^2)` chain the pre-ADR-0256 kernel applied.
-/// Private, like its cosine twin: [`similarity_values`] is the one entry
-/// point.
-fn euclidean_similarity_values(query: &[f64], candidate: &[Value]) -> Option<f64> {
-    Some(round_f32(
-        1.0 / (1.0 + euclidean_squared_raw_values(query, candidate)?),
-    ))
+/// The one eight-lane squared-euclidean pass (ADR-0705), with the same
+/// reader parameterization as [`cosine_lanes`].
+fn euclidean_squared_lanes(
+    query: &[f64],
+    len: usize,
+    reader: impl Fn(usize) -> Option<f64>,
+) -> Option<f64> {
+    let mut dist = [0.0f64; 8];
+    let mut i = 0;
+    while i + 8 <= len {
+        for lane in 0..8 {
+            let c = reader(i + lane)?;
+            let d = query[i + lane] - c;
+            dist[lane] += d * d;
+        }
+        i += 8;
+    }
+    let mut dist_sum: f64 = dist.iter().sum();
+    while i < len {
+        let c = reader(i)?;
+        let d = query[i] - c;
+        dist_sum += d * d;
+        i += 1;
+    }
+    Some(dist_sum)
+}
+
+/// The CIP-121 cosine score chain (ADR-0256): the kernel's raw cosine,
+/// rounded to the float32 contract, mapped to `[0, 1]`, rounded again —
+/// one spelling shared by the `Value` and packed-row dispatches, so the
+/// user-visible score contract cannot drift between them (ADR-0705).
+fn cosine_score(raw: f64) -> f64 {
+    round_f32((round_f32(raw) + 1.0) / 2.0)
+}
+
+/// The CIP-214 euclidean score chain (ADR-0256): `1 / (1 + d²)` at the
+/// same float32 rounding contract, one spelling for both dispatches.
+fn euclidean_score(squared_distance: f64) -> f64 {
+    round_f32(1.0 / (1.0 + squared_distance))
 }
 
 /// One `Value` list coordinate. `None` when the entry is not a finite
@@ -126,66 +228,12 @@ impl PreparedQuery<'_> {
             zero: query.iter().all(|value| *value == 0.0),
         }
     }
-}
 
-/// Raw cosine between an f64 query (norm precomputed) and a `Value`
-/// coordinate list, in one pass over the candidate: eight dot lanes and
-/// eight candidate-norm lanes.
-///
-/// `None` when any candidate coordinate is not a finite number, or every
-/// candidate coordinate is zero — the skip contracts of `vector_operand`
-/// and the zero-vector guard.
-fn cosine_raw_values(query: &[f64], query_norm: f64, candidate: &[Value]) -> Option<f64> {
-    let mut dot = [0.0f64; 8];
-    let mut norm = [0.0f64; 8];
-    let mut any_nonzero = false;
-    let mut i = 0;
-    while i + 8 <= candidate.len() {
-        for lane in 0..8 {
-            let c = value_coord(&candidate[i + lane])?;
-            dot[lane] += query[i + lane] * c;
-            norm[lane] += c * c;
-            any_nonzero |= c != 0.0;
-        }
-        i += 8;
+    /// The query's dimension: the one spelling of the length every scan's
+    /// length guard and the packed rows' dimension derive from (ADR-0705).
+    pub(crate) fn dimension(&self) -> usize {
+        self.coords.len()
     }
-    let mut dot_sum: f64 = dot.iter().sum();
-    let mut norm_sum: f64 = norm.iter().sum();
-    while i < candidate.len() {
-        let c = value_coord(&candidate[i])?;
-        dot_sum += query[i] * c;
-        norm_sum += c * c;
-        any_nonzero |= c != 0.0;
-        i += 1;
-    }
-    if !any_nonzero {
-        return None;
-    }
-    Some(dot_sum / (query_norm * norm_sum.sqrt()))
-}
-
-/// Raw squared euclidean distance between an f64 query and a `Value`
-/// coordinate list. `None` when any candidate coordinate is not a finite
-/// number (the `vector_operand` skip contract).
-fn euclidean_squared_raw_values(query: &[f64], candidate: &[Value]) -> Option<f64> {
-    let mut dist = [0.0f64; 8];
-    let mut i = 0;
-    while i + 8 <= candidate.len() {
-        for lane in 0..8 {
-            let c = value_coord(&candidate[i + lane])?;
-            let d = query[i + lane] - c;
-            dist[lane] += d * d;
-        }
-        i += 8;
-    }
-    let mut dist_sum: f64 = dist.iter().sum();
-    while i < candidate.len() {
-        let c = value_coord(&candidate[i])?;
-        let d = query[i] - c;
-        dist_sum += d * d;
-        i += 1;
-    }
-    Some(dist_sum)
 }
 
 #[cfg(test)]
@@ -240,19 +288,20 @@ mod tests {
                 let a: Vec<f64> = (0..d).map(|_| lcg(&mut state) * scale).collect();
                 let b: Vec<f64> = (0..d).map(|_| lcg(&mut state) * scale).collect();
                 // The scan path: candidate as a Value coordinate list, query
-                // norm hoisted per search, compared against the sequential
+                // facts hoisted per search, compared against the sequential
                 // single-accumulator reference with the same rounding chain.
                 let b_values = Value::List(value_list(&b));
                 let coords = value_coords(&b_values).expect("list coordinates");
+                let prepared = PreparedQuery::prepare(&a);
                 assert_eq!(
-                    cosine_similarity_values(&a, query_norm(&a), coords),
+                    similarity_values(StorableMetric::Cosine, &prepared, coords),
                     Some(round_f32(
                         (round_f32(cosine_raw_sequential(&a, &b)) + 1.0) / 2.0
                     )),
                     "cosine d={d} trial={trial}"
                 );
                 assert_eq!(
-                    euclidean_similarity_values(&a, coords),
+                    similarity_values(StorableMetric::Euclidean, &prepared, coords),
                     Some(round_f32(
                         1.0 / (1.0 + euclidean_squared_sequential(&a, &b))
                     )),
@@ -262,31 +311,81 @@ mod tests {
         }
     }
 
-    /// The `Value` kernels keep `vector_operand`'s skip contracts: a
-    /// non-number or non-finite coordinate, a non-list property, and an
-    /// all-zero cosine candidate all skip the candidate (None); euclidean
-    /// has no zero guard.
+    /// ADR-0705: a packed f32 row scores bit-identically to the same
+    /// coordinates walked as `Value`s, for both metrics, across aligned and
+    /// tail-carrying lengths, scales, and an all-zero row.
+    #[test]
+    fn packed_row_kernels_match_value_kernels_bit_for_bit() {
+        let dims = [1, 2, 7, 8, 9, 15, 16, 17, 63, 64, 65, 127, 128, 384, 1536];
+        let mut state = 0x0dd_ba11_cafe_f00du64;
+        for metric in [StorableMetric::Cosine, StorableMetric::Euclidean] {
+            for &d in &dims {
+                for trial in 0..100 {
+                    let scale = [1e-8, 1e-3, 1.0, 1e3][trial % 4];
+                    let query: Vec<f64> = (0..d).map(|_| lcg(&mut state) * scale).collect();
+                    // Candidates are f32-exact, as a FLOAT32 VECTOR stores them.
+                    let row: Vec<f32> = if trial == 0 {
+                        vec![0.0; d]
+                    } else {
+                        (0..d).map(|_| (lcg(&mut state) * scale) as f32).collect()
+                    };
+                    let widened: Vec<f64> = row.iter().map(|&c| f64::from(c)).collect();
+                    let values = Value::List(value_list(&widened));
+                    let coords = value_coords(&values).expect("list coordinates");
+                    let prepared = PreparedQuery::prepare(&query);
+                    let from_values = similarity_values(metric, &prepared, coords);
+                    let from_row = similarity_row(metric, &prepared, &row);
+                    assert_eq!(
+                        from_values.map(f64::to_bits),
+                        from_row.map(f64::to_bits),
+                        "{metric:?} d={d} trial={trial}"
+                    );
+                }
+            }
+        }
+        let prepared = PreparedQuery::prepare(&[1.0, 2.0]);
+        assert!(
+            similarity_row(StorableMetric::Cosine, &prepared, &[1.0]).is_none(),
+            "length mismatch skips"
+        );
+        let zero_query = PreparedQuery::prepare(&[0.0, 0.0]);
+        assert!(
+            similarity_row(StorableMetric::Cosine, &zero_query, &[1.0, 1.0]).is_none(),
+            "zero query skips cosine"
+        );
+    }
+
+    /// The kernels keep `vector_operand`'s skip contracts: a non-number or
+    /// non-finite coordinate, a non-list property, and an all-zero cosine
+    /// candidate all skip the candidate (None); euclidean has no zero
+    /// guard.
     #[test]
     fn value_kernels_keep_the_skip_contracts() {
         let query = [1.0, 0.0];
         let qn = query_norm(&query);
         let values = |coords: &[Value]| Value::List(Arc::new(coords.to_vec()));
+        fn value_reader(coords: &[Value; 2]) -> impl Fn(usize) -> Option<f64> + '_ {
+            move |i| value_coord(&coords[i])
+        }
 
-        // (The query/candidate length check lives in `similarity_values`.)
+        // (The query/candidate length check lives in `similarity`.)
+        let non_number = [Value::Int(1), Value::Null];
         assert!(
-            cosine_raw_values(&query, qn, &[Value::Int(1), Value::Null]).is_none(),
+            cosine_lanes(&query, qn, 2, value_reader(&non_number)).is_none(),
             "non-number coordinate"
         );
+        let non_finite = [Value::Float(f64::NAN), Value::Float(0.0)];
         assert!(
-            cosine_raw_values(&query, qn, &[Value::Float(f64::NAN), Value::Float(0.0)]).is_none(),
+            cosine_lanes(&query, qn, 2, value_reader(&non_finite)).is_none(),
             "non-finite coordinate"
         );
+        let zero = [Value::Float(0.0), Value::Float(0.0)];
         assert!(
-            cosine_raw_values(&query, qn, &[Value::Float(0.0), Value::Float(0.0)]).is_none(),
+            cosine_lanes(&query, qn, 2, value_reader(&zero)).is_none(),
             "zero-vector candidate"
         );
         assert!(
-            euclidean_squared_raw_values(&query, &[Value::Float(0.0), Value::Float(0.0)]).is_some(),
+            euclidean_squared_lanes(&query, 2, value_reader(&zero)).is_some(),
             "euclidean has no zero guard"
         );
         assert!(value_coords(&Value::Null).is_none(), "null property");
