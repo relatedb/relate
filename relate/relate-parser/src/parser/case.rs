@@ -3,6 +3,7 @@
 //! `case`-as-variable lookahead. Split out of `expressions` so that
 //! file stops growing with the CASE grammar (AGENTS.md file-size rule).
 
+use super::operators::{OR, PLUS};
 use super::BracketSet;
 use super::*;
 use crate::token::is_clause_boundary;
@@ -141,18 +142,12 @@ impl<'a> Parser<'a> {
         // Decide the operator first — the leading comparison form consumes
         // its token, the plain-value form defaults to equality — then build
         // the comparison node once for both.
-        let op = match comparison_op(self.peek_type()) {
-            Some(op) => {
-                self.next_token();
-                op
-            }
+        let op = match self.take_comparison_spelling() {
+            Some(op) => op,
             None => match self.parse_when_operand_predicate(operand)? {
                 Some(predicate) => return Ok(predicate),
-                // A plain value lowers to the equality comparison — the
-                // one comparison spelling with a build site that has no
-                // token to read `comparison_op`'s table from, hence the
-                // `EQUALS` constant.
-                None => EQUALS,
+                // A plain value lowers to the equality comparison.
+                None => TokenType::EQUALS,
             },
         };
         Ok(Expr::Comparison(Box::new(ComparisonExpr {

@@ -1,4 +1,9 @@
 pub mod ast;
+// The bracket classification (REL8-1423): a parser/normalizer
+// implementation detail, not part of the crate's public API. (The
+// token-fact vocabulary it derives from lives under the token module,
+// `token::facts`.)
+mod bracket_role;
 pub mod error;
 pub mod lexer;
 mod normalize;

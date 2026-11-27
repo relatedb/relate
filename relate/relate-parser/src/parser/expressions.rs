@@ -1,3 +1,4 @@
+use super::operators::{AND, NOT, OR, PLUS, XOR};
 use super::*;
 
 impl<'a> Parser<'a> {
@@ -80,12 +81,9 @@ impl<'a> Parser<'a> {
     pub(super) fn parse_comparison(&mut self) -> ParseResult<Expr> {
         let left = self.parse_string_null_check()?;
 
-        let op = comparison_op(self.peek_type());
-        if op.is_none() {
+        let Some(op) = self.take_comparison_spelling() else {
             return Ok(left);
-        }
-        let op = op.unwrap();
-        self.next_token();
+        };
         let mut right = self.parse_string_null_check()?;
         let mut result = Expr::Comparison(Box::new(ComparisonExpr {
             left,
@@ -94,13 +92,7 @@ impl<'a> Parser<'a> {
         }));
 
         // Chained comparisons
-        loop {
-            let next_op = comparison_op(self.peek_type());
-            if next_op.is_none() {
-                break;
-            }
-            let next_op = next_op.unwrap();
-            self.next_token();
+        while let Some(next_op) = self.take_comparison_spelling() {
             let next_right = self.parse_string_null_check()?;
             result = Expr::Binary(Box::new(BinaryExpr {
                 left: result,

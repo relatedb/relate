@@ -1,5 +1,11 @@
 use std::borrow::Cow;
 
+// The token-fact vocabulary (REL8-1423): the generic kind classification
+// (`ends_expression` / `introduces_operand`) the bracket classification
+// derives from — a submodule of the token module with the other kind
+// predicates (its file lives at `token/facts.rs`).
+mod facts;
+
 /// Token types for the Cypher lexer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TokenType {
@@ -195,6 +201,27 @@ impl TokenType {
         matches!(self, Self::Star | Self::Plus | Self::LeftBrace)
     }
 
+    /// The equality comparison's spelling — the one comparison with a
+    /// build site that has no token to read the table from: simple-CASE's
+    /// plain-value default (`parse_when_operand_element`). The table's
+    /// own `Equals` row reads this constant, so the text has one owner.
+    pub(crate) const EQUALS: &str = "=";
+
+    /// The dialect's comparison operators and their ADR-0505 §2 spellings,
+    /// ONE table at the lowest shared module (the token layer owns text
+    /// policy — `quote_identifier`, `is_field_terminator_word`): the set
+    /// and the spelling of every comparison variant live together. Its
+    /// readers: `Parser::take_comparison_spelling` (the cursor's
+    /// consuming read), the tokenless simple-CASE default
+    /// ([`Self::EQUALS`]), and the token-fact pin, which iterates
+    /// [`COMPARISON_SPELLINGS`].
+    pub(crate) fn comparison_spelling(self) -> Option<&'static str> {
+        COMPARISON_SPELLINGS
+            .iter()
+            .find(|(ty, _)| *ty == self)
+            .map(|(_, spelling)| *spelling)
+    }
+
     /// Returns true if this token type is a keyword (MATCH..PROFILE range).
     pub fn is_keyword(self) -> bool {
         matches!(
@@ -295,6 +322,21 @@ impl TokenType {
         self == TokenType::Identifier || self.is_keyword()
     }
 }
+
+/// The comparison family's variants and their ADR-0505 §2 spellings — the
+/// one enumerable home of the set: [`TokenType::comparison_spelling`]
+/// consults it, and the token-fact pin iterates it, so "every variant
+/// with a spelling introduces an operand" is asserted over the table
+/// itself, never over a hand-copied list.
+pub(crate) const COMPARISON_SPELLINGS: [(TokenType, &str); 7] = [
+    (TokenType::Equals, TokenType::EQUALS),
+    (TokenType::NotEquals, "<>"),
+    (TokenType::LessThan, "<"),
+    (TokenType::GreaterThan, ">"),
+    (TokenType::LessEqual, "<="),
+    (TokenType::GreaterEqual, ">="),
+    (TokenType::RegexMatch, "=~"),
+];
 
 /// The clause keywords: keyword tokens that start or continue a clause
 /// (`MATCH`, `ORDER BY`, `AS`, `DISTINCT`, ...). `is_ident_like()` rejects

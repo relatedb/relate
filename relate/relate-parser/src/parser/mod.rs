@@ -478,6 +478,21 @@ impl<'a> Parser<'a> {
         self.peek().ty
     }
 
+    /// The one consuming read of the comparison table
+    /// ([`TokenType::comparison_spelling`], set and spelling together in
+    /// the token layer): the spelling of a comparison operator at the
+    /// cursor, consuming its token, or `None` leaving the cursor alone —
+    /// every comparison build site with an operator token at the cursor
+    /// reads the table through this, never a hand-rolled
+    /// peek-then-consume pair. (The one site without a token to read —
+    /// simple-CASE's plain-value default, `parse_when_operand_element` —
+    /// builds from the table's own [`TokenType::EQUALS`] constant.)
+    fn take_comparison_spelling(&mut self) -> Option<&'static str> {
+        let spelling = self.peek_type().comparison_spelling()?;
+        self.next_token();
+        Some(spelling)
+    }
+
     /// Looks ahead `offset` tokens past the current position (0 == `peek`)
     /// without consuming anything.
     fn peek_at(&self, offset: usize) -> &Token<'a> {
@@ -870,6 +885,10 @@ mod is_predicate;
 mod labels;
 mod literals;
 mod names;
+// The operator spellings (ADR-0505 §2) — imported explicitly by the
+// submodules that use them (`case`, `expressions`, `is_predicate`,
+// `annotations`).
+mod operators;
 mod patterns;
 
 pub use patterns::selector_is_selective;
@@ -909,46 +928,6 @@ fn contains_gpm_quantification(elements: &[PatternElement]) -> bool {
         PatternElement::Node(_) => false,
     })
 }
-
-fn comparison_op(ty: TokenType) -> Option<&'static str> {
-    match ty {
-        TokenType::Equals => Some(EQUALS),
-        TokenType::NotEquals => Some("<>"),
-        TokenType::LessThan => Some("<"),
-        TokenType::GreaterThan => Some(">"),
-        TokenType::LessEqual => Some("<="),
-        TokenType::GreaterEqual => Some(">="),
-        TokenType::RegexMatch => Some("=~"),
-        _ => None,
-    }
-}
-
-/// The AST's one spelling table for operator text (ADR-0505 §2): the `op`
-/// fields of `BinaryExpr`, `UnaryExpr` and `StringMatchExpr` are
-/// `&'static str` drawn from these constants, so every producer consults
-/// the table and no spelling is re-spelled at a build site. The comparison
-/// family's spellings live in the `comparison_op` token-to-spelling table
-/// above — its own one table, consumed by every comparison build site —
-/// with one exception: the equality spelling is a named constant below,
-/// because simple-CASE's plain-value default (`parse_when_operand_element`)
-/// builds the same comparison without a token to read the table from.
-const EQUALS: &str = "=";
-const OR: &str = "OR";
-const XOR: &str = "XOR";
-const AND: &str = "AND";
-const NOT: &str = "NOT";
-/// `+`, shared by the unary and binary producers.
-const PLUS: &str = "+";
-/// `-`, shared by the unary and binary producers.
-const MINUS: &str = "-";
-const CONCAT: &str = "||";
-const MUL: &str = "*";
-const DIV: &str = "/";
-const MOD: &str = "%";
-const POW: &str = "^";
-const STARTS_WITH: &str = "STARTS WITH";
-const ENDS_WITH: &str = "ENDS WITH";
-const CONTAINS: &str = "CONTAINS";
 
 // Test-only probe for the CIP-272 map-comprehension lookahead: counts the
 // speculative full parses entered for a `{` in expression position. A brace

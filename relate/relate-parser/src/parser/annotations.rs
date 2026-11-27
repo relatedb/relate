@@ -16,6 +16,7 @@
 //! - an annotation directly precedes a clause: one followed by `ORDER BY`,
 //!   `SKIP`, `OFFSET`, `LIMIT` or `UNION` is rejected.
 
+use super::operators::{MINUS, PLUS};
 use super::*;
 use std::collections::HashSet;
 

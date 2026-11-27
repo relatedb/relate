@@ -10,8 +10,9 @@
 //!   (`Integer`, `Float`, `String`) become typed placeholders
 //!   `$__AUTO_INT_0__`/`$__AUTO_FLOAT_1__`/`$__AUTO_STR_2__` (the type is
 //!   part of the key, so `42` and `'42'` never share a template); a
-//!   bracket group of only such literals (recursively) collapses to one
-//!   `$__AUTO_LIST_n__` placeholder; identifiers render through the
+//!   bracket group in **list-literal position** whose elements are all
+//!   such literals (recursively) collapses to one `$__AUTO_LIST_n__`
+//!   placeholder; identifiers render through the
 //!   canonical quoting policy ([`quote_identifier`]), parameters through
 //!   [`parameter_reference`] (the shaped `$name` render — a
 //!   non-identifier-shaped name renders backtick-quoted, so two different
@@ -24,6 +25,16 @@
 //!   keyword sits in a clause position rather than a name position — so
 //!   `match …` and `MATCH …` keep distinct templates (a miss, never a
 //!   wrong plan).
+//! - a bracket in **postfix position** — a subscript or slice on the
+//!   expression before it — and a bracket after a pattern head or a
+//!   subtraction operator (`-[]->`, `1 - [1, 2]`) both keep their
+//!   brackets: [`bracket_opens_list_group`] in the bracket-role module
+//!   is the one classification, and [`Pass::collapses_as_list_group`]
+//!   the one composition of the bracket facts. The postfix bracket's interior
+//!   literals normalize individually: the placeholder stands for the
+//!   literal's VALUE, not for the brackets a postfix position needs
+//!   (`labels(n)[0]` rewrites to `labels(n)[$__AUTO_INT_0__]`, never to a
+//!   bare list parameter glued to the expression).
 //! - **rewritten** — the source with each normalized literal's byte span
 //!   replaced by its placeholder: a real Cypher statement whose literals
 //!   are parameters. Parsing it (with the extracted values bound as
@@ -52,6 +63,7 @@
 
 use std::cell::Cell;
 
+use crate::bracket_role::bracket_opens_list_group;
 use crate::lexer::{tokenize_with_options, ParseOptions};
 use crate::parser::{parse_int_literal, MAX_NESTING_DEPTH, MAX_QUERY_BYTES};
 use crate::token::{
@@ -287,7 +299,7 @@ impl<'a, 't> Pass<'a, 't> {
                         self.replace_token(i, literal_value(tok)?)?;
                     }
                 }
-                TokenType::LeftBracket if !self.call_argument[i] => {
+                TokenType::LeftBracket if self.collapses_as_list_group(i) => {
                     if let Some((close, elements)) = self.scan_literal_group(i + 1) {
                         // The whole bracket group is one parameter whose
                         // value is the list (lists-as-one-param, the
@@ -354,6 +366,28 @@ impl<'a, 't> Pass<'a, 't> {
     /// positive that costs a miss, never a wrong key.
     fn after_quantifier_bound(&self, i: usize) -> bool {
         i > 0 && matches!(self.tokens[i - 1].ty, TokenType::Star | TokenType::DotDot)
+    }
+
+    /// Whether the `[` at token `i` **collapses as a list group** — the
+    /// decision the run loop's collapse arm guards on, composed of two
+    /// facts, each by its own home:
+    ///
+    /// - the bracket is not inside a function-call argument list (the
+    ///   precomputed context above — its literals feed constant folding,
+    ///   ADR-0503's participation rule; the bracket may still be a list
+    ///   literal there, it just never collapses);
+    /// - the prefix before the bracket opens a collapsible group
+    ///   ([`bracket_opens_list_group`], the one classification): a
+    ///   **postfix** bracket — a subscript or slice on the expression
+    ///   before it — and a bracket after a pattern head or a subtraction
+    ///   operator (`-[]->`, `1 - [1, 2]`) keep their brackets, because
+    ///   the collapse's placeholder stands for a literal's VALUE, not for
+    ///   the brackets those positions need; both render as written
+    ///   instead, their interior literals taking their own arms
+    ///   (`labels(n)[$__AUTO_INT_0__]`).
+    fn collapses_as_list_group(&self, i: usize) -> bool {
+        debug_assert!(self.tokens[i].ty == TokenType::LeftBracket);
+        !self.call_argument[i] && bracket_opens_list_group(&self.tokens[..i])
     }
 
     /// Whether token `i` is a `String` followed by `:` — a map-literal

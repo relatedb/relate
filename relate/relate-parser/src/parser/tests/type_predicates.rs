@@ -1,4 +1,5 @@
 use super::*;
+use crate::parser::operators::{AND, OR};
 
 #[test]
 fn test_parse_is_type_predicate() {
