@@ -97,7 +97,7 @@ use relate_ir::{
 mod builder;
 mod guards;
 
-use builder::Builder;
+use builder::{Builder, NodeRole};
 use guards::{interior_guard, InteriorGuard, TransitionPredicate};
 
 /// The state ceiling: the frontier's dedup set is one `u64` bitmask per
@@ -205,8 +205,8 @@ pub(crate) fn exactly_one_quantified(elements: &[PatternElement]) -> bool {
 }
 
 /// A hop position of an alternating chain: a plain relationship or a
-/// quantified group.
-pub(crate) enum Hop<'a> {
+/// quantified group (named apart from `matcher::Hop`).
+enum ChainHop<'a> {
     Rel(&'a RelPattern),
     Quantified(&'a QuantifiedPathPattern),
 }
@@ -214,7 +214,7 @@ pub(crate) enum Hop<'a> {
 /// One position of an alternating element chain, typed — the single view
 /// both NFA walks (`compile` and `Builder::chain`) iterate instead of
 /// re-deriving positions by index parity.
-pub(crate) enum Position<'a> {
+enum ChainPosition<'a> {
     /// A node. `boundary` is the chain's first or last node: its
     /// admission is the caller's (or the round split's), not an interior
     /// node's.
@@ -226,7 +226,7 @@ pub(crate) enum Position<'a> {
     /// serves); `next` is the node that follows it, a boundary node
     /// exactly when `last`.
     Hop {
-        hop: Hop<'a>,
+        hop: ChainHop<'a>,
         last: bool,
         next: &'a NodePattern,
     },
@@ -238,32 +238,37 @@ pub(crate) enum Position<'a> {
 /// one hop (a chain shorter than three elements has no interior to
 /// alternate over). `None` when the chain is not of that shape: the one
 /// decline both walks share. Positions come in element order.
-pub(crate) fn chain_positions(elements: &[PatternElement]) -> Option<Vec<Position<'_>>> {
+fn chain_positions(elements: &[PatternElement]) -> Option<Vec<ChainPosition<'_>>> {
     if elements.len() < 3 || elements.len().is_multiple_of(2) {
         return None;
     }
     let PatternElement::Node(first) = &elements[0] else {
         return None;
     };
-    let (hops, _) = elements[1..].as_chunks::<2>();
+    let (hops, remainder) = elements[1..].as_chunks::<2>();
+    // The odd length gate leaves `elements[1..]` even: no remainder.
+    assert!(
+        remainder.is_empty(),
+        "an odd-length chain pairs its hops and nodes exactly"
+    );
     let hop_count = hops.len();
     let mut positions = Vec::with_capacity(elements.len());
-    positions.push(Position::Node {
+    positions.push(ChainPosition::Node {
         node: first,
         boundary: true,
     });
     for (n, pair) in hops.iter().enumerate() {
         let hop = match &pair[0] {
-            PatternElement::Relationship(rel) => Hop::Rel(rel),
-            PatternElement::Quantified(quantified) => Hop::Quantified(quantified),
+            PatternElement::Relationship(rel) => ChainHop::Rel(rel),
+            PatternElement::Quantified(quantified) => ChainHop::Quantified(quantified),
             PatternElement::Node(_) => return None,
         };
         let PatternElement::Node(next) = &pair[1] else {
             return None;
         };
         let last = n + 1 == hop_count;
-        positions.push(Position::Hop { hop, last, next });
-        positions.push(Position::Node {
+        positions.push(ChainPosition::Hop { hop, last, next });
+        positions.push(ChainPosition::Node {
             node: next,
             boundary: last,
         });
@@ -318,7 +323,7 @@ pub(crate) fn compile(
     let mut spine_len = None;
     for position in positions {
         match position {
-            Position::Node { node, boundary } => {
+            ChainPosition::Node { node, boundary } => {
                 // The first and last nodes are the pattern's boundary —
                 // their admission (labels, properties, predicates) is the
                 // caller's, through the kernel layer's `NodeTarget`
@@ -329,12 +334,19 @@ pub(crate) fn compile(
                 // quantified group that state is the spine's own exit
                 // state past the round boundary (`split_exit`), never the
                 // close every round ends at.
-                if !boundary {
-                    builder.admit_interior(node, current)?;
-                }
+                builder.admit_node(
+                    node,
+                    if boundary {
+                        NodeRole::CallerBoundary
+                    } else {
+                        NodeRole::Interior
+                    },
+                    current,
+                )?;
             }
-            Position::Hop {
-                hop: Hop::Rel(rel), ..
+            ChainPosition::Hop {
+                hop: ChainHop::Rel(rel),
+                ..
             } => {
                 // A plain one-hop context rel (a top-level var-length rel
                 // is out of vocabulary: the front end quantifies every
@@ -349,8 +361,8 @@ pub(crate) fn compile(
                 context += 1;
                 current = to;
             }
-            Position::Hop {
-                hop: Hop::Quantified(quantified),
+            ChainPosition::Hop {
+                hop: ChainHop::Quantified(quantified),
                 last,
                 next,
             } => {
@@ -358,7 +370,7 @@ pub(crate) fn compile(
                 // the spine's exit state (the loop attaches it there) —
                 // the spine only needs the presence fact, to allocate
                 // that state; the guard itself compiles once, in
-                // `admit_interior` on the next iteration.
+                // `admit_node` on the next iteration.
                 let exit_guarded = if builder.forced && !last {
                     matches!(interior_guard(next)?, InteriorGuard::Guard(_))
                 } else {
