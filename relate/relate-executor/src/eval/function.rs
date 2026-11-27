@@ -8,7 +8,6 @@ use std::sync::Arc;
 use relate_core::{Error, Result, Value};
 use relate_ir::Expr;
 
-use crate::exec::{eval_shortest, ShortestWant};
 use crate::overlay::ExecGraph;
 use crate::row::Row;
 
@@ -95,14 +94,6 @@ pub(crate) fn function(
 ) -> Result<Value> {
     let n = lowercase_name(name);
     let n: &str = &n;
-    if n == "length" {
-        if let Some(Expr::ShortestPath {
-            all: false, path, ..
-        }) = args.first()
-        {
-            return eval_shortest(graph, row, params, false, path, ShortestWant::Length);
-        }
-    }
     // Resolve the row and validate the call's shape before evaluating any
     // argument: a malformed call reports its arity (LABS-667, Neo4j 42I13:
     // "does not provide the required number of arguments"), never an
@@ -146,13 +137,13 @@ pub(crate) fn function(
                 }
                 Applied::Truncate(kind) => temporal::truncate_call(kind, vals),
                 // The between family's unit comes from the row and its two
-                // operands are the row's arity contract; `n` is the called
-                // spelling its messages name.
-                Applied::Between(unit) => {
-                    let [a, b] = <[Value; 2]>::try_from(vals)
-                        .expect("the between row's arity is exactly two");
-                    temporal::between_call(unit, n, [a, b])
-                }
+                // operands are the row's arity contract; the message names
+                // the signature, never the called spelling (every spelling
+                // prints `Between`, probed live).
+                Applied::Between(unit) => temporal::between_call(
+                    unit,
+                    <[Value; 2]>::try_from(vals).expect("the between row's arity is exactly two"),
+                ),
             }
         }
     }

@@ -14,6 +14,7 @@ use crate::{Error, NodeId, RelId};
 mod depth;
 mod json;
 mod ordering;
+mod pretty;
 mod props;
 pub(crate) use depth::{descends, DEPTH_LIMIT_MARKER};
 pub use depth::{next_depth, value_depth_exceeded, MAX_VALUE_DEPTH};
@@ -416,19 +417,16 @@ impl Value {
             Value::Float(f) => relate_model::value::float_text(*f),
             Value::String(s) => format!("'{}'", escape_cypher_string(s)),
             Value::Bytes(b) => bytes_as_int_list(b),
-            Value::List(xs) => {
-                let Some(next) = next_depth(depth) else {
-                    return DEPTH_LIMIT_MARKER.into();
-                };
-                let inner: Vec<_> = xs.iter().map(|v| v.to_cypher_literal_at(next)).collect();
-                format!("[{}]", inner.join(", "))
-            }
-            Value::Map(m) => {
-                let Some(next) = next_depth(depth) else {
-                    return DEPTH_LIMIT_MARKER.into();
-                };
-                map_to_cypher_literal(m.iter(), next)
-            }
+            Value::List(xs) => guarded_container(
+                depth,
+                |joined| format!("[{joined}]"),
+                |d| xs.iter().map(|v| v.to_cypher_literal_at(d)).collect(),
+            ),
+            Value::Map(m) => guarded_container(
+                depth,
+                |joined| format!("{{{joined}}}"),
+                |d| map_to_cypher_literal(m.iter(), d),
+            ),
             Value::Node(n) => n.to_cypher_literal_at(depth),
             Value::Relationship(r) => r.to_cypher_literal_at(depth),
             Value::Path(p) => p.to_cypher_literal_at(depth),
@@ -436,16 +434,16 @@ impl Value {
             // Round-trippable form like VECTOR: uuid('...') (CIP-246).
             Value::Uuid(u) => format!("uuid('{}')", uuid_hyphenated(*u)),
             Value::Point(p) => p.to_string(),
-            Value::Vector { coord, values } => {
-                let Some(next) = next_depth(depth) else {
-                    return DEPTH_LIMIT_MARKER.into();
-                };
-                let inner = values
-                    .iter()
-                    .map(|value| value.to_cypher_literal_at(next))
-                    .collect::<Vec<_>>();
-                vector_text(&inner, *coord)
-            }
+            Value::Vector { coord, values } => guarded_container(
+                depth,
+                |joined| vector_text(&joined, values.len(), *coord),
+                |d| {
+                    values
+                        .iter()
+                        .map(|value| value.to_cypher_literal_at(d))
+                        .collect()
+                },
+            ),
         }
     }
 
@@ -471,33 +469,30 @@ impl Value {
             // "{a: x y}".
             Value::String(s) => String::from(&**s),
             Value::Bytes(b) => bytes_as_int_list(b),
-            Value::List(xs) => {
-                let Some(next) = next_depth(depth) else {
-                    return DEPTH_LIMIT_MARKER.into();
-                };
-                let inner: Vec<_> = xs.iter().map(|v| v.to_display_string_at(next)).collect();
-                format!("[{}]", inner.join(", "))
-            }
+            Value::List(xs) => guarded_container(
+                depth,
+                |joined| format!("[{joined}]"),
+                |d| xs.iter().map(|v| v.to_display_string_at(d)).collect(),
+            ),
             // A key outside the plain identifier shape is backticked
             // (CIP-271: `{`123`: digit key, `a.b`: dot, `first name`:
             // Alice}`); the map's own iteration order is already the
             // sorted one.
-            Value::Map(m) => {
-                let Some(next) = next_depth(depth) else {
-                    return DEPTH_LIMIT_MARKER.into();
-                };
-                let inner: Vec<_> = m
-                    .iter()
-                    .map(|(k, v)| {
-                        format!(
-                            "{}: {}",
-                            quote_identifier_shaped(k),
-                            v.to_display_string_at(next)
-                        )
-                    })
-                    .collect();
-                format!("{{{}}}", inner.join(", "))
-            }
+            Value::Map(m) => guarded_container(
+                depth,
+                |joined| format!("{{{joined}}}"),
+                |d| {
+                    m.iter()
+                        .map(|(k, v)| {
+                            format!(
+                                "{}: {}",
+                                quote_identifier_shaped(k),
+                                v.to_display_string_at(d)
+                            )
+                        })
+                        .collect()
+                },
+            ),
             Value::Node(n) => node_display(n),
             Value::Relationship(r) => relationship_display(r),
             // No depth: the display walk renders no properties, so it never
@@ -507,16 +502,11 @@ impl Value {
             // Bare hyphenated string (verified on 2026.09.0).
             Value::Uuid(u) => uuid_hyphenated(*u),
             Value::Point(pt) => point_display(pt),
-            Value::Vector { coord, values } => {
-                let Some(next) = next_depth(depth) else {
-                    return DEPTH_LIMIT_MARKER.into();
-                };
-                let inner: Vec<_> = values
-                    .iter()
-                    .map(|v| v.to_display_string_at(next))
-                    .collect();
-                vector_text(&inner, *coord)
-            }
+            Value::Vector { coord, values } => guarded_container(
+                depth,
+                |joined| vector_text(&joined, values.len(), *coord),
+                |d| values.iter().map(|v| v.to_display_string_at(d)).collect(),
+            ),
         }
     }
 }
@@ -611,18 +601,14 @@ fn point_display(p: &PointValue) -> String {
 }
 
 /// The `vector([…], N, COORD)` text shape shared by the literal and
-/// display renderers; `elements` are the already-rendered coordinates.
-/// The round-trippable value-constructor form (CIP-271): a vector VALUE
-/// renders as `vector([1, 2], 2, INTEGER8)` — the coordinate type is the
-/// third argument, not a `NOT NULL`-suffixed type expression (that is the
+/// display renderers; `joined` is the already-rendered, `, `-joined
+/// coordinate list ([`guarded_container`] made the join — this wrap keeps
+/// the whole value-constructor form, CIP-271: a vector VALUE renders as
+/// `vector([1, 2], 2, INTEGER8)` — the coordinate type is the third
+/// argument, not a `NOT NULL`-suffixed type expression (that is the
 /// TYPE rendering's own path, e.g. `valueType()`).
-fn vector_text(elements: &[String], coord: VectorCoordKind) -> String {
-    format!(
-        "vector([{}], {}, {})",
-        elements.join(", "),
-        elements.len(),
-        coord.canonical_name()
-    )
+fn vector_text(joined: &str, len: usize, coord: VectorCoordKind) -> String {
+    format!("vector([{joined}], {len}, {})", coord.canonical_name())
 }
 
 impl Node {
@@ -673,7 +659,7 @@ impl Path {
             "<{}>",
             self.walk(
                 |n| n.to_cypher_literal_at(depth),
-                |r| r.to_cypher_literal_at(depth)
+                |r, current| directed(direction_arrows(r, current), r.to_cypher_literal_at(depth))
             )
         )
     }
@@ -686,35 +672,69 @@ impl Path {
     /// depth budget applies — the literal twin's guard bounds its own
     /// property-rendering recursion, not this walk.
     fn display_string(&self) -> String {
-        self.walk(node_display, relationship_display)
+        self.walk(node_display, |r, current| {
+            directed(direction_arrows(r, current), relationship_display(r))
+        })
     }
 
-    /// The path's element chain — one node then, if the path continues past
-    /// it, the relationship traversed from it, with the arrows of the
-    /// direction actually stored. `node`/`rel` render one element, so the
-    /// literal and display walks share the direction policy.
+    /// The path's element chain — one node then, if the path continues
+    /// past it, the relationship traversed from it. `node` renders one
+    /// node; `rel` renders one relationship and receives the current
+    /// node's id, the one bit of direction that is always defined: the
+    /// literal and display walks compose their [`direction_arrows`] from
+    /// it, the pretty walk ignores it for its self-dashed form.
+    ///
+    /// The shape — a path is nothing, or a node followed by
+    /// node–relationship–node links — is a **debug** assertion: the
+    /// engine's own constructors always produce it (a violation is an
+    /// engine bug and fails loudly in debug and test builds), while
+    /// `Path`'s public fields let a foreign value (a wire decoder, an
+    /// external binding) carry any shape — and rendering is infallible,
+    /// so a malformed foreign path renders its well-formed prefix
+    /// instead of panicking the library.
     fn walk(
         &self,
         node: impl Fn(&Node) -> String,
-        rel: impl Fn(&Relationship) -> String,
+        rel: impl Fn(&Relationship, NodeId) -> String,
     ) -> String {
+        debug_assert!(
+            self.nodes.len() == self.rels.len() + 1
+                || (self.nodes.is_empty() && self.rels.is_empty()),
+            "a path is a node, then node-relationship-node links - or empty"
+        );
         let mut s = String::new();
-        for (i, n) in self.nodes.iter().enumerate() {
-            s.push_str(&node(n));
-            if let Some(r) = self.rels.get(i) {
-                // `rels[i]` connects `nodes[i]` and `nodes[i+1]`, so the
-                // arrow is the one bit that is always defined: which
-                // endpoint is the current node. A self-loop is outgoing.
-                let (left, right) = if r.start == n.id {
-                    ("-", "->")
-                } else {
-                    ("<-", "-")
+        if let Some(first) = self.nodes.first() {
+            s.push_str(&node(first));
+            for (i, r) in self.rels.iter().enumerate() {
+                let (Some(current), Some(next)) = (self.nodes.get(i), self.nodes.get(i + 1)) else {
+                    // A relationship beyond the nodes it connects — the
+                    // malformed shape the debug assertion above names.
+                    break;
                 };
-                s.push_str(&format!("{left}{}{right}", rel(r)));
+                s.push_str(&rel(r, current.id));
+                s.push_str(&node(next));
             }
         }
         s
     }
+}
+
+/// The arrows around a traversed relationship — the one bit of the chain
+/// that is always defined: which endpoint is the current node (`rels[i]`
+/// connects `nodes[i]` and `nodes[i+1]`; a self-loop is outgoing). The
+/// literal and display walks' direction policy.
+fn direction_arrows(r: &Relationship, current: NodeId) -> (&'static str, &'static str) {
+    if r.start == current {
+        ("-", "->")
+    } else {
+        ("<-", "-")
+    }
+}
+
+/// Glue a relationship's rendering between its direction arrows — the
+/// composition the literal and display walks pass as `walk`'s `rel` seam.
+fn directed((left, right): (&'static str, &'static str), rendered: String) -> String {
+    format!("{left}{rendered}{right}")
 }
 
 /// Labels only, no properties, alphabetically (CIP-271): Neo4j 2026.09.0
@@ -746,8 +766,15 @@ impl fmt::Display for Value {
 /// of its byte values 0-255 (`[0, 1, 255]`), the same shape it crosses the
 /// `value_to_cypher` bridge in (ADR-0327).
 fn bytes_as_int_list(bytes: &[u8]) -> String {
+    format!("[{}]", bytes_int_list(bytes))
+}
+
+/// The comma-joined decimal byte list — `120, 121` — the one owner of the
+/// byte-list rendering; the display (`[…]`) and pretty (`ByteArray[…]`)
+/// brackets are its two thin wrappers.
+fn bytes_int_list(bytes: &[u8]) -> String {
     let inner: Vec<_> = bytes.iter().map(u8::to_string).collect();
-    format!("[{}]", inner.join(", "))
+    inner.join(", ")
 }
 
 fn escape_cypher_string(s: &str) -> String {
@@ -762,19 +789,42 @@ fn props_suffix(props: &PropertyMap, depth: u32) -> String {
     if props.is_empty() {
         String::new()
     } else {
-        format!(" {}", map_to_cypher_literal(props.iter(), depth))
+        // The entity arms already guarded this depth once for labels and
+        // properties together, so the pairs are joined directly — the one
+        // pre-guarded join, beside the leading space of the props wrap.
+        format!(
+            " {{{}}}",
+            map_to_cypher_literal(props.iter(), depth).join(", ")
+        )
     }
 }
 
+/// The literal walk's map pairs — `k: v` with the literal-rendered value.
+/// The Map arm collects them inside [`guarded_container`]'s guard;
+/// `props_suffix` joins them under its caller's already-guarded depth.
 fn map_to_cypher_literal<'a>(
     m: impl IntoIterator<Item = (&'a String, &'a Value)>,
     depth: u32,
-) -> String {
-    let inner: Vec<_> = m
-        .into_iter()
+) -> Vec<String> {
+    m.into_iter()
         .map(|(k, v)| format!("{}: {}", k, v.to_cypher_literal_at(depth)))
-        .collect();
-    format!("{{{}}}", inner.join(", "))
+        .collect()
+}
+
+/// The one guarded-container shape every render walk (the literal,
+/// display and pretty walks' List/Map/Vector arms) routes through: the
+/// ADR-0462 depth guard, the `, `-joined elements, and the walk's own
+/// `wrap`. The item rendering is each walk's own — the thunk receives
+/// the guarded depth; the guard and join are never re-spelled per walk.
+fn guarded_container(
+    depth: u32,
+    wrap: impl FnOnce(String) -> String,
+    items: impl FnOnce(u32) -> Vec<String>,
+) -> String {
+    let Some(next) = next_depth(depth) else {
+        return DEPTH_LIMIT_MARKER.into();
+    };
+    wrap(items(next).join(", "))
 }
 
 /// Render a 128-bit UUID value as the canonical lowercase hyphenated
@@ -823,5 +873,7 @@ mod depth_tests;
 mod expansion_tests;
 #[cfg(test)]
 mod point_tests;
+#[cfg(test)]
+mod pretty_tests;
 #[cfg(test)]
 mod tests;

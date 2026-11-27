@@ -562,7 +562,8 @@ mod tests {
         // 2026-11-20 on 2026.10.1).
         assert_eq!(
             binding_error_metadata(&Error::procedure_call(
-                "Invalid call signature: duration.between needs temporal values"
+                "Invalid call signature for Between: Provided input was \
+                 [String(\"abc\"), String(\"def\")]"
             )),
             ("ProcedureCallFailed", "ProcedureError")
         );
