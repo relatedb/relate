@@ -311,45 +311,46 @@ fn expand_hop<P: NodePred>(
     Ok(())
 }
 
-/// The binding names the breaker projects: the start variable, then each
-/// hop's rel variable and arrival variable, pattern order — named
-/// elements only, exactly the walker's bindings.
-fn binding_names(chain: &Chain<'_>) -> Vec<String> {
+/// The named bindings the breaker projects, pattern order: the start
+/// variable, then each hop's rel variable and arrival variable — named
+/// elements only, exactly the walker's bindings. The schema and each row's
+/// value come from this one walk, so they cannot drift.
+fn named_bindings(chain: &Chain<'_>) -> Vec<(String, Binding)> {
     // Text render: the binding-name list feeds the row schema (String).
-    let mut names = Vec::new();
+    let mut named = Vec::new();
     if let Some(var) = chain.start.pattern.variable.as_ref() {
-        names.push(var.to_string());
-    }
-    for hop in &chain.hops {
-        if let Some(var) = hop.rel.variable.as_ref() {
-            names.push(var.to_string());
-        }
-        if let Some(var) = hop.target.pattern.variable.as_ref() {
-            names.push(var.to_string());
-        }
-    }
-    names
-}
-
-/// The binding values of row `r`, in [`binding_names`] order.
-fn binding_values(ctx: ExecCtx<'_>, chain: &Chain<'_>, stage: &Stage<'_>, r: usize) -> Vec<Value> {
-    let graph = ctx.graph;
-    let mut values = Vec::new();
-    if chain.start.pattern.variable.is_some() {
-        values.push(bind_node_stub(
-            graph,
-            stage.starts[stage.origin[r] as usize],
-        ));
+        named.push((var.to_string(), Binding::Start));
     }
     for (j, hop) in chain.hops.iter().enumerate() {
-        if hop.rel.variable.is_some() {
-            values.push(bind_rel_stub(graph, stage.rels[j][r]));
+        if let Some(var) = hop.rel.variable.as_ref() {
+            named.push((var.to_string(), Binding::Rel(j)));
         }
-        if hop.target.pattern.variable.is_some() {
-            values.push(bind_node_stub(graph, stage.nodes[j][r]));
+        if let Some(var) = hop.target.pattern.variable.as_ref() {
+            named.push((var.to_string(), Binding::Node(j)));
         }
     }
-    values
+    named
+}
+
+/// Which stage element a named binding reads.
+#[derive(Clone, Copy)]
+enum Binding {
+    /// The chain's start node.
+    Start,
+    /// Hop `j`'s relationship.
+    Rel(usize),
+    /// Hop `j`'s arrival node.
+    Node(usize),
+}
+
+/// The value of one named binding at stage row `r`.
+fn binding_value(ctx: ExecCtx<'_>, stage: &Stage<'_>, r: usize, binding: Binding) -> Value {
+    let graph = ctx.graph;
+    match binding {
+        Binding::Start => bind_node_stub(graph, stage.starts[stage.origin[r] as usize]),
+        Binding::Rel(j) => bind_rel_stub(graph, stage.rels[j][r]),
+        Binding::Node(j) => bind_node_stub(graph, stage.nodes[j][r]),
+    }
 }
 
 /// The breaker: the surviving bindings project through the chunk type
@@ -363,7 +364,7 @@ fn binding_values(ctx: ExecCtx<'_>, chain: &Chain<'_>, stage: &Stage<'_>, r: usi
 /// through the chunk layer would carry zero columns and answer zero
 /// rows, the hole this arm closes.
 fn emit_rows(ctx: ExecCtx<'_>, chain: &Chain<'_>, stage: &Stage<'_>) -> Result<Vec<Row>> {
-    let names = binding_names(chain);
+    let (names, bindings): (Vec<String>, Vec<Binding>) = named_bindings(chain).into_iter().unzip();
     if names.is_empty() {
         // One empty row per complete binding, sampled like the named path:
         // building the whole answer set is still work a cancel must stop.
@@ -379,7 +380,10 @@ fn emit_rows(ctx: ExecCtx<'_>, chain: &Chain<'_>, stage: &Stage<'_>) -> Result<V
         // The conversion phase is one pass over the whole stage; sample the
         // token per row so a cancel lands inside it too.
         ctx.graph.cancel_tick()?;
-        for (slot, value) in columns.iter_mut().zip(binding_values(ctx, chain, stage, r)) {
+        for (slot, value) in columns
+            .iter_mut()
+            .zip(bindings.iter().map(|b| binding_value(ctx, stage, r, *b)))
+        {
             slot.push(value);
         }
     }
