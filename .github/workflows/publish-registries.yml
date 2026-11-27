@@ -1,9 +1,12 @@
 name: Publish registries
 
 # One publisher for every package registry (ADR-0560, ADR-0278), kept out
-# of release.yml so it can also run by hand: release.yml calls it after
-# the GitHub release exists; a manual dispatch re-publishes (or dry-runs)
-# any subset of registries against an existing tag.
+# of release.yml so it can also run by hand: a manual dispatch re-publishes
+# (or dry-runs) any subset of registries against an existing tag, and
+# release.yml chains it after the GitHub release exists for the legs whose
+# registries accept the chained OIDC identity — everything except PyPI,
+# whose Trusted Publishing does not support reusable workflows and
+# publishes inline in release.yml instead (ADR-0710).
 #
 # Artifacts always come from the GitHub release's assets — never from
 # workflow artifacts — so the chained run and a manual re-publish a week
@@ -28,10 +31,15 @@ on:
         required: false
         type: boolean
         default: true
+      # Off by default on this path: PyPI's Trusted Publishing does not
+      # support reusable workflows, so a chained call's OIDC token names
+      # the caller (release.yml) and no PyPI registration can accept it.
+      # Release cuts publish PyPI inline (ADR-0710); this leg is the
+      # direct-dispatch recovery arm.
       pypi:
         required: false
         type: boolean
-        default: true
+        default: false
       crates-io:
         required: false
         type: boolean
@@ -256,11 +264,15 @@ jobs:
           TAG: ${{ inputs.tag }}
         run: echo "sha=$(git rev-parse "$TAG^{commit}")" >> "$GITHUB_OUTPUT"
 
-  # PyPI (ADR-0560): trusted publishing, id-token: write, no API token
-  # anywhere. The pending publisher for relate-db on PyPI — and on
-  # TestPyPI for dry runs — points at this workflow; docs/PUBLISHING.md
-  # is the runbook. Publishes the exact wheels and sdist attached to the
-  # release: five wheels plus one sdist.
+  # PyPI (ADR-0560, ADR-0710): trusted publishing, id-token: write, no
+  # API token anywhere. Direct dispatch only: the trusted publisher for
+  # relate-db on PyPI — and on TestPyPI for dry runs — points at this
+  # workflow, and a direct dispatch's OIDC token names it (the v1.3.0
+  # and v1.4.0 recoveries proved the arm). A chained call's token names
+  # release.yml instead, which PyPI structurally rejects — release cuts
+  # publish through release.yml's inline publish-pypi job. Publishes the
+  # exact wheels and sdist attached to the release: five wheels plus one
+  # sdist.
   pypi:
     name: Publish relate-db to PyPI
     needs: registry-owner
