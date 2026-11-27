@@ -497,13 +497,12 @@ fn an_out_of_range_latitude_errors() {
 /// surface's raw `SRID=`).
 #[test]
 fn a_coordinate_count_that_disagrees_with_the_srid_errors() {
-    for payload in [
-        "SRID=7203;POINT Z (1 2 3)",
-        "SRID=9157;POINT (1 2)",
-        "SRID=4979;POINT (1 2)",
+    for (payload, srid) in [
+        ("SRID=7203;POINT Z (1 2 3)", 7203),
+        ("SRID=9157;POINT (1 2)", 9157),
+        ("SRID=4979;POINT (1 2)", 4979),
     ] {
         let err = decode("Point", json!(payload)).unwrap_err();
-        let srid = payload[5..9].parse().unwrap();
         assert_eq!(
             err,
             malformed(

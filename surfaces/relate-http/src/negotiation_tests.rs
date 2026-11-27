@@ -407,8 +407,7 @@ fn entity_element_ids_are_the_element_id_form_and_round_trip() {
 }
 
 /// Points and non-finite floats take Neo4j's Query API encoding in both
-/// forms, and the typed request decodes them back (REL8-2033, corpus
-/// issue 25).
+/// forms (REL8-2033, corpus issue 25).
 #[test]
 fn points_and_non_finite_floats_follow_the_neo4j_encoding() {
     let db = db();
@@ -436,7 +435,13 @@ fn points_and_non_finite_floats_follow_the_neo4j_encoding() {
             {"$type": "Float", "_value": "-Infinity"},
         ]])
     );
+}
 
+/// The typed request decodes non-finite floats and points back into
+/// engine values (REL8-2033, corpus issue 25).
+#[test]
+fn typed_request_parameters_decode_points_and_non_finite_floats() {
+    let db = db();
     // Request side: a typed non-finite Float binds a FLOAT, not a STRING —
     // the comparison that silently selected nothing.
     let run_typed = |statement: serde_json::Value| {
