@@ -143,13 +143,8 @@ impl LiveNode {
         interner.label_strings(&self.labels)
     }
 
-    pub(crate) fn prop(&self, interner: &Interner, key: &str) -> Option<Value> {
-        let kid = interner.get_id(key)?;
-        self.prop_by_id(kid)
-    }
-
-    /// The property under interned key id `kid` — [`Self::prop`] with the
-    /// interning already paid (a plan-resolved token).
+    /// The property under interned key id `kid` — a plan-resolved token
+    /// reads the interned key, not the name (ADR-0541).
     pub(crate) fn prop_by_id(&self, kid: u32) -> Option<Value> {
         self.props.get(kid).cloned()
     }

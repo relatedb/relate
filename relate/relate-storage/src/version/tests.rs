@@ -204,9 +204,11 @@ fn migration_report_records_the_one_migration() {
     }
 }
 
-#[cfg(manifest_codec)]
 #[test]
 fn manifest_published_version_follows_the_codec_and_the_content() {
+    // Both uses are codec-gated; a build with neither codec compiled in
+    // must not see the import at all (the bare Lint config).
+    #[cfg(any(parquet_codec, rkyv_codec))]
     use crate::codec::SnapshotCodecKind;
     // Parquet publishes the wide pair (ADR-0553), the experimental codecs
     // the legacy pair (ADR-0537); the ontology half follows the content

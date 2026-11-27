@@ -15,7 +15,6 @@ use super::SnapshotMarker;
 /// sole constructor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Subsystem {
-    #[cfg(manifest_codec)]
     Manifest,
     ValueEncoding,
 }
@@ -23,7 +22,6 @@ pub(crate) enum Subsystem {
 impl std::fmt::Display for Subsystem {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
-            #[cfg(manifest_codec)]
             Subsystem::Manifest => "manifest",
             Subsystem::ValueEncoding => "value_encoding",
         })
@@ -88,7 +86,6 @@ pub(crate) fn annotate_legacy_failure(error: Error, marker: SnapshotMarker) -> E
         return error;
     };
     match subsystem {
-        #[cfg(manifest_codec)]
         Subsystem::Manifest => with_version_context(
             error,
             format_args!("store snapshot is at manifest version {version}"),

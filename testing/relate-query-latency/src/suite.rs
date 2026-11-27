@@ -32,6 +32,27 @@ pub struct GraphOptions {
     pub data_root: PathBuf,
     /// Download the data set when it is not cached.
     pub download: bool,
+    /// An experimental property-store attach hook (ADR-0665), run once after
+    /// the graph is loaded. `None` runs the default store; the Vortex A/B
+    /// driver in `testing/relate-vortex-lab` passes its own attach.
+    pub attach: Option<crate::AttachHook>,
+}
+
+impl Default for GraphOptions {
+    /// The suite's ordinary graph: SF0.1, upstream indexes, the in-memory
+    /// store and the default data cache, downloading when uncached, with no
+    /// attach hook — so a caller overrides only what its run changes and
+    /// never restates the hook.
+    fn default() -> Self {
+        Self {
+            sf: ScaleFactor::Sf0_1,
+            profile: IndexProfile::Upstream,
+            store: None,
+            data_root: crate::fetch::data_root(),
+            download: true,
+            attach: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -108,19 +129,24 @@ pub fn run_suite(opts: &SuiteOptions) -> Result<Report> {
 /// into a new store at the path, which is checkpointed and marked complete
 /// for the next run.
 pub fn open_graph(opts: &GraphOptions) -> Result<(Database, StoreOrigin)> {
-    if let Some(path) = opts.store.as_ref().filter(|p| p.exists()) {
-        return reuse_store(path, opts);
-    }
-    let dataset = ensure_dataset(&opts.data_root, opts.sf, opts.download)?;
-    match &opts.store {
-        Some(path) => build_store(path, &dataset, opts),
-        None => {
-            let db = Database::open(":memory:").map_err(|e| e.to_string())?;
-            let load = load_into(&db, &dataset, opts)?;
-            let store = ":memory:".to_string();
-            Ok((db, StoreOrigin::Loaded { store, load }))
+    let opened = if let Some(path) = opts.store.as_ref().filter(|p| p.exists()) {
+        reuse_store(path, opts)?
+    } else {
+        let dataset = ensure_dataset(&opts.data_root, opts.sf, opts.download)?;
+        match &opts.store {
+            Some(path) => build_store(path, &dataset, opts)?,
+            None => {
+                let db = Database::open(":memory:").map_err(|e| e.to_string())?;
+                let load = load_into(&db, &dataset, opts)?;
+                let store = ":memory:".to_string();
+                (db, StoreOrigin::Loaded { store, load })
+            }
         }
+    };
+    if let Some(attach) = opts.attach {
+        attach(&opened.0)?;
     }
+    Ok(opened)
 }
 
 /// Connect `db` for statements — the one home of the connect step and
@@ -299,6 +325,7 @@ mod tests {
             store: Some(store),
             data_root: root.to_path_buf(),
             download: false,
+            ..GraphOptions::default()
         }
     }
 

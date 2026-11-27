@@ -22,7 +22,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use relate::sol::{self, SolRows};
-use relate::{Connection, PlanNode};
+use relate::{Connection, PlanNode, Value};
 use relate_query_latency::answers::{compare, engine_rows};
 use relate_query_latency::fetch::data_root;
 use relate_query_latency::run::Stats;
@@ -40,6 +40,43 @@ struct EngineSide {
 /// One kernel variant: display name plus a boxed zero-argument call into
 /// the kernels, borrowing the live graph handle for the run.
 type KernelVariant<'a> = (&'static str, Box<dyn Fn() -> SolRows + 'a>);
+
+/// One qid's kernel comparison: the variants to time, the LIMIT the
+/// statement itself applies to the kernel's rows before the answer check,
+/// and how the rows are printed for inspection.
+struct KernelCase<'a> {
+    variants: Vec<KernelVariant<'a>>,
+    limit: Option<usize>,
+    print: RowPrint,
+}
+
+/// The rows a variant prints for inspection: q19's grouped answer is
+/// truncated to its first rows; the others print only when small.
+#[derive(Clone, Copy)]
+enum RowPrint {
+    /// The first `n` rows, under the `kernel group` label.
+    Group(usize),
+    /// Every row, under the `kernel row` label, when there are at most `n`.
+    AllUpTo(usize),
+}
+
+impl RowPrint {
+    fn rows(&self, rows: &[Vec<Value>]) {
+        match *self {
+            RowPrint::Group(n) => {
+                for row in rows.iter().take(n) {
+                    println!("kernel group: {row:?}");
+                }
+            }
+            RowPrint::AllUpTo(n) if rows.len() <= n => {
+                for row in rows {
+                    println!("kernel row: {row:?}");
+                }
+            }
+            RowPrint::AllUpTo(_) => {}
+        }
+    }
+}
 
 fn main() {
     let mut store = work_root().join("sol/graph-benchmark-ldbc.rl");
@@ -67,6 +104,7 @@ fn main() {
         store: Some(store),
         data_root: data_root(),
         download: true,
+        ..GraphOptions::default()
     };
     let (db, _origin) = open_graph(&graph_opts).unwrap_or_else(|e| panic!("open graph: {e}"));
     let mut conn = db.connect().expect("connecting");
@@ -114,42 +152,48 @@ fn main() {
             explain.mean_ns as f64 / 1e6,
         );
 
-        // Kernel variants: checked warmup, then timed rounds.
-        let variants: Vec<KernelVariant> = match qid {
-            19 => vec![
-                ("kernel tag-first    ", Box::new(|| sol::q19(graph, true))),
-                ("kernel comment-first", Box::new(|| sol::q19(graph, false))),
-            ],
-            8 => vec![
-                ("kernel forum-first  ", Box::new(|| sol::q8(graph, true))),
-                ("kernel person-first ", Box::new(|| sol::q8(graph, false))),
-            ],
-            30 => vec![
-                ("kernel full-count   ", Box::new(|| sol::q30(graph, false))),
-                ("kernel early-exit   ", Box::new(|| sol::q30(graph, true))),
-            ],
+        // Kernel variants: checked warmup, then timed rounds. One descriptor
+        // per qid, so a new per-query difference is a field here rather than
+        // another `qid` check in the loop.
+        let case = match qid {
+            19 => KernelCase {
+                variants: vec![
+                    ("kernel tag-first    ", Box::new(|| sol::q19(graph, true))),
+                    ("kernel comment-first", Box::new(|| sol::q19(graph, false))),
+                ],
+                limit: Some(1),
+                print: RowPrint::Group(3),
+            },
+            8 => KernelCase {
+                variants: vec![
+                    ("kernel forum-first  ", Box::new(|| sol::q8(graph, true))),
+                    ("kernel person-first ", Box::new(|| sol::q8(graph, false))),
+                ],
+                limit: None,
+                print: RowPrint::AllUpTo(3),
+            },
+            30 => KernelCase {
+                variants: vec![
+                    ("kernel full-count   ", Box::new(|| sol::q30(graph, false))),
+                    ("kernel early-exit   ", Box::new(|| sol::q30(graph, true))),
+                ],
+                limit: None,
+                print: RowPrint::AllUpTo(3),
+            },
             _ => continue,
         };
-        for (name, kernel) in variants {
+        for (name, kernel) in case.variants {
             let warm = kernel();
-            // The query's LIMIT (q19) is applied here, mirroring the statement.
             let mut got = engine_rows(&warm.columns, &warm.rows);
-            if qid == 19 {
-                got.truncate(1);
+            // The query's LIMIT (q19) is applied here, mirroring the statement.
+            if let Some(limit) = case.limit {
+                got.truncate(limit);
             }
             let verdict = match compare(&got, exp) {
                 None => "ok".to_string(),
                 Some(diff) => format!("WRONG: {diff}"),
             };
-            if qid == 19 {
-                for row in warm.rows.iter().take(3) {
-                    println!("kernel group: {row:?}");
-                }
-            } else if warm.rows.len() <= 3 {
-                for row in &warm.rows {
-                    println!("kernel row: {row:?}");
-                }
-            }
+            case.print.rows(&warm.rows);
             let stats = time_kernel(kernel.as_ref(), min_time);
             let ratio = engine.wall.p50_ns as f64 / stats.p50_ns.max(1) as f64;
             println!(

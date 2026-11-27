@@ -1,0 +1,63 @@
+# Standalone workspace root: the crate is excluded from the repo workspace
+# (ADR-0677 — it holds the experimental vortex dep and every vortex-typed
+# line), so the root lock, the graded workspace build and `cargo package`
+# never resolve the vortex tree. Its own `[workspace]` keeps cargo from
+# resolving an ancestor manifest when the checkout lives under a deeper path.
+[workspace]
+
+[package]
+name = "relate-vortex-lab"
+# Standalone crate (workspace-excluded): no workspace inheritance, the
+# values the workspace carried are inlined. Version follows the workspace
+# line; the crate is never published.
+version = "1.2.1"
+edition = "2021"
+# vortex 0.95 declares rust-version 1.95; the repo pin (1.99.1) clears it,
+# kept explicit because this crate is the one that links vortex.
+rust-version = "1.95"
+description = "Vortex in-memory columnar property-store measurement harness — never a shipped surface"
+publish = false
+license = "Apache-2.0"
+
+[dependencies]
+# files: the vortex file format reader/writer; memmap2: the mmap open path
+# the VFS prototype builds on. zstd (default) stays off — no native C++
+# build in the lab; vortex's own lightweight encodings are the object of
+# study.
+# Upstream 0.95.0 from crates.io, as-is: it carries both features this
+# experiment needs — max_splits_in_flight (the filtered-limit bound, their
+# #11127; the maintainer's own answer to our #11808 names it as the remedy)
+# and the Probe API. The relatedb fork is retired: it never carried a
+# patch, and the 0.93-era remark that upstream lacked the knob is stale.
+# A crates.io dep also removes the one git-dependency obstacle to moving
+# the experiment out of the excluded lab (ADR-0677's exit condition).
+vortex = { version = "0.95", default-features = false, features = ["files", "memmap2"] }
+# Same version vortex-buffer pins (0.9.11 in our lock): the mmap open path
+# needs one Mmap construction on our side of the VFS seam.
+csv = "1"
+memmap2 = "0.9.11"
+# The engine's FxHash for the store's kid-keyed maps: the profiled point-read
+# hit path pays its locate here, and SipHash (std RandomState) showed up at
+# ~2-3% of query-worker CPU. Already in the tree via the engine path deps.
+rustc-hash = "2"
+# The A/B driver's `run` subcommand flags: the CLI crate the query-latency
+# suite (a path dependency here) already carries, so no new crate enters the
+# tree; only the derive feature is declared beside it.
+clap = { version = "4", features = ["derive"] }
+
+# The engine and harness the lab drives (ADR-0665): the property-store seam
+# and its live graph, the storage codec's shard registry, the query suite and
+# the pokec groups. `research` carries `Database::sol_graph`. Path deps point
+# outward into the workspace; nothing in the workspace names this crate.
+relate = { path = "../../relate/relate", features = ["research"] }
+relate-core = { path = "../../relate/relate-core" }
+relate-engine-api = { path = "../../relate/relate-engine-api" }
+relate-executor = { path = "../../relate/relate-executor" }
+relate-storage = { path = "../../relate/relate-storage" }
+relate-query-latency = { path = "../relate-query-latency" }
+# The workspace's one seeded PRNG (`rng::Rng`), so the kernels' streams match
+# relate-test-support's instead of the lab re-deriving them.
+relate-test-support = { path = "../relate-test-support" }
+
+[dev-dependencies]
+tempfile = "3"

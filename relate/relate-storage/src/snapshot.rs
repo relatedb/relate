@@ -210,6 +210,12 @@ pub(crate) enum ObjectName {
     SchemaMirror,
     /// A retired pre-shard monolith object (`nodes.parquet`, …).
     LegacyShard,
+    /// The Vortex codec's payload manifest (`graph.vortex.json`,
+    /// ADR-0665) — bounded JSON metadata like the shared envelope.
+    VortexMeta,
+    /// A Vortex codec shard object (`nodes-…/rels-….vortex`), its name
+    /// validated by the codec's own grammar.
+    VortexShard,
     /// A v3 shard object, parsed.
     #[cfg(parquet_codec)]
     Shard(native::ShardName),
@@ -237,6 +243,12 @@ pub(crate) fn object_name(name: &str) -> Option<ObjectName> {
     #[cfg(parquet_codec)]
     if let Some(shard) = native::ShardName::parse(name) {
         return Some(ObjectName::Shard(shard));
+    }
+    if name == crate::codec::GRAPH_VORTEX_META {
+        return Some(ObjectName::VortexMeta);
+    }
+    if crate::codec::vortex::parse_shard_name(name) {
+        return Some(ObjectName::VortexShard);
     }
     None
 }
@@ -367,8 +379,31 @@ pub(crate) fn bounded_read_for(name: &str) -> Option<&'static BoundedRead> {
         Some(ObjectName::LegacyShard) | None => None,
         #[cfg(parquet_codec)]
         Some(ObjectName::Shard(_)) => None,
+        Some(ObjectName::VortexMeta) => Some(&JSON_META),
+        // The Parquet sibling's 1 GiB shard class (native's
+        // `PARQUET_SHARD`): a shard is the one object family whose size
+        // the writer itself sizes, and a plant past the bound aborts the
+        // open before its bytes are allocated — never the process.
+        Some(ObjectName::VortexShard) => Some(&VORTEX_SHARD),
     }
 }
+
+/// The Vortex codec's shard objects (ADR-0665): the same 1 GiB ceiling
+/// the Parquet sibling holds its shards to — a sparse multi-GiB plant
+/// fails the open at the length proof, before any allocation.
+const VORTEX_SHARD: BoundedRead = BoundedRead {
+    // The Parquet sibling's ceiling (codec::parquet::MAX_FILE, 1 GiB)
+    // spelled locally: that constant is feature-gated and this class is
+    // not — the twins stay in step by review, not by import.
+    max_len: 1 << 30,
+    too_large: |name| {
+        Error::storage(format!(
+            "vortex shard {name} exceeds 1 GiB ({} bytes)",
+            1 << 30
+        ))
+    },
+    changed: |name| Error::storage(format!("vortex shard {name} changed length during read")),
+};
 
 /// Enforce an object's size class on a known length (no I/O).
 pub(crate) fn check_bounded_len(name: &str, len: u64) -> Result<()> {

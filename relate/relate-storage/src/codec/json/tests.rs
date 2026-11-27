@@ -3,7 +3,7 @@ use crate::memory_store_with_codec;
 use crate::snapshot::get_object;
 use relate_catalog::ConstraintDef;
 use relate_core::temporal::parse_iso;
-use relate_core::{PointValue, Temporal, Value, VectorCoordKind};
+use relate_core::{Node, PointValue, Relationship, Temporal, Value, VectorCoordKind};
 use relate_executor::RedoOp;
 use relate_model::ConstraintType;
 use std::collections::BTreeMap;

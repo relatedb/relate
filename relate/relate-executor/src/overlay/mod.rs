@@ -96,6 +96,15 @@ pub struct ExecGraph<'a> {
     /// executor's synthetic columns can be told from a user's binding
     /// that spells the same prefix (REL8-1732).
     spelled: SpelledNames,
+    /// The attached property store resolved for this statement (ADR-0665
+    /// A/B, the per-read chain's one resolution): filled by the first
+    /// property read and reused for the statement's lifetime — the
+    /// statement's read guard pins the publication epoch, so the store's
+    /// answers cannot move while the statement runs (ADR-0508's placement
+    /// argument). `None` inside the cell = no store serves this snapshot,
+    /// and the compact records answer as before. A cell like its
+    /// neighbours: single-threaded executor access.
+    serving_store: std::cell::OnceCell<Option<std::sync::Arc<dyn crate::graph::PropStore>>>,
 }
 
 /// Sampling mask for cooperative cancellation checks on hot per-row loops
@@ -251,6 +260,7 @@ impl<'a> ExecGraph<'a> {
             transaction_clock: None,
             csv: CsvReader::new(base.csv_policy()),
             spelled: SpelledNames::default(),
+            serving_store: std::cell::OnceCell::new(),
         }
     }
 
@@ -379,6 +389,18 @@ impl<'a> ExecGraph<'a> {
         self.scratch
             .map(|s| s.borrow().snapshot_ts())
             .unwrap_or(self.pinned_ts)
+    }
+
+    /// The attached property store serving this statement's snapshot,
+    /// resolved once per statement (ADR-0665 A/B): every property read
+    /// below the overlay dispatches through this handle instead of
+    /// re-resolving per read. `None` when no store is attached or the
+    /// attached one serves a different snapshot — the compact records
+    /// answer, exactly the per-read gate's own decline.
+    pub(crate) fn resolved_store(&self) -> Option<&std::sync::Arc<dyn crate::graph::PropStore>> {
+        self.serving_store
+            .get_or_init(|| self.base.serving_store_handle(self.snapshot_ts()))
+            .as_ref()
     }
 
     fn scratch_mut(&self) -> std::cell::RefMut<'_, WriteScratch> {

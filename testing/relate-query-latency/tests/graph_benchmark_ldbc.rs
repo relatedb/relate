@@ -39,6 +39,7 @@ fn run(sf: ScaleFactor, profile: IndexProfile) {
             store: None,
             data_root: data_root(),
             download: true,
+            ..GraphOptions::default()
         },
         qids: QIDS.collect(),
         run: RunConfig {
@@ -109,6 +110,7 @@ fn profile_writes_its_outputs_at_sf0_1() {
             store: None,
             data_root: data_root(),
             download: true,
+            ..GraphOptions::default()
         },
         qid: 12,
         seconds: Duration::from_millis(500),

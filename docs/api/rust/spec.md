@@ -170,8 +170,8 @@ Check the build at runtime instead of repeating the cfg:
 
 | Function | Contract |
 | --- | --- |
-| `SnapshotCodecKind::is_compiled(self) -> bool` | `const fn`. `true` for `Json` in every build. `true` for `Parquet` only with the `parquet` feature on a non-wasm32 target. A codec that returns `false` fails at open when requested or found on disk. |
-| `SnapshotCodecKind::compiled() -> &'static [SnapshotCodecKind]` | Every codec compiled into the build, new-store default first: `[Parquet, Json]` with the codec, `[Json]` without it. Never empty; the last entry is always `Json`, and `compiled()[0] == SnapshotCodecKind::default()`. |
+| `SnapshotCodecKind::is_compiled(self) -> bool` | `true` for `Json` and `Markdown` in every build. `true` for `Parquet` only with the `parquet` feature on a non-wasm32 target; `true` for the experimental `Rkyv` only with its feature on a native target. `true` for the experimental `Vortex` only once the experiment crate has installed its shard codec (see below). A codec that returns `false` fails at open when requested or found on disk. |
+| `SnapshotCodecKind::compiled() -> &'static [SnapshotCodecKind]` | Every codec compiled into the build, new-store default first: `[Parquet, Json, Markdown]` with the `parquet` feature, `[Json, Markdown]` without it and on wasm32; `Vortex` joins once the experiment crate has installed its shard codec, `Rkyv` with its feature. Never empty; `compiled()[0] == SnapshotCodecKind::default()`. |
 
 Both are re-exported from `relate` with `SnapshotCodecKind`. Their
 rustdoc doctests in `relate-storage` (`src/codec/kind.rs`) are the
@@ -228,6 +228,56 @@ enables it through its own `parquet` feature (in the `full` bundle only;
 not, and `relate-load` enables it only for its own tests (a
 dev-dependency). A consumer outside the workspace that depends on
 `relate` directly gets the crate defaults, so Parquet stays on.
+
+## Experimental: Vortex snapshot format and property-store seams (ADR-0665, ADR-0677)
+
+The Vortex experiment lives outside the publish closure, in the
+never-published, workspace-excluded `testing/relate-vortex-lab` (its own
+lock; nothing in the workspace names it). The published crates carry only
+the seams it plugs into, and none of them names `vortex`.
+
+### The `vortex` snapshot format
+
+`SnapshotCodecKind::Vortex` stores node and relationship rows in row-range
+Vortex shards:
+
+- `manifest.json` — the shared envelope (`codec: vortex`, checkpoint LSN,
+  commit ts, catalog wire, format marker, ontology flag).
+- `graph.vortex.json` — the payload manifest: value encoding, next node/rel
+  ids, the optional ontology document, and the shard lists.
+- `nodes-<n>.vortex` / `rels-<n>.vortex` — one shard per 4096-row window,
+  each a single-column UTF-8 Vortex file whose rows are the shared
+  node/relationship row encodings (the JSON codec's row model). Shards are
+  immutable; a checkpoint publishes a new set and retires the shards no
+  shard list names.
+
+The payload manifest is the format's evidence: a directory holding
+`graph.vortex.json` resolves to `Vortex` with no codec requested, and the
+payload's value-encoding marker and ontology flag are cross-checked against
+the envelope. A build with no Vortex shard codec installed fails at open
+with:
+
+```text
+vortex snapshot codec is not compiled into this build (link the relate-vortex-lab experiment crate to install it)
+```
+
+### The seams
+
+| Item | Contract |
+| --- | --- |
+| `relate_executor::PropStore` (doc-hidden) | The property-read seam: `point(ts, id, kid)`; the required gates `carries(kid)` / `serves_at(ts)` (no permissive default — a store that forgot one would misanswer) and the required publication feed `on_publication(ts, rows)`; the equality shape `equality(labels, kid, values, cap)` and the aggregate shapes `folds(labels, kid, wants)` / `grouped_counts(labels, kid)` (each defaulting to `None`, leaving the shape to the index route, the postings path and the scan). |
+| `Graph::attach_prop_store(Arc<dyn PropStore>)` (doc-hidden) | Install an experimental store in the graph's shared cell. First attach wins; the graph must be quiescent. Point reads and `=`/`IN` lookups then route to it (the label scan stays on the canonical route — the measured ordering); with none attached the compact records and index routes answer unchanged. |
+| `Graph::interned_id(&str) -> Option<u32>` (doc-hidden) | The interned id of a property or label name, so an out-of-crate store maps its name-keyed lookups at the seam. |
+| `relate_storage::install_shard_codec(encode, decode)` (doc-hidden) | Register a codec's shard byte serialization. First install wins; `SnapshotCodecKind::is_compiled` reports the registry, and an uninstalled codec fails closed. |
+
+The experiment crate's `relate-vortex-ab` binary runs the query-latency
+suite or the pokec groups with the store attached through
+`relate_query_latency::suite::GraphOptions::attach` — an
+`Option<fn(&Database) -> Result<(), String>>` hook the suite runs once after
+the graph loads. The published query-latency binaries leave it `None`.
+
+The pre-push gate's publish-closure check is `scripts/check-package.sh`
+(`cargo package --no-verify` for `relate-executor` and `relate-storage`).
 
 ## Package contents (crates.io)
 

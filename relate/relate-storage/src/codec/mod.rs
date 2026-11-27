@@ -7,14 +7,14 @@ pub(crate) mod cut;
 // otherwise, failing closed through `codec_unavailable` — so the dispatch
 // matches in `lib.rs` and the ops table in `open.rs` stay cfg-free, one
 // unconditional arm per codec.
-/// The experimental codec's shared machinery — its checkpoint manifest
-/// and the load tail its decoder hands off to — behind one module cfg.
-#[cfg(rkyv_codec)]
+/// The experimental codecs' shared machinery — the checkpoint manifest
+/// and the load tail their decoders hand off to. Always compiled: the
+/// Vortex codec's storage half compiles unconditionally and hands its
+/// rows through it.
 mod experimental;
-#[cfg(rkyv_codec)]
 pub(crate) use experimental::{
-    assemble_loaded, checkpoint_identity_mismatch, content_encoding, publication_failure,
-    read_codec_manifest, restore_object, write_codec_manifest,
+    assemble_loaded, checkpoint_identity_mismatch, content_encoding, publish_staged_payload,
+    read_codec_manifest, StagedNames,
 };
 pub mod json;
 mod kind;
@@ -61,11 +61,31 @@ pub(crate) mod rkyv {
     }
 }
 
+mod shard_codec;
+/// The experimental Vortex codec's storage-general half (ADR-0665): the
+/// payload manifest, the row-range shard file names and the orphan
+/// retirement. The vortex-typed byte serialization arrives through the
+/// process-wide [`shard_codec`] registry the experiment crate installs, so
+/// this module compiles without the Vortex dependency.
+pub(crate) mod vortex;
+
+/// The Vortex store's payload manifest — the JSON object naming the row
+/// shards beside the shared envelope.
+pub(crate) const GRAPH_VORTEX_META: &str = "graph.vortex.json";
+
+/// The Vortex payload manifest's staging and backup object names — the
+/// manifest publishes through the staged swap (the same policy as the
+/// rkyv archive's [`GRAPH_RKYV_STAGING`]/[`GRAPH_RKYV_BACKUP`]), never by
+/// an in-place overwrite.
+pub(crate) const GRAPH_VORTEX_META_STAGING: &str = "graph.vortex.json.new";
+pub(crate) const GRAPH_VORTEX_META_BACKUP: &str = "graph.vortex.json.old";
+
 /// The single archive object of an rkyv store — declared once for the
 /// real module and the evidence probe alike. Dead in a build without the
 /// codec (only the codec module and the codec-gated tests name it).
 #[cfg_attr(not(rkyv_codec), allow(dead_code))]
 pub(crate) const GRAPH_RKYV: &str = "graph.rkyv";
+
 /// The rkyv archive's staging and backup object names — publication
 /// swaps the live archive through them by rename, never by a byte copy.
 /// Dead in a build without the codec, like [`GRAPH_RKYV`] above.
@@ -75,6 +95,10 @@ pub(crate) const GRAPH_RKYV_STAGING: &str = "graph.rkyv.new";
 pub(crate) const GRAPH_RKYV_BACKUP: &str = "graph.rkyv.old";
 
 pub use kind::SnapshotCodecKind;
+/// The shard-codec install hook the experiment crate calls (ADR-0665),
+/// with the encode/decode types its signature names.
+#[doc(hidden)]
+pub use shard_codec::{install as install_shard_codec, ShardDecode, ShardEncode};
 
 use relate_core::{Error, Result};
 
@@ -183,6 +207,13 @@ pub(crate) fn codec_ops(codec: SnapshotCodecKind) -> CodecOps {
             snapshot_data_bytes: rkyv::snapshot_data_bytes,
             has_published_snapshot: classic_manifest_present,
         },
+        SnapshotCodecKind::Vortex => CodecOps {
+            finish_open: admit_every_replay,
+            sweep_after_open: nothing_to_sweep,
+            dump: vortex::dump,
+            snapshot_data_bytes: vortex::snapshot_data_bytes,
+            has_published_snapshot: classic_manifest_present,
+        },
     }
 }
 
@@ -228,9 +259,9 @@ impl Envelope {
 /// build does not compile in (ADR-0105). Fails closed; never falls back.
 pub(crate) fn codec_unavailable(codec: SnapshotCodecKind) -> Error {
     Error::storage(format!(
-        "{} snapshot codec is not compiled into this build (enable the \"{}\" feature)",
+        "{} snapshot codec is not compiled into this build ({})",
         codec.as_str(),
-        codec.feature_name(),
+        codec.unavailable_hint(),
     ))
 }
 
@@ -333,12 +364,12 @@ fn classic_evidence_at(path: &std::path::Path, kind: SnapshotCodecKind) -> bool 
         // still carries.
         SnapshotCodecKind::Parquet => snapshot::has_parquet_store_files_at(path),
         // An envelope-only codec's evidence is its payload checkpoint
-        // object beside the shared envelope (graph.json, graph.rkyv):
-        // presence at the root. The shared envelope object itself is
-        // the parse-classified row in `has_classic_store_evidence_at` —
-        // a vault folder's own unrelated manifest.json is not engine
-        // evidence.
-        SnapshotCodecKind::Json | SnapshotCodecKind::Rkyv => kind
+        // object beside the shared envelope (graph.json, graph.rkyv,
+        // graph.vortex.json): presence at the root. The shared envelope
+        // object itself is the parse-classified row in
+        // `has_classic_store_evidence_at` — a vault folder's own
+        // unrelated manifest.json is not engine evidence.
+        SnapshotCodecKind::Json | SnapshotCodecKind::Rkyv | SnapshotCodecKind::Vortex => kind
             .checkpoint_objects()
             .iter()
             .filter(|object| **object != snapshot::MANIFEST_JSON)
@@ -411,6 +442,9 @@ pub(crate) fn resolve_codec(
     // codec's own named probe (the stub module answers "no evidence" for a
     // build without the codec).
     let has_rkyv = rkyv::has_store_files(target)?;
+    // The Vortex codec's evidence is its payload manifest, through the
+    // codec's own named probe (the stub answers "no evidence" without it).
+    let has_vortex = vortex::has_store_files(target)?;
     // The markdown store's evidence is its sidecar manifest at either
     // spelling (ADR-0406 §5, ADR-0623): the codec's side-effect-free
     // presence probe — the classification and its refusals stay the
@@ -434,6 +468,7 @@ pub(crate) fn resolve_codec(
         has_json.then_some(SnapshotCodecKind::Json),
         has_parquet.then_some(SnapshotCodecKind::Parquet),
         has_rkyv.then_some(SnapshotCodecKind::Rkyv),
+        has_vortex.then_some(SnapshotCodecKind::Vortex),
     ]
     .into_iter()
     .flatten()

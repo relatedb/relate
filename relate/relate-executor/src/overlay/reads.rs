@@ -262,9 +262,23 @@ impl ExecGraph<'_> {
             self.node_prologue(id, |n| n.properties.get(text).cloned())
                 .resolve(None, || {
                     self.prop_key_id_resolved(text, *token)
-                        .and_then(|kid| self.base.node_prop_id_at(id, self.snapshot_ts(), kid))
+                        .and_then(|kid| self.node_prop_snapshot(id, kid))
                 })
         })
+    }
+
+    /// One snapshot property read through the statement-resolved store
+    /// (ADR-0665 A/B): the store handle resolves once per statement, so a
+    /// read pays one `carries` check and one `point` dispatch — the
+    /// per-read gate's resolution is not paid here. A declined key falls
+    /// to the compact records, exactly the gate's own fallback.
+    fn node_prop_snapshot(&self, id: NodeId, kid: u32) -> Option<Value> {
+        if let Some(store) = self.resolved_store() {
+            if store.carries(kid) {
+                return store.point(self.snapshot_ts(), id, kid);
+            }
+        }
+        self.base.node_prop_row(id, self.snapshot_ts(), kid)
     }
 
     /// [`Self::node_prop_resolved`] for a relationship.

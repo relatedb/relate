@@ -8,15 +8,6 @@ use super::declared::intersect_acc;
 use super::index_postings::EqualityRoute;
 use super::*;
 
-enum NodeCandidates {
-    /// No labels and no properties: the caller scans.
-    Unindexed,
-    /// Index postings that still need `node_matches`.
-    Indexed(HashSet<NodeId>),
-    /// A finished id list. Empty means the predicate cannot match.
-    Final(Vec<NodeId>),
-}
-
 /// The fixed half of an equality re-check walk — what every examined
 /// candidate is re-verified against, and the cap contract — bundled so
 /// the walk ([`RecheckWalk`]) reads one context per candidate.
@@ -73,6 +64,17 @@ impl RecheckWalk<'_, '_> {
     }
 }
 
+/// Whether a candidate resolution consults the attached store: the
+/// ordinary path consults ([`StoreConsult::Consult`]); the equality
+/// serve's per-value fallback rides [`StoreConsult::Bypass`] because its
+/// one whole-list consult already asked and was declined — a typed
+/// policy, not a caller's bare bool.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StoreConsult {
+    Consult,
+    Bypass,
+}
+
 impl Graph {
     /// Approximate number of nodes carrying `label`: the label-index set
     /// size (ADR-0218). Plan-time estimate only — it is O(1), ignores
@@ -127,66 +129,30 @@ impl Graph {
         ts: u64,
         cap: Option<usize>,
     ) -> Option<Vec<NodeId>> {
+        self.lookup_nodes_at_with(labels, props, ts, cap, StoreConsult::Consult)
+    }
+
+    fn lookup_nodes_at_with(
+        &self,
+        labels: &[String],
+        props: &BTreeMap<String, Value>,
+        ts: u64,
+        cap: Option<usize>,
+        consult: StoreConsult,
+    ) -> Option<Vec<NodeId>> {
         // The label scan's hot shape — one label, no property equality —
         // is the one canonical label scan ([`node_ids_with_label_at`]):
         // the bucket's ids copied once under its guard, each probed for
         // visibility and the interned label id in place. No node is
         // materialized (the profile-hot `node_at` path builds every
-        // candidate's full property map just to check a label).
+        // candidate's full property map just to check a label). ADR-0665
+        // A/B: the store's label arm does not preempt this — the CI
+        // interleave measured the bitset arm at 1.5-2.2x on the pure
+        // label-scan pattern queries (q8/q30) while helping none.
         if labels.len() == 1 && props.is_empty() {
             return Some(self.node_ids_with_label_at(&labels[0], ts));
         }
-        match self.node_candidates(labels, props, ts, cap) {
-            NodeCandidates::Unindexed => None,
-            NodeCandidates::Final(ids) => Some(ids),
-            NodeCandidates::Indexed(acc) => {
-                // A label-only lookup needs no materialized node: the
-                // id-based label probes answer it, the labels interned
-                // once here instead of per candidate. (The materialized
-                // form built every candidate's property map just to check
-                // labels — ADR-0473's q30 measurement.) An uninterned
-                // label can match nothing (the interner is append-only),
-                // so a miss empties the answer — exactly what a
-                // `node_matches` against no node's label list would do.
-                let ids: Vec<_> = if props.is_empty() {
-                    // Each posting is examined by the probe below.
-                    crate::ctx::count_node_reads(acc.len() as u64);
-                    // The probe filters in HashSet order; the arm's
-                    // ascending contract (which `union_ids` merges on
-                    // and `far_probe` assumes) needs the closing sort —
-                    // the walk branch's `finish` sorts itself.
-                    let mut probed: Vec<_> = match self.intern_labels(labels) {
-                        Some(lids) => acc
-                            .into_iter()
-                            .filter(|&id| {
-                                lids.iter()
-                                    .all(|lid| self.node_carries_label_at(id, *lid, ts))
-                            })
-                            .collect(),
-                        None => Vec::new(),
-                    };
-                    probed.sort_unstable();
-                    probed
-                } else {
-                    // The walk counts each examined posting itself —
-                    // the shared re-check body, no cap here.
-                    let spec = RecheckSpec {
-                        labels,
-                        props,
-                        ts,
-                        cap: None,
-                    };
-                    let mut walk = self.recheck_walk(&spec);
-                    for id in acc {
-                        // No cap on this arm: the walk's `Break` is
-                        // unreachable (`cap: None`) — the discard states it.
-                        let _ = walk.visit(id);
-                    }
-                    walk.finish()
-                };
-                Some(ids)
-            }
-        }
+        self.node_candidates(labels, props, ts, cap, consult)
     }
 
     /// The capped `=` / `IN` point seek over one property: the ids whose
@@ -196,8 +162,8 @@ impl Graph {
     /// shortest posting streamed through the shared re-check walk, never
     /// the whole posting list built into an id set — so a non-unique
     /// value matching a large store reads `cap + 1` postings, not every
-    /// match. `None` when the equality route is the scan (the seek does
-    /// not serve; same decline as [`Graph::lookup_range_seek`]). An
+    /// match. `None` only when a per-value keyed lookup declines
+    /// (a vanished pair under a concurrent `DROP INDEX`). An
     /// answer of at most `cap` ids is complete, ascending and
     /// deduplicated; a longer one is an arbitrary subset meaningful only
     /// by its length. A value with no property-index key (a NaN)
@@ -212,12 +178,43 @@ impl Graph {
     ) -> Option<Vec<NodeId>> {
         let probe = |value: &Value| BTreeMap::from([(key.to_string(), value.clone())]);
         // The one route decision the uncapped serve reads
-        // ([`Graph::lookup_range_seek`]): the scan route does not serve.
-        if matches!(
-            self.values_equality_route(labels, key, values),
-            EqualityRoute::Scan
-        ) {
-            return None;
+        // ([`Graph::lookup_range_seek`]). ADR-0665 A/B (measured
+        // warm/cold ordering): behind the declared arm the attached
+        // experimental store's sorted `(key,row)` side-file serves the
+        // capped seek ahead of a COLD lazy pair only — a warm pair's
+        // probe beats the side-file seek, so it keeps the engine arm.
+        // The store is consulted ONCE for the whole list (the `IN` shape
+        // its sorted pass answers in one seek); the fallback loop below
+        // rides a store-free keyed lookup, so a cold-pair decline is not
+        // re-asked per value, and a Scan route the store declined answers
+        // `None` for the CALLER's one scan — the per-value loop would
+        // turn it into one full scan per list member (the regression the
+        // store arm introduced; the pre-store pre-check declined exactly
+        // here).
+        // The one route match answers both questions — whether the store
+        // is consulted for the whole list, and whether a store decline
+        // hands the CALLER the single scan — never a bool beside a
+        // re-test of the same enum.
+        match self.values_equality_route(labels, key, values) {
+            EqualityRoute::Scan => {
+                if let Some(ids) = self.prop_store_equality(labels, key, values, ts, Some(cap)) {
+                    return Some(ids);
+                }
+                // No index route and no store answer: the caller's single
+                // scan is the shape.
+                return None;
+            }
+            // A declared pair always outranks the store (ADR-0614's
+            // declared-then-postings precedence, unchanged).
+            EqualityRoute::Declared => {}
+            EqualityRoute::Postings => {
+                if !self.postings_pair_ready(labels, key) {
+                    if let Some(ids) = self.prop_store_equality(labels, key, values, ts, Some(cap))
+                    {
+                        return Some(ids);
+                    }
+                }
+            }
         }
         let mut found = std::collections::BTreeSet::new();
         for value in values
@@ -226,7 +223,16 @@ impl Graph {
         {
             // `None` is the keyed lookup's decline: propagated, so the
             // serve declines with it.
-            found.extend(self.lookup_nodes_upto_at(labels, &probe(value), ts, Some(cap))?);
+            found.extend(self.lookup_nodes_at_with(
+                labels,
+                &probe(value),
+                ts,
+                Some(cap),
+                // Bypass: the whole-list consult above already asked and
+                // the store declined — the per-value fallback builds the
+                // route's own postings answer, never a second consult.
+                StoreConsult::Bypass,
+            )?);
             if found.len() > cap {
                 break;
             }
@@ -262,29 +268,87 @@ impl Graph {
         props: &BTreeMap<String, Value>,
         ts: u64,
         cap: Option<usize>,
-    ) -> NodeCandidates {
+        consult: StoreConsult,
+    ) -> Option<Vec<NodeId>> {
         if labels.is_empty() && props.is_empty() {
-            return NodeCandidates::Unindexed;
+            return None;
         }
         if !labels.is_empty() && props.is_empty() {
-            return NodeCandidates::Indexed(self.intersect_label_ids(labels));
+            // The label bucket intersection finished here: the id-based
+            // label probes answer it, the labels interned once — no node
+            // materialized (the materialized form built every candidate's
+            // property map just to check labels, ADR-0473's q30
+            // measurement). An uninterned label can match nothing (the
+            // interner is append-only), so a miss empties the answer.
+            let acc = self.intersect_label_ids(labels);
+            // Each posting is examined by the probe below.
+            crate::ctx::count_node_reads(acc.len() as u64);
+            // The probe filters in HashSet order; the arm's ascending
+            // contract (which `union_ids` merges on and `far_probe`
+            // assumes) needs the closing sort — the walk branch's
+            // `finish` sorts itself.
+            let mut probed: Vec<_> = match self.intern_labels(labels) {
+                Some(lids) => acc
+                    .into_iter()
+                    .filter(|&id| {
+                        lids.iter()
+                            .all(|lid| self.node_carries_label_at(id, *lid, ts))
+                    })
+                    .collect(),
+                None => Vec::new(),
+            };
+            probed.sort_unstable();
+            return Some(probed);
         }
         // The props-non-empty shapes from here (the two guards above own
         // the empty-props ones). The route decides once (ADR-0614): a
         // declared RANGE pair, the lazy equality postings, or the scan —
         // the one three-way decision the id seek, the cardinality, this
         // arm, and the overlay's scratch-mode flag all read.
-        match self.map_equality_route(labels, props) {
-            // No declared pair covers the lookup: the lazy equality
-            // postings serve it — a one-time O(label) pair build, then
-            // O(dirty) catch-up per seek. The route's decline cases (a
-            // label-less pattern, a value whose identity is narrower
-            // than its `=` class) are `Scan` here.
+        let route = self.map_equality_route(labels, props);
+        // No declared pair covers the lookup. ADR-0665 A/B (measured
+        // warm/cold ordering): the attached experimental store's sorted
+        // side-file preempts a COLD lazy pair — its build was paid at
+        // attach, the postings' build is paid at first serve — but a WARM
+        // pair's probe beats the side-file seek (the CI interleave measured
+        // the store ahead of warm postings as a regression on repeated
+        // serves), so the engine arm keeps it. The route's decline cases
+        // (a label-less pattern, a value whose identity is narrower than
+        // its `=` class) are `Scan` here — the store arm serves them
+        // unconditionally (exact side-file match), with the full scan
+        // behind it. A declared pair always outranks the store
+        // (ADR-0614's declared-then-postings precedence, unchanged).
+        let store_first = match route {
+            EqualityRoute::Declared => false,
+            EqualityRoute::Scan => true,
+            EqualityRoute::Postings => !self.postings_pair_ready(
+                labels,
+                props
+                    .first_key_value()
+                    .expect("a props-non-empty candidate carries a first key")
+                    .0,
+            ),
+        };
+        if consult == StoreConsult::Consult && store_first && props.len() == 1 {
+            // One-property shapes only (the exact side-file match);
+            // multi-property patterns stay on the index routes, and the
+            // label-only shape never reaches here (the canonical label
+            // route above owns it).
+            let (key, value) = props
+                .first_key_value()
+                .expect("a one-property candidate carries a first key");
+            if let Some(ids) =
+                self.prop_store_equality(labels, key, std::slice::from_ref(value), ts, cap)
+            {
+                return Some(ids);
+            }
+        }
+        match route {
             EqualityRoute::Postings => {
-                return NodeCandidates::Final(self.equality_postings_upto(labels, props, ts, cap));
+                return Some(self.equality_postings_upto(labels, props, ts, cap));
             }
             EqualityRoute::Scan => {
-                return NodeCandidates::Final(self.scan_match(labels, props, ts, cap));
+                return Some(self.scan_match(labels, props, ts, cap));
             }
             // A declared RANGE pair covers every sought property: the
             // capped stream or the intersect loop below answers it.
@@ -295,17 +359,17 @@ impl Graph {
         // `DROP INDEX`) falls to the scan below.
         if let Some(cap) = cap {
             return match self.range_equality_upto(labels, props, ts, cap) {
-                Some(ids) => NodeCandidates::Final(ids),
-                None => NodeCandidates::Final(self.scan_match(labels, props, ts, Some(cap))),
+                Some(ids) => Some(ids),
+                None => Some(self.scan_match(labels, props, ts, Some(cap))),
             };
         }
         let mut acc: Option<HashSet<NodeId>> = None;
         for (key, value) in props {
             if GroupKey::for_property_index(value).is_none() {
-                return NodeCandidates::Final(Vec::new());
+                return Some(Vec::new());
             }
             let Some(kid) = self.interner.get_id(key) else {
-                return NodeCandidates::Final(Vec::new());
+                return Some(Vec::new());
             };
             let mut next: Option<HashSet<NodeId>> = None;
             for label in labels {
@@ -316,13 +380,28 @@ impl Graph {
                     continue;
                 }
                 let Some(ids) = self.range_equality_ids(lid, kid, value) else {
-                    return NodeCandidates::Final(self.scan_match(labels, props, ts, cap));
+                    return Some(self.scan_match(labels, props, ts, cap));
                 };
                 intersect_acc(&mut next, ids);
             }
             intersect_acc(&mut acc, next.unwrap_or_default());
         }
-        NodeCandidates::Indexed(acc.unwrap_or_default())
+        // The declared pairs' accumulated postings, finished here: the
+        // shared re-check walk verifies each against the full predicate —
+        // the walk counts each examined posting itself, no cap on this
+        // arm (`cap: None` makes the walk's `Break` unreachable — the
+        // discard states it).
+        let spec = RecheckSpec {
+            labels,
+            props,
+            ts,
+            cap: None,
+        };
+        let mut walk = self.recheck_walk(&spec);
+        for id in acc.unwrap_or_default() {
+            let _ = walk.visit(id);
+        }
+        Some(walk.finish())
     }
 
     /// Whether a keyed node lookup on `(labels, props)` is answered by

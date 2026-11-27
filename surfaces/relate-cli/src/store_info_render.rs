@@ -158,7 +158,7 @@ impl InfoReport {
                 let note = match codec {
                     SnapshotCodecKind::Json => NOTE_JSON_CODEC,
                     SnapshotCodecKind::Markdown => NOTE_MARKDOWN_CODEC,
-                    SnapshotCodecKind::Rkyv => NOTE_EXPERIMENTAL_CODEC,
+                    SnapshotCodecKind::Rkyv | SnapshotCodecKind::Vortex => NOTE_EXPERIMENTAL_CODEC,
                     SnapshotCodecKind::Parquet => unreachable!(
                         "an envelope snapshot is never parquet: a parquet store carries the full manifest"
                     ),

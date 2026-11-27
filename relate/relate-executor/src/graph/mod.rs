@@ -69,6 +69,8 @@ mod label_probe;
 mod pair_postings;
 mod pin;
 mod prop_read;
+mod prop_store;
+pub use prop_store::{PropFold, PropStore, PublishedRow};
 mod query_stats;
 pub use pin::SnapshotPin;
 #[cfg(test)]
@@ -311,6 +313,11 @@ pub struct Graph {
     /// [`Graph::configure_load_csv`], [`Graph::configure_preview`] and
     /// [`Graph::share_services_from`].
     services: Arc<StoreServices>,
+    /// The attached experimental property store's whole state (ADR-0665):
+    /// the shared cell, the publication feed's pending rows, and their
+    /// write-lifecycle hooks — the bundle lives beside its contract in
+    /// [`prop_store`](super::prop_store).
+    attached_store: prop_store::AttachedStore,
     next_node_id: AtomicI64,
     next_rel_id: AtomicI64,
     /// Last published commit (ADR-0012 / ADR-0013). Stored after apply (ADR-0018).
@@ -401,6 +408,7 @@ pub struct Graph {
     /// Ids mutated since the last successful checkpoint (ADR-0022).
     dirty_nodes: Mutex<HashSet<NodeId>>,
     dirty_rels: Mutex<HashSet<RelId>>,
+
     /// In-flight snapshot pins (ADR-0038). Each slot is free / claiming / ts+1.
     pins: Box<[AtomicU64]>,
     pin_cursor: AtomicU64,
@@ -415,6 +423,7 @@ impl Default for Graph {
         Self {
             namespace: Namespace::Neo4j,
             services: Arc::new(StoreServices::default()),
+            attached_store: Default::default(),
             next_node_id: AtomicI64::new(0),
             next_rel_id: AtomicI64::new(0),
             published_ts: AtomicU64::new(0),
@@ -442,6 +451,7 @@ impl Default for Graph {
             pull_identity: PullIdentityIndex::default(),
             changed_tokens: Mutex::new(AppliedTokenChanges::default()),
             dirty_nodes: Mutex::new(HashSet::new()),
+
             dirty_rels: Mutex::new(HashSet::new()),
             pins: (0..PIN_SLOTS).map(|_| AtomicU64::new(PIN_FREE)).collect(),
             pin_cursor: AtomicU64::new(0),
@@ -558,6 +568,11 @@ impl Graph {
 
     fn mark_node_dirty(&self, id: NodeId) {
         self.dirty_nodes.lock().unwrap().insert(id);
+        // The attached store's publication feed (ADR-0665 versioning
+        // step 1): the same choke point the checkpoint dirty set reads.
+        // One acquire load when nothing is attached — the default path
+        // never pays the second mutex for a set nobody drains.
+        self.attached_store.mark_dirty(id);
     }
 
     fn mark_rel_dirty(&self, id: RelId) {
@@ -617,10 +632,22 @@ impl Graph {
         std::mem::take(&mut *self.pending_redo.lock().unwrap())
     }
 
-    /// The write window's one close: publish `commit_ts`, then the shared
+    /// The write window's one close: publish `commit_ts`, feed the
+    /// attached store the rows this commit changed, then the shared
     /// window end — a graph that took a write is live, whatever shape its
     /// version chains hold.
     fn end_write(&self, commit_ts: u64) {
+        // ADR-0665's feed ordering: the store's delta holds the
+        // publication's rows BEFORE a reader can resolve ts = commit_ts.
+        // Storing published_ts first opened a window where a reader
+        // resolved the new ts and the store — whose delta was still
+        // empty — answered point reads from its pre-commit columns
+        // beside the compact records' committed rows: a torn row. The
+        // feed's materialization reads the write window's own rows at
+        // the passed ts, never published_ts, so this order is the one
+        // both halves agree on; a reader at an older ts ignores the
+        // newer delta version, exactly as before.
+        self.publish_to_prop_store(commit_ts);
         self.set_commit_ts(commit_ts);
         self.close_window();
         self.close_restoring();
@@ -644,6 +671,8 @@ impl Graph {
         let ts = self.write_ts.load(Ordering::Acquire);
         self.nodes.retain(|_, vers| vers.abort(ts));
         self.rels.retain(|_, vers| vers.abort(ts));
+        // An aborted write never reaches the attached store's feed.
+        self.attached_store.clear();
         self.close_window();
         self.rebuild_adj();
         self.rebuild_indexes();
@@ -709,9 +738,9 @@ impl Graph {
     }
 
     pub fn node_prop_at(&self, id: NodeId, ts: u64, key: &str) -> Option<Value> {
-        self.nodes.get(&id).and_then(|vers| {
-            visible_version(&vers, ts).and_then(|v| v.live.prop(&self.interner, key))
-        })
+        self.interner
+            .get_id(key)
+            .and_then(|kid| self.node_prop_id_at(id, ts, kid))
     }
 
     pub fn rel_prop_at(&self, id: RelId, ts: u64, key: &str) -> Option<Value> {

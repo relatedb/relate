@@ -333,6 +333,18 @@ impl Graph {
         }
     }
 
+    /// Whether the lazy pair a Postings-route serve of `(labels, key)`
+    /// would stream is already built — the warm/cold fact ADR-0665's
+    /// store ordering reads: the pre-built store side-file preempts a
+    /// COLD pair (the one-time O(label) build is the cost the store
+    /// avoids), but a WARM pair's probe is cheaper than the side-file
+    /// seek, so the engine arm keeps it. An uninterned pair is cold by
+    /// definition (nothing answers either way).
+    pub(in crate::graph) fn postings_pair_ready(&self, labels: &[String], key: &str) -> bool {
+        self.smallest_serve_pair(labels, key)
+            .is_some_and(|pair| self.prop_pair_built(pair))
+    }
+
     /// The interned `(label, key)` pair a postings serve streams: the
     /// first property (a `BTreeMap`, so the choice is deterministic),
     /// on the pattern label with the smallest label-index bucket — the

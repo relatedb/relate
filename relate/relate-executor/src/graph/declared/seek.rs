@@ -113,6 +113,13 @@ impl Graph {
     /// declared postings (ordered, no lazy build) when a declared pair
     /// covers the key; the lazy equality postings when the values pass
     /// the decline predicate; `None` otherwise — the caller scans.
+    /// ADR-0665 A/B (measured warm/cold ordering): a declared pair
+    /// always outranks the attached experimental store; behind the
+    /// declared arm the store's sorted `(key,row)` side-file preempts a
+    /// COLD lazy pair (its build was paid at attach, the postings'
+    /// build is paid at first serve) while a warm pair keeps the
+    /// engine arm — its probe beats the side-file seek. A decline falls
+    /// through to the arm.
     fn eq_serve(
         &self,
         labels: &[String],
@@ -122,8 +129,15 @@ impl Graph {
     ) -> Option<Vec<NodeId>> {
         match self.values_equality_route(labels, key, values) {
             EqualityRoute::Declared => self.lookup_range_values(labels, key, values, ts),
-            EqualityRoute::Postings => Some(self.equality_postings_values(labels, key, values, ts)),
-            EqualityRoute::Scan => None,
+            EqualityRoute::Postings => {
+                if !self.postings_pair_ready(labels, key) {
+                    if let Some(ids) = self.prop_store_equality(labels, key, values, ts, None) {
+                        return Some(ids);
+                    }
+                }
+                Some(self.equality_postings_values(labels, key, values, ts))
+            }
+            EqualityRoute::Scan => self.prop_store_equality(labels, key, values, ts, None),
         }
     }
 
@@ -191,7 +205,7 @@ impl Graph {
     /// True when a declared RANGE index covers `(labels, key)` — the
     /// single-key form of [`Self::range_serves_equality`]'s map form,
     /// the WHERE-form seek's half of the route decision.
-    pub(in crate::graph) fn range_serves_key(&self, labels: &[String], key: &str) -> bool {
+    pub(crate) fn range_serves_key(&self, labels: &[String], key: &str) -> bool {
         self.indexed_labels(labels, key, &self.indexes.range_pairs)
             .is_some()
     }

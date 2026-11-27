@@ -32,7 +32,12 @@ pub use codec::cut::{CheckpointCut, Rewrite};
 pub use codec::markdown::recorded_body_properties;
 pub use codec::markdown::MarkdownBodyProperties;
 pub use codec::open_config::CodecOpenConfig;
+pub use codec::vortex::shard_object_name;
 pub use codec::SnapshotCodecKind;
+/// The shard-codec install hook the experiment crate calls (ADR-0665),
+/// with the encode/decode types its signature names.
+#[doc(hidden)]
+pub use codec::{install_shard_codec, ShardDecode, ShardEncode};
 #[cfg(not(target_arch = "wasm32"))]
 pub use info::{store_info, store_info_uri, StoreInfo, StoreLayout, StoreSnapshot};
 pub use manifest::Manifest;
