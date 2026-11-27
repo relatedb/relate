@@ -300,8 +300,18 @@ mod tests {
     /// while the row clones allocated hundreds of MiB. (A pass-through
     /// follower streams the same generator instead — ADR-0660 — so it is the
     /// state-holder below that pins the materializing charge.)
+    ///
+    /// The 200-term `+` chain is a 200-deep expression tree: the evaluator
+    /// recurses once per level, and how much stack that takes depends on
+    /// the frame sizes of the day (it overflowed the default 2 MiB test
+    /// stack until the pattern-comprehension lowering shrank a frame), so
+    /// the body runs on the shared big-stack harness (REL8-2276).
     #[test]
     fn unwinding_a_wide_row_charges_the_row_clone() {
+        relate_test_support::run_with_big_stack(unwinding_a_wide_row_body);
+    }
+
+    fn unwinding_a_wide_row_body() {
         let width = 200usize;
         let mut query = String::from("UNWIND [1] AS seed WITH ");
         for i in 0..width {
