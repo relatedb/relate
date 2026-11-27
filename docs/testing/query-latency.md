@@ -92,6 +92,46 @@ to 15, after one warm-up pass). The store is the same build artifact the
 per-statement figures are wall-clock medians and CPU contention shows up
 in them directly.
 
+## handoff_bench — statement-handoff micro-harness
+
+`relate-query-latency` also ships `handoff_bench`, a dev tool (not
+CI-gated) for the per-statement cost of the query-worker handoff an
+unasserted connection pays (ADR-0259): it loops the sqlite-gate PR
+workload's 8-statement brief mix (verbatim) on an evidence-shaped
+store sized to the gate's smallest band, in two interleaved modes —
+**(a)** an unasserted
+connection on the main thread (what the Python wheel, the FFI surface
+and the CLI drive) and **(b)** a connection on a thread spawned with the
+engine's exported `QUERY_WORKER_STACK_BYTES` budget after
+`assume_worker_stack_on_caller_thread()` (ADR-0504) — and reports the
+per-statement p50 of each plus their signed gap, per phase:
+
+- **cold** — one mix pass on each of `--cold-stores` fresh stores per
+  mode (every pass first-execution; the per-connection worker spawn is
+  primed away with one untimed worker-routed statement, so the ~0.5 ms
+  one-time spawn cost cannot swamp the µs-scale handoff term);
+- **warm** — `--rounds` passes per mode after `--warmup` untimed ones.
+
+```bash
+cargo build --release -p relate-query-latency --bin handoff_bench
+target/release/handoff_bench --rounds 1500 --cold-stores 40
+```
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `--rounds` | 1500 | timed mix passes per mode in the warm phase |
+| `--warmup` | 200 | untimed mix passes per mode before the warm phase |
+| `--cold-stores` | 40 | fresh stores per mode in the cold phase |
+
+Reading the report: a ~0 gap is either both-inline (the ADR-0663
+cache-hit route serving the warm hit) or both-worker (the handoff paid
+by **both** modes and invisible to the diff — the var-length
+`neighbourhood` statement, every multi-hop plan past the escalation
+bound, every write); a ~5-7 µs gap is a statement only the asserted
+mode serves inline. The mix's known classes are printed with the
+report. Time it in a quiet window — the figures are wall-clock medians
+at microsecond scale.
+
 ## External samplers
 
 `--sampler none` runs the same checked loop without the in-process
