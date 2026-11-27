@@ -344,18 +344,17 @@ pub fn construct_clock(kind: ClockKind, mode: ClockMode, arg: Option<&Value>) ->
 /// The instants the running statement reads: its own pin, and the pin of the
 /// transaction it belongs to — the explicit transaction's begin instant, or
 /// (autocommit) the statement's own, settled once at guard installation.
-/// Both `None` only outside any guard. One cell, so the pair is installed and
-/// restored in lockstep.
+/// The two travel as one value — both present inside a guard, both absent
+/// outside any — so "one pinned, the other not" is unrepresentable. One cell,
+/// so the pair is installed and restored in lockstep.
 #[derive(Clone, Copy)]
 struct Pins {
-    statement: Option<ClockReading>,
-    transaction: Option<ClockReading>,
+    statement: ClockReading,
+    transaction: ClockReading,
 }
 
 thread_local! {
-    static PINS: std::cell::Cell<Pins> = const {
-        std::cell::Cell::new(Pins { statement: None, transaction: None })
-    };
+    static PINS: std::cell::Cell<Option<Pins>> = const { std::cell::Cell::new(None) };
 }
 
 /// The instant an explicit transaction began at, captured once at `BEGIN`
@@ -375,7 +374,7 @@ impl TransactionClock {
 /// Pins `date()` / `datetime()` / `time()` to one instant for a statement,
 /// restoring the previous pins when it drops.
 pub struct QueryClockGuard {
-    previous: Pins,
+    previous: Option<Pins>,
 }
 
 impl Default for QueryClockGuard {
@@ -400,10 +399,10 @@ impl QueryClockGuard {
     /// so a nested guard restores the outer statement's instants.
     fn install(reading: ClockReading, transaction: Option<ClockReading>) -> Self {
         let previous = PINS.with(|c| {
-            c.replace(Pins {
-                statement: Some(reading),
-                transaction: Some(transaction.unwrap_or(reading)),
-            })
+            c.replace(Some(Pins {
+                statement: reading,
+                transaction: transaction.unwrap_or(reading),
+            }))
         });
         Self { previous }
     }
@@ -442,10 +441,15 @@ fn unpinned_reading() -> ClockReading {
     ClockReading::wall_clock()
 }
 
+/// The one accessor over the installed pins: `select` names the statement's
+/// or the transaction's instant; outside any guard it is the documented
+/// [`unpinned_reading`].
+fn pinned_with(select: impl FnOnce(Pins) -> ClockReading) -> ClockReading {
+    PINS.with(|c| c.get()).map_or_else(unpinned_reading, select)
+}
+
 fn pinned() -> ClockReading {
-    PINS.with(|c| c.get())
-        .statement
-        .unwrap_or_else(unpinned_reading)
+    pinned_with(|pins| pins.statement)
 }
 
 /// The observation `mode` names: the transaction's instant for
@@ -454,10 +458,7 @@ fn pinned() -> ClockReading {
 /// the live wall clock for [`ClockMode::Realtime`].
 fn clock_reading(mode: ClockMode) -> ClockReading {
     match mode {
-        ClockMode::Transaction => PINS
-            .with(|c| c.get())
-            .transaction
-            .unwrap_or_else(unpinned_reading),
+        ClockMode::Transaction => pinned_with(|pins| pins.transaction),
         ClockMode::Statement => pinned(),
         ClockMode::Realtime => ClockReading::wall_clock(),
     }
