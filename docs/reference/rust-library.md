@@ -67,12 +67,12 @@ checkpoint. Timed checkpoints default to 300 seconds; set
 ## Adding it to your project
 
 Relate's crates are **not yet published to [crates.io](https://crates.io/)**
-(the workspace is `1.4.0`). Until they are, an external project depends on
+(the workspace is `1.4.1`). Until they are, an external project depends on
 them with a **git dependency**:
 
 ```toml
 [dependencies]
-relate = { git = "https://github.com/relatedb/relate", tag = "v1.4.0" }
+relate = { git = "https://github.com/relatedb/relate", tag = "v1.4.1" }
 ```
 
 Pin `tag` (or `rev`) so your build is reproducible; omit it to track the default
@@ -80,7 +80,7 @@ branch. Once the crates are published, this becomes a plain version dependency:
 
 ```toml
 # after crates.io publication (not yet available)
-relate = "1.4.0"
+relate = "1.4.1"
 ```
 
 :::note
@@ -101,7 +101,7 @@ build a leaner engine without them:
 relate = { git = "https://github.com/relatedb/relate", default-features = false }
 ```
 
-The feature is not in any release yet: v1.4.0 and earlier always compile
+The feature is not in any release yet: v1.4.1 and earlier always compile
 Parquet, so `default-features = false` changes nothing there. Track the
 default branch as above, or pin a `rev` or a later tag that includes ADR-0105.
 
