@@ -606,7 +606,10 @@ Process, not code shape:
   the FULL workspace lint — `cargo clippy --workspace --all-targets
   --exclude relate-python -- -D warnings` — never a `-p <crate>` subset
   as gate (crate-scoped runs build deps without linting them). Warm,
-  the workspace run is cheap and is the exact CI command
+  the workspace run is cheap and is the exact CI command. The
+  publish-closure check — `scripts/check-package.sh` — packages the
+  property-store seam crates so an unversioned dependency (the Vortex fork)
+  cannot leak into a published manifest
 
 ## Agent tooling notes
 

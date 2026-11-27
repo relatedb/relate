@@ -75,6 +75,7 @@ fn corpus_config(workload: Workload, sf: ScaleFactor) -> CorpusConfig {
         store: None,
         data_root: data_root(),
         download: true,
+        ..GraphOptions::default()
     };
     let lane = match workload {
         Workload::Pathdb => Lane::Pathdb {

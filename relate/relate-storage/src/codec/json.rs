@@ -1,16 +1,16 @@
 //! Relate GraphData snapshot (`graph.json` full rewrite). ADR-0050.
 
-use relate_core::{Error, Node, Relationship, Result};
+use relate_core::{Error, Result};
 use relate_engine_api::{CheckpointTheater, GraphExport};
 #[cfg(test)]
 use relate_executor::Graph;
 use serde::{Deserialize, Serialize};
 
 use super::catalog::{self, CatalogWire, JsonConstraint, JsonIndex};
-use super::convert::{props_from_cypher_json, props_to_cypher_json};
+use super::model::{NodeRow, RelRow};
 use super::{Envelope, SnapshotCodecKind};
 use crate::snapshot::{object_exists, put_object, LoadedSnapshot};
-use crate::{storage_context, StoreTarget};
+use crate::StoreTarget;
 
 pub const GRAPH_JSON: &str = "graph.json";
 
@@ -22,8 +22,8 @@ struct GraphData {
         skip_serializing_if = "Option::is_none"
     )]
     value_encoding: Option<u64>,
-    nodes: Vec<JsonNode>,
-    relationships: Vec<JsonRelationship>,
+    nodes: Vec<NodeRow>,
+    relationships: Vec<RelRow>,
     #[serde(default)]
     indexes: Vec<JsonIndex>,
     #[serde(default)]
@@ -52,23 +52,6 @@ where
     D: serde::Deserializer<'de>,
 {
     u64::deserialize(deserializer).map(Some)
-}
-
-#[derive(Serialize, Deserialize)]
-struct JsonNode {
-    id: i64,
-    labels: Vec<String>,
-    properties: serde_json::Map<String, serde_json::Value>,
-}
-
-#[derive(Serialize, Deserialize)]
-struct JsonRelationship {
-    id: i64,
-    #[serde(rename = "type")]
-    rel_type: String,
-    start_node: i64,
-    end_node: i64,
-    properties: serde_json::Map<String, serde_json::Value>,
 }
 
 pub fn dump(
@@ -120,28 +103,16 @@ fn graph_to_data(
         constraints,
         graph_type,
     } = catalog::to_json(&contents, &theater);
-    let mut nodes = Vec::new();
-    for n in contents.nodes {
-        let id = n.id;
-        nodes.push(JsonNode {
-            id,
-            labels: std::sync::Arc::unwrap_or_clone(n.labels),
-            properties: props_to_cypher_json(&n.properties)
-                .map_err(|e| storage_context(e, format_args!("node {id}")))?,
-        });
-    }
-    let mut relationships = Vec::new();
-    for r in contents.relationships {
-        let id = r.id;
-        relationships.push(JsonRelationship {
-            id,
-            rel_type: r.rel_type,
-            start_node: r.start,
-            end_node: r.end,
-            properties: props_to_cypher_json(&r.properties)
-                .map_err(|e| storage_context(e, format_args!("relationship {id}")))?,
-        });
-    }
+    let nodes = contents
+        .nodes
+        .iter()
+        .map(NodeRow::encode)
+        .collect::<Result<Vec<_>>>()?;
+    let relationships = contents
+        .relationships
+        .iter()
+        .map(RelRow::encode)
+        .collect::<Result<Vec<_>>>()?;
     Ok(GraphData {
         // The format follows the content (ADR-0120 §8): encoding 3 when the
         // inline ontology is present, 2 otherwise.
@@ -260,28 +231,16 @@ fn graph_from_data<G: relate_engine_api::SnapshotGraph>(
     // (`SnapshotRows::into_graph`) installs them — the same tail every
     // codec that decodes into contents uses. Id checks and the next-id
     // guard live in that tail.
-    let mut nodes = Vec::with_capacity(data.nodes.len());
-    for n in data.nodes {
-        let properties = props_from_cypher_json(&n.properties, value_encoding)
-            .map_err(|e| storage_context(e, format_args!("node {}", n.id)))?;
-        nodes.push(Node {
-            id: n.id,
-            labels: std::sync::Arc::new(n.labels),
-            properties: relate_core::PropertyMap::share(properties),
-        });
-    }
-    let mut relationships = Vec::with_capacity(data.relationships.len());
-    for r in data.relationships {
-        let properties = props_from_cypher_json(&r.properties, value_encoding)
-            .map_err(|e| storage_context(e, format_args!("relationship {}", r.id)))?;
-        relationships.push(Relationship {
-            id: r.id,
-            start: r.start_node,
-            end: r.end_node,
-            rel_type: r.rel_type,
-            properties: relate_core::PropertyMap::share(properties),
-        });
-    }
+    let nodes = data
+        .nodes
+        .into_iter()
+        .map(|row| row.decode(value_encoding))
+        .collect::<Result<Vec<_>>>()?;
+    let relationships = data
+        .relationships
+        .into_iter()
+        .map(|row| row.decode(value_encoding))
+        .collect::<Result<Vec<_>>>()?;
     let rows = super::model::SnapshotRows {
         nodes,
         relationships,

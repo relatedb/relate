@@ -38,6 +38,7 @@ fn load_with_checkpoint_lsn<G: SnapshotGraph>(target: &StoreTarget) -> Result<Lo
         SnapshotCodecKind::Json => codec::json::load_with_checkpoint_lsn::<G>(target),
         SnapshotCodecKind::Markdown => codec::markdown::load_with_checkpoint_lsn::<G>(target),
         SnapshotCodecKind::Rkyv => codec::rkyv::load_with_checkpoint_lsn::<G>(target),
+        SnapshotCodecKind::Vortex => codec::vortex::load_with_checkpoint_lsn::<G>(target),
     }
 }
 
@@ -335,7 +336,6 @@ pub fn open_store_notifying<G: SnapshotGraph + relate_engine_api::CheckpointDirt
             // the checkpoint below hands its codec — each subsystem's
             // canonical derivation, never a per-subsystem constant.
             let to = match subsystem {
-                #[cfg(manifest_codec)]
                 version::Subsystem::Manifest => u64::from(version::manifest::published_with(
                     target.codec,
                     ontology.is_some(),

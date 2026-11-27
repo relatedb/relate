@@ -75,6 +75,7 @@ impl GraphBenchmarkLdbcStoreArgs {
             store: self.store,
             data_root: data.root(),
             download: data.downloads(),
+            ..GraphOptions::default()
         }
     }
 }
@@ -184,6 +185,7 @@ impl GraphArgs {
             store: self.store,
             data_root: self.data.root(),
             download: !self.offline,
+            ..GraphOptions::default()
         };
         (graph, timeout)
     }

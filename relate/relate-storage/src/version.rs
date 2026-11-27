@@ -32,10 +32,9 @@ pub(crate) enum Classification<T> {
 }
 
 /// Snapshot manifest `format_version` facts — codec-neutral (every codec
-/// that writes a `manifest.json` gates on them), so they compile with any
-/// manifest-bearing codec: the Parquet codec (whose reader lives in
-/// `snapshot::native`, ADR-0105) or an experimental one.
-#[cfg(manifest_codec)]
+/// that writes a `manifest.json` gates on them). Compiled unconditionally:
+/// the Vortex codec's storage half always writes and reads a manifest
+/// (ADR-0665), with or without the Parquet codec (ADR-0105).
 pub(crate) mod manifest {
     use super::Classification;
     use crate::codec::SnapshotCodecKind;

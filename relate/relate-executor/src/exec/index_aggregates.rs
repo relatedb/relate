@@ -18,7 +18,7 @@ use relate_names::SmallName;
 
 use crate::ctx::ExecCtx;
 use crate::eval::key_of;
-use crate::graph::Extremum;
+use crate::graph::{Extremum, PropFold};
 use crate::overlay::RetainedTotal;
 use crate::row::Row;
 
@@ -48,19 +48,11 @@ pub(super) enum Shape<'a> {
 
 /// One fold ask and the output column it lands in — the pairing the
 /// fold arm reads, never a positionally aligned sibling vec beside the
-/// items.
+/// items. The ask is the seam's own [`PropFold`], so the store's
+/// vocabulary and this ladder's are one type.
 pub(super) struct FoldItem {
-    fold: Fold,
+    fold: PropFold,
     name: String,
-}
-
-/// The aggregates a fold statement may ask of one property — the
-/// extremum direction carried as [`Extremum`] itself, not a duplicate
-/// Min/Max vocabulary beside it.
-#[derive(Clone, Copy)]
-pub(super) enum Fold {
-    Extremum(Extremum),
-    Count,
 }
 
 pub(super) struct Recognized<'a> {
@@ -72,7 +64,7 @@ pub(super) struct Recognized<'a> {
 
 /// `expr` is `kind(var.key)` for the admitted kinds (`min`, `max`,
 /// `count`): the fold and the property key.
-fn property_fold<'a>(expr: &'a Expr, var: &SmallName) -> Option<(Fold, &'a SmallName)> {
+fn property_fold<'a>(expr: &'a Expr, var: &SmallName) -> Option<(PropFold, &'a SmallName)> {
     let Expr::Function {
         name,
         distinct: false,
@@ -87,9 +79,9 @@ fn property_fold<'a>(expr: &'a Expr, var: &SmallName) -> Option<(Fold, &'a Small
     };
     let key = key_of(arg, var)?;
     let fold = match kind {
-        relate_ir::AggregateKind::Count => Fold::Count,
-        relate_ir::AggregateKind::Min => Fold::Extremum(Extremum::Min),
-        relate_ir::AggregateKind::Max => Fold::Extremum(Extremum::Max),
+        relate_ir::AggregateKind::Count => PropFold::Count,
+        relate_ir::AggregateKind::Min => PropFold::Min,
+        relate_ir::AggregateKind::Max => PropFold::Max,
         _ => return None,
     };
     Some((fold, key))
@@ -287,10 +279,31 @@ fn fold_values(
 ) -> Result<Option<Row>> {
     let base = ctx.graph.base();
     let mut row = Row::new();
+    // ADR-0665 A/B (measured ordering): behind the declared postings, the
+    // attached store's columnar fold — pre-built at attach, one pass over
+    // the column — serves the shape no declared pair covers; its decline
+    // falls to the postings path, which declines for the same missing
+    // pair, and the scan answers.
+    let labels = [label.to_string()];
+    if !base.range_serves_key(&labels, key) {
+        let wants: Vec<PropFold> = folds.iter().map(|item| item.fold).collect();
+        // The seam's alignment contract: the answer holds one entry per
+        // ask. A store answering a different length is broken — decline
+        // this arm to the postings path below, never a partial row.
+        // The seam's acceptance protocol validated the answer (aligned,
+        // one entry per ask) — a decline is the whole arm's.
+        if let Some(values) = base.prop_store_folds(&labels, key, &wants, ts) {
+            for (item, value) in folds.iter().zip(values) {
+                row.insert(item.name.clone(), value);
+            }
+            return Ok(Some(row));
+        }
+    }
     for item in folds {
         let value = match item.fold {
-            Fold::Extremum(end) => base.range_extremum_at(label, key, end, ts),
-            Fold::Count => {
+            PropFold::Min => base.range_extremum_at(label, key, Extremum::Min, ts),
+            PropFold::Max => base.range_extremum_at(label, key, Extremum::Max, ts),
+            PropFold::Count => {
                 let mut count = 0u64;
                 // The walk's decline is the fold's decline — a swallowed
                 // `Ok(None)` would answer a silent zero.
@@ -327,15 +340,31 @@ fn group_values(
     let mut retained = graph.retain_bytes(0)?;
     let mut groups = CountedGroups::new();
     let names = projection_names(items);
-    let walk = graph
-        .base()
-        .for_each_posted_value_at(label, key, ts, |value| {
+    // ADR-0665 A/B (measured ordering): behind the declared postings, the
+    // attached store's columnar distinct counts — one pass over the
+    // column, the counts landing through the same charged table — serve
+    // the shape no declared pair covers; a decline falls to the postings
+    // walk, which declines for the same missing pair.
+    let base = graph.base();
+    let labels = [label.to_string()];
+    let mut served = false;
+    if !base.range_serves_key(&labels, key) {
+        if let Some(pairs) = base.prop_store_grouped_counts(&labels, key, ts) {
+            for (value, count) in pairs {
+                groups.add_one(graph, &mut retained, &value, count)?;
+            }
+            served = true;
+        }
+    }
+    if !served {
+        let walk = base.for_each_posted_value_at(label, key, ts, |value| {
             groups.add_one(graph, &mut retained, value, 1)
         });
-    // The walk's decline is the shape's decline; its error propagates.
-    let Some(()) = walk? else {
-        return Ok(None);
-    };
+        // The walk's decline is the shape's decline; its error propagates.
+        let Some(()) = walk? else {
+            return Ok(None);
+        };
+    }
     // The nodes holding no value: the label's exact live count less the
     // counted ones, read in the same exactness window.
     // The walk's one decline protocol: a null group that cannot be read
@@ -364,19 +393,23 @@ fn null_group(
 ) -> Result<Option<()>> {
     let graph = ctx.graph;
     // Postings are id sets, so a node cannot be counted twice under one
-    // key: `counted` is at most the label's live count, and a smaller
-    // total is a broken store — the same invariant the sibling group
-    // checks state.
+    // key: `counted` is at most the label's live count. The postings walk
+    // guarantees it by construction; the store-supplied arm (an
+    // out-of-crate answer) cannot — a total below the counted ids is a
+    // broken store, and the decline is the answer, never a panic.
     let counted: u64 = groups.total_count();
+    // The windowed total's decline is the ladder's own (a writer
+    // committed since the reads ran); the subtraction's decline is the
+    // broken-store guard above.
     let Some(total) = graph.base().windowed_stats_count(
         || graph.sees_exact_base_stats(),
         crate::graph::CountProbe::Label(label.to_string()),
     ) else {
         return Ok(None);
     };
-    let nulls = total
-        .checked_sub(counted)
-        .expect("a label's live count below its posted ids is a broken store");
+    let Some(nulls) = total.checked_sub(counted) else {
+        return Ok(None);
+    };
     if nulls > 0 {
         groups.add_one(graph, retained, &Value::Null, nulls)?;
     }

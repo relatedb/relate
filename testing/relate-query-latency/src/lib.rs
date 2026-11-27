@@ -33,10 +33,13 @@
 //!
 //! Not an LDBC Benchmark; see `NOTICE` for attribution and fair use.
 
+pub mod alloc;
 pub mod answers;
+pub mod cli;
 pub mod corpus;
 pub mod fetch;
 pub mod load;
+pub mod pokec;
 pub mod profile;
 pub mod report;
 pub mod run;
@@ -52,6 +55,11 @@ use relate::{Database, OpenOptions, Value};
 /// Every fallible step reports a human-readable message: the suite is a
 /// harness, and its callers print the error and exit.
 pub type Result<T> = std::result::Result<T, String>;
+
+/// The experimental property-store attach hook (ADR-0665): run once after
+/// the graph loads. `None` runs the default store; the Vortex A/B driver in
+/// `testing/relate-vortex-lab` passes its own attach.
+pub type AttachHook = fn(&Database) -> Result<()>;
 
 /// The suite's working directory, the root of everything it writes (data
 /// cache, reports, stores, profiles): `$CARGO_TARGET_DIR/query-latency`

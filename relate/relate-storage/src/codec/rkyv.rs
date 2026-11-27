@@ -25,7 +25,7 @@ use super::catalog;
 use super::convert::{props_from_cypher_json, props_to_cypher_json};
 use super::model::{SnapshotContents, SnapshotRows};
 use super::SnapshotCodecKind;
-use crate::snapshot::{object_exists, put_object, LoadedSnapshot};
+use crate::snapshot::{object_exists, LoadedSnapshot};
 use crate::{storage_context, StoreTarget};
 
 /// A cypher-json property value, archived **flat**. Mirrors
@@ -374,74 +374,27 @@ pub(crate) fn dump(
     };
     drop(snapshot);
     drop(contents);
-    // The publication is a rename swap: the new
-    // archive is written to a staging object, the live one renamed aside,
-    // the staging one moved in, and only then does the manifest publish.
-    // The previous archive is never read back — the rollback moves it by
-    // rename — so the checkpoint path's peak stays the graph plus the
-    // compressed archive, and a failed checkpoint leaves the previous
-    // checkpoint loadable instead of a store every later open refuses.
-    put_object(target, super::GRAPH_RKYV_STAGING, &bytes)?;
-    let previous_manifest =
-        crate::snapshot::get_object_opt(target, crate::snapshot::MANIFEST_JSON)?;
-    swap_archive_in(target)?;
-    // The manifest publishes last and carries the theater (see
-    // `codec::CodecManifest`); a failure rolls the archive swap and the
-    // manifest both back — neither half of a checkpoint is left
-    // published alone.
-    let published = super::write_codec_manifest(target, SnapshotCodecKind::Rkyv, cut, wire);
-    if let Err(error) = published {
-        let rollback = restore_archive(target).and_then(|()| {
-            super::restore_object(target, crate::snapshot::MANIFEST_JSON, previous_manifest)
-        });
-        return Err(super::publication_failure(error, rollback));
-    }
+    // The one staged-payload publication both fixed-name payload codecs
+    // share (ADR-0703's round of the reviewer's finding): staging write,
+    // envelope capture, rename swap, envelope publish, the rollback
+    // pair — the rkyv archive's three names bound to it.
+    super::publish_staged_payload(
+        target,
+        &super::StagedNames {
+            what: "rkyv archive",
+            live: super::GRAPH_RKYV,
+            staging: super::GRAPH_RKYV_STAGING,
+            backup: super::GRAPH_RKYV_BACKUP,
+        },
+        &bytes,
+        SnapshotCodecKind::Rkyv,
+        cut,
+        wire,
+    )?;
     crate::schema_files::finish_checkpoint(target, cut, ontology)?;
     // The retired backup is dropped best-effort: a cleanup failure leaves
     // residue, never a wrongly reported checkpoint.
     let _ = target.vfs.remove_file(super::GRAPH_RKYV_BACKUP);
-    Ok(())
-}
-
-/// Swap the staged archive into the live name, keeping the previous
-/// archive aside by rename — the one publication move. Its own failure
-/// is rolled back by [`restore_archive`].
-fn swap_archive_in(target: &StoreTarget) -> Result<()> {
-    let had_live = object_exists(target, super::GRAPH_RKYV)?;
-    if had_live {
-        // A stale backup from an interrupted publication is replaced, not
-        // adopted.
-        if object_exists(target, super::GRAPH_RKYV_BACKUP)? {
-            target.vfs.remove_file(super::GRAPH_RKYV_BACKUP)?;
-        }
-        target
-            .vfs
-            .rename(super::GRAPH_RKYV, super::GRAPH_RKYV_BACKUP)?;
-    }
-    if let Err(err) = target
-        .vfs
-        .rename(super::GRAPH_RKYV_STAGING, super::GRAPH_RKYV)
-    {
-        return Err(super::publication_failure(
-            Error::storage(format!("rkyv archive publication failed: {err}")),
-            restore_archive(target),
-        ));
-    }
-    Ok(())
-}
-
-/// Undo a failed rkyv publication: whatever archive sits at the live name
-/// is removed and the backup — the previous checkpoint's archive, kept by
-/// rename rather than a byte copy — moves back.
-fn restore_archive(target: &StoreTarget) -> Result<()> {
-    if object_exists(target, super::GRAPH_RKYV)? {
-        target.vfs.remove_file(super::GRAPH_RKYV)?;
-    }
-    if object_exists(target, super::GRAPH_RKYV_BACKUP)? {
-        target
-            .vfs
-            .rename(super::GRAPH_RKYV_BACKUP, super::GRAPH_RKYV)?;
-    }
     Ok(())
 }
 

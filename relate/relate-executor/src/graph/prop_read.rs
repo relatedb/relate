@@ -6,9 +6,7 @@ use super::*;
 impl Graph {
     /// [`Self::node_prop_at`] with the key already interned.
     pub(crate) fn node_prop_id_at(&self, id: NodeId, ts: u64, kid: u32) -> Option<Value> {
-        self.nodes
-            .get(&id)
-            .and_then(|vers| visible_version(&vers, ts).and_then(|v| v.live.prop_by_id(kid)))
+        PropStore::point(self, ts, id, kid)
     }
 
     /// [`Self::rel_prop_at`] with the key already interned.

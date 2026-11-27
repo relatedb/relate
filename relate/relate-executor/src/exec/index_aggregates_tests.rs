@@ -325,3 +325,66 @@ fn the_recognizer_admits_its_shapes_and_declines_near_misses() {
         assert!(recognize(&clauses_of(q)).is_none(), "must decline: {q}");
     }
 }
+
+/// A store that answers point reads exactly like the compact records but
+/// breaks the fold contract: one entry short of the ask, carrying a value
+/// a partial row would expose.
+#[derive(Debug)]
+struct ShortFolds {
+    kid: u32,
+    ages: Vec<Option<Value>>,
+}
+
+impl crate::graph::PropStore for ShortFolds {
+    fn point(&self, _ts: u64, id: relate_core::NodeId, kid: u32) -> Option<Value> {
+        if kid != self.kid {
+            return None;
+        }
+        self.ages.get(id as usize).cloned().flatten()
+    }
+
+    fn carries(&self, kid: u32) -> bool {
+        kid == self.kid
+    }
+
+    fn serves_at(&self, _ts: u64) -> bool {
+        true
+    }
+
+    // A test store holds no versions: publications change nothing it serves.
+    fn on_publication(&self, _ts: u64, _rows: &[crate::graph::PublishedRow]) {}
+
+    fn folds(
+        &self,
+        _labels: &[u32],
+        _kid: u32,
+        wants: &[crate::graph::PropFold],
+    ) -> Option<Vec<Value>> {
+        Some(vec![Value::Int(999); wants.len().saturating_sub(1)])
+    }
+}
+
+#[test]
+fn a_store_answering_the_wrong_fold_count_falls_to_the_postings() {
+    use std::sync::Arc;
+
+    let g = setup_unindexed();
+    let ts = g.commit_ts();
+    let kid = g.interned_id("age").unwrap();
+    let ids = g.all_node_ids_at(ts);
+    let mut ages = vec![None; ids.iter().copied().max().unwrap_or(0) as usize + 1];
+    for id in ids {
+        ages[id as usize] = g.node_prop_at(id, ts, "age");
+    }
+    // A seek builds the lazy (P, age) pair the count fallback streams.
+    exec_cypher_on(&ExecGraph::read(&g), "MATCH (n:P {age: 3}) RETURN n.age");
+    assert!(g.attach_prop_store(Arc::new(ShortFolds { kid, ages })));
+    let view = ExecGraph::read(&g);
+
+    // count: the short answer is declined and the postings path answers.
+    let count = index_answer(&view, FOLDS[1]).expect("the postings path answers");
+    assert_eq!(sorted(count), sorted(scan_answer(&view, FOLDS[1])));
+    // min/max has no postings fallback without a declared pair: the arm
+    // declines to the scan rather than emit the store's partial row.
+    assert!(index_answer(&view, FOLDS[0]).is_none());
+}

@@ -19,6 +19,10 @@ pub enum SnapshotCodecKind {
     /// EXPERIMENTAL (default off, `rkyv-codec`): one zero-copy rkyv
     /// archive. Measurement only until an ADR promotes it.
     Rkyv,
+    /// EXPERIMENTAL: node/relationship rows in row-range Vortex shards
+    /// (ADR-0665). Installed at runtime by the experiment crate (ADR-0677);
+    /// measurement only until the engine-side A/B promotes it.
+    Vortex,
 }
 
 impl Default for SnapshotCodecKind {
@@ -35,11 +39,19 @@ impl SnapshotCodecKind {
     /// [`Self::as_str`]. A new codec edits this table, `as_str`, and a
     /// compile-forced arm in each layout fact ([`Self::wal_dir`],
     /// [`Self::checkpoint_image`], [`Self::engine_dir`],
-    /// [`Self::feature_name`]).
-    pub(crate) const ALL: [Self; 4] = [Self::Parquet, Self::Json, Self::Markdown, Self::Rkyv];
+    /// [`Self::feature_name`], [`Self::unavailable_hint`]).
+    pub(crate) const ALL: [Self; 5] = [
+        Self::Parquet,
+        Self::Json,
+        Self::Markdown,
+        Self::Rkyv,
+        Self::Vortex,
+    ];
 
     /// Whether this codec is compiled into the build. JSON always is;
-    /// Parquet needs the `parquet` feature on a non-wasm32 target (ADR-0105).
+    /// Parquet needs the `parquet` feature on a non-wasm32 target (ADR-0105);
+    /// Vortex needs the experiment crate to have installed its shard codec
+    /// through the registry (ADR-0665).
     ///
     /// # Example
     /// ```
@@ -50,23 +62,50 @@ impl SnapshotCodecKind {
     ///     SnapshotCodecKind::compiled().contains(&SnapshotCodecKind::Parquet),
     /// );
     /// ```
-    pub const fn is_compiled(self) -> bool {
+    pub fn is_compiled(self) -> bool {
         match self {
             Self::Parquet => cfg!(parquet_codec),
             Self::Rkyv => cfg!(rkyv_codec),
+            Self::Vortex => super::shard_codec::installed(),
             Self::Json | Self::Markdown => true,
         }
     }
 
     /// The Cargo feature that compiles this codec in — the name the
     /// not-compiled error tells the user to enable. Always-compiled
-    /// codecs have none; their arm is unreachable behind
-    /// [`is_compiled`](Self::is_compiled).
-    pub const fn feature_name(self) -> &'static str {
+    /// codecs have none, and neither has Vortex: its shard codec arrives
+    /// from the experiment crate through the registry, so its install
+    /// story rides [`unavailable_hint`](Self::unavailable_hint) instead.
+    pub const fn feature_name(self) -> Option<&'static str> {
         match self {
-            Self::Parquet => "parquet",
-            Self::Rkyv => "rkyv-codec",
-            Self::Json | Self::Markdown => "",
+            Self::Parquet => Some("parquet"),
+            Self::Rkyv => Some("rkyv-codec"),
+            Self::Vortex | Self::Json | Self::Markdown => None,
+        }
+    }
+
+    /// Where a codec without a Cargo feature comes from — its install
+    /// story, the second half of [`unavailable_hint`](Self::unavailable_hint).
+    /// A codec's provenance sits beside its [`feature_name`](Self::feature_name)
+    /// so one vocabulary row carries both ways a build gets the codec.
+    const fn provenance(self) -> Option<&'static str> {
+        match self {
+            Self::Vortex => Some("link the relate-vortex-lab experiment crate to install it"),
+            Self::Parquet | Self::Rkyv | Self::Json | Self::Markdown => None,
+        }
+    }
+
+    /// How a build that lacks this codec gets it — the parenthetical of
+    /// [`codec_unavailable`](super::codec_unavailable), rendered from the
+    /// codec's own two-part story (a Cargo feature, or a provenance) so no
+    /// caller special-cases a codec. Always-compiled codecs are
+    /// unreachable behind [`is_compiled`](Self::is_compiled); their row
+    /// still answers instead of panicking.
+    pub(crate) fn unavailable_hint(self) -> String {
+        match (self.feature_name(), self.provenance()) {
+            (Some(feature), _) => format!("enable the \"{feature}\" feature"),
+            (None, Some(provenance)) => provenance.to_owned(),
+            (None, None) => format!("{} is always compiled", self.as_str()),
         }
     }
 
@@ -92,18 +131,27 @@ impl SnapshotCodecKind {
     /// assert!(compiled.iter().all(|codec| codec.is_compiled()));
     /// ```
     pub fn compiled() -> &'static [SnapshotCodecKind] {
+        // Read live, never frozen at first call: Vortex's shard codec is
+        // installed at runtime, so a snapshot taken before the install
+        // would contradict `is_compiled`. The set changes only when a
+        // runtime codec installs (at most once per build), so the leaked
+        // slice is rebuilt only on that change and otherwise reused.
+        static LIVE: std::sync::Mutex<&'static [SnapshotCodecKind]> = std::sync::Mutex::new(&[]);
+        let mut published = LIVE.lock().expect("compiled codec set");
         // Filtered, not sliced: with more than one optional codec a
         // prefix slice would misreport the build. `ALL`'s order is the
         // new-store preference order, so the filter keeps `[0]` the
         // default.
-        static COMPILED: std::sync::OnceLock<Vec<SnapshotCodecKind>> = std::sync::OnceLock::new();
-        COMPILED.get_or_init(|| {
-            Self::ALL
-                .iter()
-                .copied()
-                .filter(|kind| kind.is_compiled())
-                .collect()
-        })
+        let fresh: Vec<SnapshotCodecKind> = Self::ALL
+            .iter()
+            .copied()
+            .filter(|kind| kind.is_compiled())
+            .collect();
+        if *published != fresh.as_slice() {
+            let leaked: &'static [SnapshotCodecKind] = Vec::leak(fresh);
+            *published = leaked;
+        }
+        *published
     }
 
     /// The codec names as the unknown-codec error spells them —
@@ -127,7 +175,7 @@ impl SnapshotCodecKind {
     /// vault's own files (ADR-0406 §3).
     pub const fn wal_dir(self) -> &'static str {
         match self {
-            Self::Parquet | Self::Json | Self::Rkyv => "wal",
+            Self::Parquet | Self::Json | Self::Rkyv | Self::Vortex => "wal",
             Self::Markdown => super::markdown::WAL_DIR,
         }
     }
@@ -142,7 +190,7 @@ impl SnapshotCodecKind {
     /// vocabulary its consumers pin.
     pub const fn checkpoint_image(self) -> &'static str {
         match self {
-            Self::Parquet | Self::Rkyv => crate::snapshot::MANIFEST_JSON,
+            Self::Parquet | Self::Rkyv | Self::Vortex => crate::snapshot::MANIFEST_JSON,
             Self::Json => super::json::GRAPH_JSON,
             Self::Markdown => super::markdown::MANIFEST,
         }
@@ -157,6 +205,9 @@ impl SnapshotCodecKind {
             Self::Parquet => &[crate::snapshot::MANIFEST_JSON],
             Self::Json => &[crate::snapshot::MANIFEST_JSON, super::json::GRAPH_JSON],
             Self::Rkyv => &[crate::snapshot::MANIFEST_JSON, super::GRAPH_RKYV],
+            // The payload manifest names the row shards, whose set is
+            // dynamic; the static root objects are these two.
+            Self::Vortex => &[crate::snapshot::MANIFEST_JSON, super::GRAPH_VORTEX_META],
             Self::Markdown => &[super::markdown::MANIFEST],
         }
     }
@@ -170,7 +221,7 @@ impl SnapshotCodecKind {
     pub const fn engine_dir(self) -> Option<&'static str> {
         match self {
             Self::Markdown => Some(super::markdown::ENGINE_DIR),
-            Self::Parquet | Self::Json | Self::Rkyv => None,
+            Self::Parquet | Self::Json | Self::Rkyv | Self::Vortex => None,
         }
     }
 
@@ -188,7 +239,6 @@ impl SnapshotCodecKind {
     /// (`version::manifest::writes_wide`). The experimental codecs keep
     /// the legacy part encoding (ADR-0537). Manifest-bearing builds only:
     /// without one, no manifest is written and the fact has no reader.
-    #[cfg(manifest_codec)]
     pub(crate) const fn writes_wide_parts(self) -> bool {
         matches!(self, Self::Parquet)
     }
@@ -208,6 +258,7 @@ impl SnapshotCodecKind {
             Self::Json => "json",
             Self::Markdown => "markdown",
             Self::Rkyv => "rkyv",
+            Self::Vortex => "vortex",
         }
     }
 

@@ -206,6 +206,7 @@ fn graph_opts(sf: ScaleFactor) -> GraphOptions {
         store: None,
         data_root: PathBuf::from("/nonexistent"),
         download: false,
+        ..GraphOptions::default()
     }
 }
 

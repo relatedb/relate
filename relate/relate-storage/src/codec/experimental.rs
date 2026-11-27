@@ -106,7 +106,7 @@ pub(crate) fn missing_payload(manifest: &CodecManifest, what: &str) -> Error {
 }
 
 /// The payload/manifest checkpoint-identity policy every experimental
-/// loader enforces: the payload names the checkpoint it was published
+/// loader enforces (the rkyv archive's cross-check): the payload names the checkpoint it was published
 /// with, and a disagreement with the manifest is a torn publication (the
 /// two halves publish separately) — the store is refused, never served.
 /// The codec named in the message is the manifest envelope's own typed
@@ -163,6 +163,93 @@ pub(crate) fn publication_failure(error: Error, rollback: Result<()>) -> Error {
             format!("{message} (and the rollback failed: {rollback})")
         }),
     }
+}
+
+/// The staged-object publication swap — the one policy every fixed-name
+/// payload object publishes through (the rkyv archive, the Vortex codec's
+/// payload manifest): the caller has already written the new bytes to
+/// `staging`; this moves the live object aside to `backup` by rename and
+/// the staging object into the live name, so the live name never holds a
+/// half-written payload and the previous payload stays recoverable at
+/// `backup`. [`restore_swapped_object`] rolls the move back. A hard crash
+/// between the two renames is the family's recorded window: the next
+/// publication replaces both strays, never adopts one.
+pub(crate) fn swap_object_in(
+    target: &StoreTarget,
+    what: &str,
+    live: &str,
+    staging: &str,
+    backup: &str,
+) -> Result<()> {
+    if crate::snapshot::object_exists(target, live)? {
+        // A stale backup from an interrupted publication is replaced, not
+        // adopted.
+        if crate::snapshot::object_exists(target, backup)? {
+            target.vfs.remove_file(backup)?;
+        }
+        target.vfs.rename(live, backup)?;
+    }
+    target.vfs.rename(staging, live).map_err(|err| {
+        publication_failure(
+            Error::storage(format!("{what} publication failed: {err}")),
+            restore_swapped_object(target, live, backup),
+        )
+    })
+}
+
+/// The staged-payload publication protocol — the one sequence every
+/// fixed-name payload object publishes through (the rkyv archive, the
+/// Vortex codec's payload manifest): the caller holds the new payload's
+/// bytes; this stages them, captures the previous envelope, swaps the
+/// staged object into the live name (the previous live aside to
+/// `backup`), and publishes the envelope — rolling BOTH back when the
+/// envelope publish fails, so neither half of a checkpoint is ever left
+/// published alone and a failed checkpoint leaves the previous one
+/// loadable instead of a store every later open refuses. The staged
+/// write never touches a live name, and the swap is rename-only (the
+/// previous payload is never read back).
+/// The three object names a staged publication moves through — the
+/// caller's codec-local constants, bound once.
+pub(crate) struct StagedNames<'a> {
+    /// What the payload is, in the publication-failure messages.
+    pub what: &'a str,
+    /// The live name the swap installs into.
+    pub live: &'a str,
+    /// The staging name the caller's bytes are written under.
+    pub staging: &'a str,
+    /// The backup name the previous live object waits at.
+    pub backup: &'a str,
+}
+
+pub(crate) fn publish_staged_payload(
+    target: &StoreTarget,
+    names: &StagedNames<'_>,
+    staged: &[u8],
+    codec: SnapshotCodecKind,
+    cut: &crate::codec::cut::CheckpointCut<'_>,
+    wire: catalog::CatalogWire,
+) -> Result<()> {
+    crate::snapshot::put_object(target, names.staging, staged)?;
+    let previous = crate::snapshot::get_object_opt(target, crate::snapshot::MANIFEST_JSON)?;
+    swap_object_in(target, names.what, names.live, names.staging, names.backup)?;
+    if let Err(error) = write_codec_manifest(target, codec, cut, wire) {
+        let rollback = restore_swapped_object(target, names.live, names.backup)
+            .and_then(|()| restore_object(target, crate::snapshot::MANIFEST_JSON, previous));
+        return Err(publication_failure(error, rollback));
+    }
+    Ok(())
+}
+
+/// [`swap_object_in`]'s rollback: whatever the failed publication left at
+/// the live name goes, and the backup returns to the live name.
+pub(crate) fn restore_swapped_object(target: &StoreTarget, live: &str, backup: &str) -> Result<()> {
+    if crate::snapshot::object_exists(target, live)? {
+        target.vfs.remove_file(live)?;
+    }
+    if crate::snapshot::object_exists(target, backup)? {
+        target.vfs.rename(backup, live)?;
+    }
+    Ok(())
 }
 
 /// The experimental codec's shared load tail: rebuild the graph from the

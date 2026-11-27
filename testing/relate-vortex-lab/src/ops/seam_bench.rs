@@ -1,0 +1,291 @@
+//! The seam A/B: the same node-major table behind `PropStore` twice —
+//! `RowProps` (compact-records-shaped baseline) vs `ColProps` (the vortex
+//! store) — same operators, same answers asserted, both measured.
+//!
+//! The point is not to re-measure the kernels (vortex-research-results.md has those); it is
+//! the seam overhead and the representation effect per operator: what the
+//! executor would feel if the property store swapped behind the trait.
+
+use std::path::Path;
+
+use crate::bench::{measure, Measured};
+use crate::colstore::ColProps;
+use crate::seam::{Cmp, Pred, PropStore};
+use crate::store;
+
+/// One A/B row: the same operator, stated once, run against both stores at
+/// identical iteration counts, reported and collected as a pair.
+fn ab(
+    results: &mut Vec<Measured>,
+    row_name: &str,
+    col_name: &str,
+    iters: u64,
+    row: &dyn PropStore,
+    col: &dyn PropStore,
+    mut op: impl FnMut(&dyn PropStore, u64),
+) {
+    let m = measure(row_name, iters, |i| op(row, i));
+    m.report();
+    results.push(m);
+    let m = measure(col_name, iters, |i| op(col, i));
+    m.report();
+    results.push(m);
+}
+
+pub fn run(out_dir: &Path, iters: u64) -> Result<Vec<Measured>, Box<dyn std::error::Error>> {
+    let mut results = Vec::new();
+
+    let n = 150_000usize;
+    let mut table = store::synthetic("mono", n, 4);
+    // labels: 4 interleaved label codes (i%4) — every zone holds all
+    // labels, so the label filter halves rows without pruning zones (the
+    // realistic shape; correlated labels would prune too)
+    table.columns.push((
+        "label".into(),
+        store::Col::Int((0..n).map(|i| (i % 4) as i64).collect()),
+    ));
+    let row = crate::seam::RowProps::build(&table)?;
+    let col = ColProps::build(&table, &out_dir.join("seam-mono.vortex"))?;
+    println!(
+        "seam A/B: {} rows, {} columns; row store built, col store mmap-opened",
+        n,
+        table.columns.len()
+    );
+
+    // A 1024-row morsel of ascending node ids (the executor's shape).
+    let morsel: Vec<u64> = (0..1024).map(|i| (i * 147) % n as u64).collect();
+    let mut morsel_sorted = morsel.clone();
+    morsel_sorted.sort_unstable();
+
+    // Selective range predicates at the one-third points (the measured
+    // monotone shape; conjunction prunes the union of both ends).
+    let a0 = table.ints("attr0")?;
+    let a1 = table.ints("attr1")?;
+    let third0 = a0.iter().copied().min().unwrap()
+        + (a0.iter().copied().max().unwrap() - a0.iter().copied().min().unwrap()) / 3;
+    let third1 = a1.iter().copied().min().unwrap()
+        + (a1.iter().copied().max().unwrap() - a1.iter().copied().min().unwrap()) / 3;
+    let pred = Pred::Cmp {
+        key: "attr0",
+        op: Cmp::Lt,
+        val: 2 * third0,
+    }
+    .and(Pred::Cmp {
+        key: "attr1",
+        op: Cmp::Gt,
+        val: third1,
+    });
+    let seek_key = "node-00071234";
+
+    // ---- correctness: both stores must answer identically ----
+    let exp_row = row.expand(&[], &pred, None);
+    let exp_col = col.expand(&[], &pred, None);
+    assert_eq!(exp_row, exp_col, "expand disagrees");
+    assert_eq!(
+        row.expand(&[], &pred, Some(100)),
+        col.expand(&[], &pred, Some(100)),
+        "capped expand disagrees"
+    );
+    for r in [0u64, 7, 74_943, n as u64 - 1] {
+        assert_eq!(
+            row.point(r, "attr0"),
+            col.point(r, "attr0"),
+            "point {r} disagrees"
+        );
+    }
+    assert_eq!(
+        row.batch(&morsel_sorted, &["attr0", "attr1"]),
+        col.batch(&morsel_sorted, &["attr0", "attr1"]),
+        "batch disagrees"
+    );
+    // A row beyond the loaded count is absent on both stores, never a panic
+    // or a wrapped read — the seam's one row-space answer.
+    assert_eq!(
+        row.point(n as u64, "attr0"),
+        col.point(n as u64, "attr0"),
+        "out-of-range point disagrees"
+    );
+    assert_eq!(row.seek(seek_key), col.seek(seek_key), "seek disagrees");
+    assert_eq!(
+        row.distinct("attr0"),
+        col.distinct("attr0"),
+        "distinct disagrees"
+    );
+    assert_eq!(
+        row.topk("attr1", 10),
+        col.topk("attr1", 10),
+        "topk disagrees"
+    );
+    println!(
+        "  correctness: all operators agree ({}/{} rows expand, seek hit, 150k distincts, top-10)",
+        exp_row.len(),
+        n
+    );
+
+    // ---- S1: point read ----
+    let point_iters = iters.clamp(100, 50_000);
+    ab(
+        &mut results,
+        "S1a point attr0 (row store)",
+        "S1b point attr0 (col store)",
+        point_iters,
+        &row,
+        &col,
+        |s, i| {
+            let v = s.point(i % n as u64, "attr0");
+            std::hint::black_box(v);
+        },
+    );
+
+    // ---- S2: morsel batch (1024 ascending rows x 2 keys) ----
+    ab(
+        &mut results,
+        "S2a batch 1024x2 (row store)",
+        "S2b batch 1024x2 (col store)",
+        iters.clamp(5, 500),
+        &row,
+        &col,
+        |s, _| {
+            let v = s.batch(&morsel_sorted, &["attr0", "attr1"]);
+            std::hint::black_box(v.len());
+        },
+    );
+
+    // ---- S3: bulk expansion with pushed conjunction ----
+    ab(
+        &mut results,
+        "S3a expand conjunction (row store)",
+        "S3b expand conjunction (col store)",
+        iters.clamp(1, 50),
+        &row,
+        &col,
+        |s, _| {
+            let v = s.expand(&[], &pred, None);
+            std::hint::black_box(v.len());
+        },
+    );
+
+    // ---- S3c: capped expansion (the engine's cap chain) ----
+    ab(
+        &mut results,
+        "S3c expand cap=100 (row store)",
+        "S3c expand cap=100 (col store)",
+        iters.clamp(1, 50),
+        &row,
+        &col,
+        |s, _| {
+            let v = s.expand(&[], &pred, Some(100));
+            std::hint::black_box(v.len());
+        },
+    );
+
+    // ---- S7: batch node+property filter (labels AND conjunctive pred) ----
+    // the candidates-funnel shape: lookup_nodes_upto(labels, props, cap)
+    let half: Vec<u32> = vec![0, 1]; // i%4 in {0,1} = half the nodes
+    assert_eq!(
+        row.expand(&half, &pred, None),
+        col.expand(&half, &pred, None),
+        "label+pred expand disagrees"
+    );
+    ab(
+        &mut results,
+        "S7a label{0,1}+conj (row store)",
+        "S7b label{0,1}+conj (col store)",
+        iters.clamp(1, 50),
+        &row,
+        &col,
+        |s, _| {
+            let v = s.expand(&half, &pred, None);
+            std::hint::black_box(v.len());
+        },
+    );
+
+    // ---- S8: batched key check / IN-list (1024 sorted keys, one merge) ----
+    let in_keys: Vec<String> = (0..1024)
+        .map(|i| format!("node-{:08}", (i * 147) % n))
+        .collect();
+    let mut in_sorted = in_keys.clone();
+    in_sorted.sort_unstable();
+    assert_eq!(
+        row.member(&in_sorted),
+        col.member(&in_sorted),
+        "member disagrees"
+    );
+    ab(
+        &mut results,
+        "S8a member 1024 keys (row store)",
+        "S8b member 1024 keys (col store)",
+        iters.clamp(5, 500),
+        &row,
+        &col,
+        |s, _| {
+            let v = s.member(&in_sorted);
+            std::hint::black_box(v.len());
+        },
+    );
+
+    // ---- S8c: clustered batch (the morsel shape: keys from one region) ----
+    let clustered: Vec<String> = (100_000..101_024).map(|i| format!("node-{i:08}")).collect();
+    assert_eq!(
+        row.member(&clustered),
+        col.member(&clustered),
+        "clustered member disagrees"
+    );
+    ab(
+        &mut results,
+        "S8c member 1024 clustered (row store)",
+        "S8c member 1024 clustered (col store)",
+        iters.clamp(5, 500),
+        &row,
+        &col,
+        |s, _| {
+            let v = s.member(&clustered);
+            std::hint::black_box(v.len());
+        },
+    );
+
+    // ---- S4: equality seek on the sorted key arm ----
+    ab(
+        &mut results,
+        "S4a seek key (row store)",
+        "S4b seek key (col store)",
+        point_iters,
+        &row,
+        &col,
+        |s, i| {
+            let k = format!("node-{:08}", i % n as u64);
+            let v = s.seek(&k);
+            std::hint::black_box(&v);
+        },
+    );
+
+    // ---- S5: aggregation pushdown (distinct + counts) ----
+    ab(
+        &mut results,
+        "S5a distinct attr0 (row store)",
+        "S5b distinct attr0 (col store)",
+        iters.clamp(1, 20),
+        &row,
+        &col,
+        |s, _| {
+            let v = s.distinct("attr0");
+            std::hint::black_box(v.len());
+        },
+    );
+
+    // ---- S6: sort/limit pushdown (top-10) ----
+    ab(
+        &mut results,
+        "S6a topk 10 attr1 (row store)",
+        "S6b topk 10 attr1 (col store)",
+        iters.clamp(1, 20),
+        &row,
+        &col,
+        |s, _| {
+            let v = s.topk("attr1", 10);
+            std::hint::black_box(v.len());
+        },
+    );
+
+    Ok(results)
+}

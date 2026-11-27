@@ -1,13 +1,17 @@
-//! Logical snapshot contents shared by the JSON and Parquet codecs.
+//! Logical snapshot contents and the row model shared by the checkpoint
+//! codecs.
 //!
 //! Each codec still writes its own bytes (ADR-0050): JSON a full `graph.json`,
-//! Parquet id-window shards. This struct is only the in-memory field list both
-//! fill before encoding.
+//! Vortex row shards, Parquet id-window shards. These structs are only the
+//! in-memory field lists and wire rows the codecs share before encoding.
 
 use relate_catalog::{ConstraintDef, IndexDef};
 use relate_core::{Node, Relationship, Result};
+use serde::{Deserialize, Serialize};
 
 use super::catalog::{self, CatalogWire};
+use super::convert::{props_from_cypher_json, props_to_cypher_json};
+use crate::storage_context;
 use relate_core::Error;
 use relate_engine_api::{CheckpointTheater, SnapshotGraph};
 
@@ -197,6 +201,79 @@ impl SnapshotRows {
         crate::snapshot::ensure_commit_ts(&graph, rows);
         catalog::restore(&graph, wire, theater)?;
         Ok(graph)
+    }
+}
+
+/// One serialized node row: the JSON codec writes them inside `graph.json`,
+/// the Vortex codec as one encoded row per shard line. The field names are
+/// the durable `graph.json` spelling, and both codecs encode and decode
+/// through [`NodeRow::encode`] / [`NodeRow::decode`].
+#[derive(Serialize, Deserialize)]
+pub(crate) struct NodeRow {
+    id: i64,
+    labels: std::sync::Arc<Vec<String>>,
+    properties: serde_json::Map<String, serde_json::Value>,
+}
+
+/// One serialized relationship row, on the same shared wire as [`NodeRow`].
+#[derive(Serialize, Deserialize)]
+pub(crate) struct RelRow {
+    id: i64,
+    #[serde(rename = "type")]
+    rel_type: String,
+    start_node: i64,
+    end_node: i64,
+    properties: serde_json::Map<String, serde_json::Value>,
+}
+
+impl NodeRow {
+    pub(crate) fn encode(node: &Node) -> Result<Self> {
+        Ok(Self {
+            id: node.id,
+            // The Arc clone is a refcount bump (serde's `rc` feature
+            // carries Arc<T> through both directions) — the previous
+            // spelling pre-cloned the Arc, so unwrap_or_clone's try_unwrap
+            // could never win and every node's labels deep-copied per
+            // checkpoint write.
+            labels: node.labels.clone(),
+            properties: props_to_cypher_json(&node.properties)
+                .map_err(|e| storage_context(e, format_args!("node {}", node.id)))?,
+        })
+    }
+
+    pub(crate) fn decode(self, value_encoding: u64) -> Result<Node> {
+        let properties = props_from_cypher_json(&self.properties, value_encoding)
+            .map_err(|e| storage_context(e, format_args!("node {}", self.id)))?;
+        Ok(Node {
+            id: self.id,
+            labels: self.labels,
+            properties: relate_core::PropertyMap::share(properties),
+        })
+    }
+}
+
+impl RelRow {
+    pub(crate) fn encode(rel: &Relationship) -> Result<Self> {
+        Ok(Self {
+            id: rel.id,
+            rel_type: rel.rel_type.clone(),
+            start_node: rel.start,
+            end_node: rel.end,
+            properties: props_to_cypher_json(&rel.properties)
+                .map_err(|e| storage_context(e, format_args!("relationship {}", rel.id)))?,
+        })
+    }
+
+    pub(crate) fn decode(self, value_encoding: u64) -> Result<Relationship> {
+        let properties = props_from_cypher_json(&self.properties, value_encoding)
+            .map_err(|e| storage_context(e, format_args!("relationship {}", self.id)))?;
+        Ok(Relationship {
+            id: self.id,
+            start: self.start_node,
+            end: self.end_node,
+            rel_type: self.rel_type,
+            properties: relate_core::PropertyMap::share(properties),
+        })
     }
 }
 

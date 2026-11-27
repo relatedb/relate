@@ -1,0 +1,219 @@
+# Vortex lab lane — REPORT-ONLY (REL8-1982, ADR-0665 round 1).
+#
+# Never a required check, never a merge gate: it publishes the lab's
+# measurement tables (kernel suite + LDBC SF0.1 CSVs + the seam A/B) as a
+# job summary and artifacts so the columnar property-store evaluation has
+# CI-recorded numbers. The lab crate is workspace-excluded (ADR-0677): the
+# repo's own lanes never resolve the Vortex fork, and this lane alone builds
+# the lab from its own manifest and lock under the repo toolchain.
+#
+# CI caveat printed into the summary: these are shared-runner numbers
+# with a load stamp, not the quiet-box protocol the recorded baselines
+# in vortex-research-results.md use — compare shapes and ratios, not
+# absolute times, across runs.
+name: Vortex lab (report-only)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["perf/vortex-engine-integration"]
+    paths:
+      - "testing/relate-vortex-lab/**"
+      - "testing/relate-query-latency/**"
+      - "relate/relate-executor/**"
+      - "relate/relate-storage/**"
+      - "relate/relate/**"
+      - ".github/workflows/vortex-lab.yml"
+  pull_request:
+    paths:
+      - "testing/relate-vortex-lab/**"
+      - "testing/relate-query-latency/**"
+      - "relate/relate-executor/**"
+      - "relate/relate-storage/**"
+      - "relate/relate/**"
+      - ".github/workflows/vortex-lab.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  vortex-lab:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      # The SF0.1 social-network archive the query-latency suite pins
+      # (workloads/graph-benchmark-ldbc/data.sha256): same source, same
+      # sha — one pin table for both lanes.
+      LDBC_URL: https://datasets.ldbcouncil.org/snb-interactive-v1/social_network-sf0.1-CsvBasic-StringDateFormatter.tar.zst
+      LDBC_SHA256: 61dea06f162cda1624edfe55f458ee7f13f532847318d65596fcd7282fc3aff8
+      OUT: ${{ github.workspace }}/vortex-lab-out
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      # The excluded lab keeps its own target dir under
+      # testing/relate-vortex-lab/target; the repo root's target serves the
+      # default-variant binaries. Cache both so the 244-crate vortex dep tree
+      # survives between runs.
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          workspaces: |
+            testing/relate-vortex-lab
+            .
+
+      - name: Fetch the LDBC SF0.1 CSVs (sha-pinned)
+        run: |
+          mkdir -p "$OUT/ldbc"
+          curl -fsSL "$LDBC_URL" -o "$OUT/ldbc/archive.tar.zst"
+          echo "$LDBC_SHA256  $OUT/ldbc/archive.tar.zst" | sha256sum -c -
+          tar --zstd -xf "$OUT/ldbc/archive.tar.zst" -C "$OUT/ldbc"
+          test -f "$OUT/ldbc/social_network-sf0.1-CsvBasic-StringDateFormatter/dynamic/person_0_0.csv"
+
+      - name: Build the lab
+        working-directory: testing/relate-vortex-lab
+        run: cargo build --release --locked
+      - name: Run the lab's test suites
+        # The crate is workspace-excluded: no other lane compiles or runs
+        # its tests, and the codec's shard/WAL-replay contract and the
+        # executor dispatch ordering are executed ONLY here — a regression
+        # must fail this lane, not ship silently behind a green build.
+        working-directory: testing/relate-vortex-lab
+        run: cargo test --release --locked
+
+      - name: Run the kernel suite
+        working-directory: testing/relate-vortex-lab
+        env:
+          VORTEX_LAB_CSV: ${{ env.OUT }}/ldbc/social_network-sf0.1-CsvBasic-StringDateFormatter/dynamic/person_0_0.csv
+          VORTEX_LAB_OUT: ${{ env.OUT }}
+        run: |
+          mkdir -p "$OUT/stdio"
+          for cmd in size point seek filter agg join sets probe vfs seam memory pokec; do
+            echo "::group::vortex-lab $cmd"
+            ./target/release/relate-vortex-lab "$cmd" 2>&1 | tee "$OUT/stdio/$cmd.txt"
+            echo "::endgroup::"
+          done
+
+      # Before/after: the same engine run with the default store and with the
+      # experimental Vortex property store attached (ADR-0665). `relate-vortex-ab`
+      # injects the attach through the suite's hook; the default variant runs
+      # the suite's own binaries. The LDBC A/B interleaves
+      # default→attached→attached→default over one shared prepared store, so
+      # warm-up and runner drift land on both sides; the ratio step reads the
+      # four JSON reports and publishes per-query and total ratios from each
+      # side's best-of-two `min_ns` (the noise-robust statistic on a shared
+      # runner). A wrong answer fails the run outright — timing is the only
+      # thing this report-only lane tolerates.
+      - name: Engine A/B (default vs vortex store)
+        run: |
+          set -o pipefail
+          mkdir -p "$OUT/stdio" "$OUT/ab"
+          cargo build --release --locked -p relate-query-latency --bins
+          cargo build --release --locked \
+            --manifest-path testing/relate-vortex-lab/Cargo.toml --bins
+          LAB=./testing/relate-vortex-lab/target/release
+          STORE="$OUT/ldbc-ab-store"
+          echo "::group::pokec_profile small (vortex)"
+          "$LAB/relate-vortex-ab" pokec small 2>&1 \
+            | tee "$OUT/stdio/engine-ab-pokec-vortex.txt"
+          echo "::endgroup::"
+          echo "::group::pokec_profile small (default)"
+          ./target/release/pokec_profile small 2>&1 \
+            | tee "$OUT/stdio/engine-ab-pokec-default.txt"
+          echo "::endgroup::"
+          echo "::group::LDBC SF0.1 interleave (def, att, att, def)"
+          ./target/release/query-latency run --store "$STORE" --min-time 1 \
+            --out "$OUT/ab/default-1.json" \
+            | tee "$OUT/stdio/engine-ab-queries-default-1.txt"
+          "$LAB/relate-vortex-ab" run --store "$STORE" --min-time 1 \
+            --out "$OUT/ab/attached-1.json" \
+            | tee "$OUT/stdio/engine-ab-queries-attached-1.txt"
+          "$LAB/relate-vortex-ab" run --store "$STORE" --min-time 1 \
+            --out "$OUT/ab/attached-2.json" \
+            | tee "$OUT/stdio/engine-ab-queries-attached-2.txt"
+          ./target/release/query-latency run --store "$STORE" --min-time 1 \
+            --out "$OUT/ab/default-2.json" \
+            | tee "$OUT/stdio/engine-ab-queries-default-2.txt"
+          echo "::endgroup::"
+
+      # The interleave's verdict: per-query and total attached/default ratios
+      # from each side's best-of-two min_ns, plus each side's own run-to-run
+      # drift so a noisy runner is visible as drift rather than read as a
+      # regression.
+      - name: Publish the A/B ratio
+        if: always()
+        run: |
+          python3 - "$OUT/ab" <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json, sys, pathlib
+          root = pathlib.Path(sys.argv[1])
+          def load(name):
+              try:
+                  d = json.load(open(root / f"{name}.json"))
+                  rows = next(d[k] for k in ("queries","results","rows") if k in d)
+                  return {str(r["qid"]): r for r in rows}
+              except Exception as e:
+                  print(f"## A/B ratio\n\nmissing or unreadable report: {name} ({e})")
+                  return None
+          sides = {n: load(n) for n in
+                   ("default-1","default-2","attached-1","attached-2")}
+          if any(v is None for v in sides.values()):
+              sys.exit(0)
+          qids = sorted(sides["default-1"], key=int)
+          def mn(side, q):
+              return sides[side][q]["engine"]["min_ns"] / 1e6
+          print("## LDBC SF0.1 — attached/default ratio (best-of-2 min_ns)")
+          print()
+          print("| qid | default ms | attached ms | att/def |")
+          print("|---:|---:|---:|---:|")
+          tot_d = tot_a = 0.0
+          for q in qids:
+              d = min(mn("default-1", q), mn("default-2", q))
+              a = min(mn("attached-1", q), mn("attached-2", q))
+              tot_d += d; tot_a += a
+              print(f"| {q} | {d:.3f} | {a:.3f} | {a/d:.2f}x |")
+          print(f"| **total** | **{tot_d:.1f}** | **{tot_a:.1f}** | **{tot_a/tot_d:.2f}x** |")
+          print()
+          sd = sum(mn("default-1", q) for q in qids)
+          sd2 = sum(mn("default-2", q) for q in qids)
+          sa = sum(mn("attached-1", q) for q in qids)
+          sa2 = sum(mn("attached-2", q) for q in qids)
+          print(f"run-to-run drift (min sums): default {sd2/sd:.3f}, "
+                f"attached {sa2/sa:.3f} — far from 1.0 means a noisy runner.")
+          PY
+
+      - name: Publish the numbers
+        if: always()
+        run: |
+          # nullglob: a step that never ran leaves no stdio files — the
+          # summary then shows whatever exists instead of failing the job
+          shopt -s nullglob
+          {
+            echo "# Vortex lab numbers (report-only)"
+            echo
+            echo "Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            echo "Revision: $GITHUB_SHA"
+            echo
+            echo "**CI caveat**: shared-runner numbers with the lab's own load stamp —"
+            echo "compare shapes and ratios across runs, not absolute times. The recorded"
+            echo "quiet-box baselines live in \`vortex-research-results.md\`."
+            echo
+            for f in "$OUT"/stdio/*.txt; do
+              echo "## $(basename "$f" .txt)"
+              echo
+              echo '```'
+              cat "$f"
+              echo '```'
+              echo
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the artifacts
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          # The measurement tables and the four interleave reports. The
+          # fetched LDBC archive (19 MB) and the generated .vortex files are
+          # reproducible — they do not ride the artifact.
+          name: vortex-lab-report
+          path: |
+            vortex-lab-out/stdio/
+            vortex-lab-out/ab/
+          retention-days: 30

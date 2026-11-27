@@ -67,7 +67,10 @@ pub fn assert_checkpoint_format(
         // format marker (classifying against the manifest's own ontology
         // flag, ADR-0120 §8) plus the checkpoint theater. The ontology
         // document rides the codec payload, so the image never carries it.
-        relate_storage::SnapshotCodecKind::Rkyv => {
+        // The experimental codecs' image is the same plain codec manifest
+        // (format marker plus theater); the ontology rides the payload
+        // manifest, never the image.
+        relate_storage::SnapshotCodecKind::Rkyv | relate_storage::SnapshotCodecKind::Vortex => {
             assert_eq!(image["format_version"], if held { 4 } else { 3 });
             assert_eq!(image["has_ontology"], held);
             assert_ontology(None, ExpectedOntology::Absent);

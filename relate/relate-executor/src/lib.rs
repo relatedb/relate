@@ -118,6 +118,11 @@ pub use graph::{
     AppliedTokenChanges, CheckpointTheater, ContainsCount, DatabaseEntry, Graph, Procedure,
     QueryStats, SchemaSnapshot, SnapshotPin,
 };
+// The experimental property-store seam (ADR-0665): a columnar store installed
+// with `Graph::attach_prop_store` implements this trait. Doc-hidden — an
+// evaluation seam, not a stable public API.
+#[doc(hidden)]
+pub use graph::{PropFold, PropStore, PublishedRow};
 pub use metrics::{
     BatchFacts, ClauseMetricsRecord, FrontierCounters, InTxBatches, KernelRung, MemoCounters,
     PhaseTimes, PlanMetricsSink, StartReason, StatementMemoRecord, StoreReads, WalkStart,
