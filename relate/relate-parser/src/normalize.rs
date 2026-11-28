@@ -63,51 +63,15 @@
 
 use std::cell::Cell;
 
+use crate::auto_parameter::name_is_auto_parameter;
 use crate::bracket_role::bracket_opens_list_group;
 use crate::lexer::{tokenize_with_options, ParseOptions};
 use crate::parser::{parse_int_literal, MAX_NESTING_DEPTH, MAX_QUERY_BYTES};
+
 use crate::token::{
     is_field_terminator_word, line_starts_of, quote_identifier, token_start_byte, Token, TokenType,
 };
 use relate_model::identifier::parameter_reference;
-
-/// The reserved prefix of every auto-parameter name. A statement whose
-/// token stream references a parameter with this prefix, or a caller whose
-/// parameter map carries a key with it, is [`NormalizeOutcome::NotCacheable`]
-/// — the caller can never collide with the engine's own names. Private
-/// behind the two named predicates that spell the policy
-/// ([`name_is_auto_parameter`] on names, [`column_carries_auto_parameter`]
-/// on rendered column text): the prefix itself is not surface.
-const AUTO_PARAM_PREFIX: &str = "__AUTO_";
-
-/// Whether a caller's parameter map carries any [`AUTO_PARAM_PREFIX`]-named
-/// key — the one spelling of the reserved-prefix collision policy, consulted
-/// at the one boundary that decides cache participation — the facade's
-/// `Connection::cache_lookup`, before the raw stage — where such a caller
-/// disables the cache for the statement entirely. Generic over the value
-/// type — the policy is about the names only.
-pub fn params_carry_reserved_prefix<V>(params: &std::collections::BTreeMap<String, V>) -> bool {
-    params.keys().any(|name| name_is_auto_parameter(name))
-}
-
-/// Whether `name` is an auto-parameter name ([`AUTO_PARAM_PREFIX`]) —
-/// the one spelling of the prefix test, shared by the caller-map
-/// boundary above and the planner's auto-parameter plan predicate (the
-/// dispatch epilogue's authored-name restore is keyed on the same
-/// prefix, ADR-0663).
-pub fn name_is_auto_parameter(name: &str) -> bool {
-    name.starts_with(AUTO_PARAM_PREFIX)
-}
-
-/// Whether a rendered result column carries the auto-parameter prefix
-/// (the compiled plan spells an unaliased auto-extracted item as the
-/// placeholder) — the text-level half of the epilogue's re-parse
-/// trigger, beside the name-level [`name_is_auto_parameter`]: the two
-/// consult one prefix, one on names the plan holds typed, one on the
-/// column text the plan rendered.
-pub fn column_carries_auto_parameter(column: &str) -> bool {
-    column.contains(AUTO_PARAM_PREFIX)
-}
 
 /// One extracted literal value: the normalizer's own small vocabulary (the
 /// parser crate does not depend on the engine's value type). The facade
@@ -430,24 +394,32 @@ impl<'a, 't> Pass<'a, 't> {
         let placeholder = parameter_reference(&name);
         self.push_rendered(&placeholder);
         let start = self.start_byte(open)?;
-        let end = self.end_byte(close)?;
-        self.spans.push((start, end, placeholder));
+        // The span ends at the literal's own last byte, NOT the next
+        // token's first: the inter-token separator stays outside the
+        // span, so the splice's gap copy reproduces it verbatim (ADR-0718
+        // — the substituted name keeps the source's spacing) and the
+        // spelling below is the span as stored, no trim.
+        let raw_end = self.end_byte(close)?;
+        let literal_end = start + self.src[start..raw_end].trim_end().len();
+        self.spans.push((start, literal_end, placeholder));
         self.values.push((name, value));
         self.spellings
-            .push(self.src[start..end].trim_end().to_string());
+            .push(self.src[start..literal_end].to_string());
         Some(())
     }
 
     fn fresh_name(&mut self, value: &NormalizedValue) -> String {
         // The type tag derives from the value it names — the two cannot
-        // disagree.
+        // disagree — and the name grammar itself has one writer,
+        // `crate::auto_parameter::auto_parameter_name`, the same home the
+        // substitution's reader parses back.
         let kind = match value {
             NormalizedValue::Int(_) => "INT",
             NormalizedValue::Float(_) => "FLOAT",
             NormalizedValue::Str(_) => "STR",
             NormalizedValue::List(_) => "LIST",
         };
-        let name = format!("{AUTO_PARAM_PREFIX}{kind}_{}__", self.next_index);
+        let name = crate::auto_parameter::auto_parameter_name(kind, self.next_index);
         self.next_index += 1;
         name
     }
@@ -513,6 +485,19 @@ impl<'a, 't> Pass<'a, 't> {
         }
     }
 
+    /// Whether `ch` continues a parameter name after a replaced literal —
+    /// the glue rule's one predicate, the crate's own identifier-part
+    /// test (ADR-0182's Unicode 13 tables) plus the two sigils, so the
+    /// splice's separator decision cannot drift from the lexer's name
+    /// grammar: a non-ASCII identifier-part byte directly after a
+    /// placeholder must get the separator as any ASCII one does, or the
+    /// rewritten text would lex the two as one longer name (the
+    /// parameter then is not carried, and the plan's column keeps the
+    /// wrong text).
+    fn continues_parameter_name(ch: char) -> bool {
+        ch == '$' || ch == '_' || crate::unicode_identifier::is_identifier_part(ch)
+    }
+
     /// Build the rewritten statement: the source with every replacement
     /// span spliced out for its placeholder. The span swallows the
     /// inter-token whitespace with the literal, so a separator is put back
@@ -530,13 +515,23 @@ impl<'a, 't> Pass<'a, 't> {
                 out.push_str(&self.src[cursor..*start]);
             }
             out.push_str(placeholder);
-            // The span swallowed the original separator. Put one back only
-            // when the next character would otherwise glue to the
-            // placeholder (`$__AUTO_INT_0__LIMIT`). `1+2` keeps its `+`.
+            // The span ends at the literal's own last byte (the separator
+            // whitespace stays outside it), so the gap copies above and
+            // below reproduce the source's spacing verbatim — the
+            // rewritten text is what the cached plan's column source
+            // derives from, and the authored name comes back by
+            // substituting the placeholder with the stored spelling
+            // (ADR-0718: `1 + 2` stays `1 + 2`, `1  +  2` stays
+            // `1  +  2`). Only the adjacency the span end cannot leave
+            // outside — a literal directly followed by a name-continuing
+            // byte, where `$__AUTO_…` and that byte would lex as ONE
+            // parameter name — gets a separator the source never had: the
+            // one lexing-forced divergence. `1+2` keeps its `+` with
+            // nothing added.
             let glue = self.src[*end..]
                 .chars()
                 .next()
-                .is_some_and(|ch| ch == '$' || ch == '_' || ch.is_ascii_alphanumeric());
+                .is_some_and(Self::continues_parameter_name);
             if glue {
                 out.push(' ');
             }

@@ -80,6 +80,12 @@ pub(super) struct InsertSeed {
     pub(super) template: String,
     pub(super) rewritten: String,
     pub(super) values: Vec<(String, Value)>,
+    /// The `(placeholder, authored spelling)` pairs, parallel to `values`
+    /// (ADR-0718): the insert's raw record remembers them so its raw hits
+    /// never normalize. Shared: the compiled plan this seed produces runs
+    /// with them too (its columns carry the placeholders), so the
+    /// admission and the pending insert clone one Arc, not the Vec.
+    pub(super) spellings: Arc<relate_parser::AuthoredSpellings>,
 }
 
 /// What a cache hit resolved to (stage 3's outcome): the shared plan,
@@ -122,6 +128,9 @@ pub(super) struct PendingCache {
     pub(super) handles: EntryHandles,
     pub(super) text: String,
     pub(super) values: Vec<(String, Value)>,
+    /// Parallel to `values` (ADR-0718): the raw record the publish
+    /// builds remembers the authored spellings — the seed's Arc, moved.
+    pub(super) spellings: Arc<relate_parser::AuthoredSpellings>,
     pub(super) bytes: u64,
 }
 
@@ -215,6 +224,11 @@ impl Connection {
         else {
             return Lookup::Skip;
         };
+        // The authored spellings, zipped once from the normalization's
+        // two parallel vectors (ADR-0718): both lookup arms share them.
+        // Zipped before the values move out of the normalization below.
+        let spellings =
+            relate_parser::authored_spellings(&normalized.values, &normalized.spellings);
         let Some(values) = crate::plan_cache::engine_values(normalized.values) else {
             return Lookup::Skip;
         };
@@ -222,12 +236,14 @@ impl Connection {
             Some(handles) => Lookup::Hit(HitPayload {
                 handles,
                 values: Arc::new(values),
+                spellings: Arc::new(spellings),
                 stage: crate::PlanCacheOutcome::HitTemplate,
             }),
             None => Lookup::Miss(InsertSeed {
                 template: normalized.template,
                 rewritten: normalized.rewritten,
                 values,
+                spellings: Arc::new(spellings),
             }),
         }
     }
@@ -257,6 +273,7 @@ impl Connection {
         handles: EntryHandles,
         stage: crate::PlanCacheOutcome,
         values: &[(String, Value)],
+        spellings: &relate_parser::AuthoredSpellings,
         params: &BTreeMap<String, Value>,
     ) -> Result<CacheHit> {
         let _read = self.inner.read_guard()?;
@@ -376,7 +393,7 @@ impl Connection {
         // helper is idempotent — a stage-1 hit's entry already carries
         // exactly this text and these values, so its re-record is a
         // compare-and-skip, never an allocation.
-        crate::plan_cache::lock(&self.inner).note_raw(&template, cypher, values);
+        crate::plan_cache::lock(&self.inner).note_raw(&template, cypher, values, spellings);
         let stamp = self.gates_classify_under_guard(&plan, &effective)?;
         // The effective map rides out with the plan: the caller merges
         // nothing, clones nothing — the one derivation happened here. The
@@ -408,6 +425,7 @@ impl Connection {
             template,
             rewritten,
             values,
+            spellings,
         } = seed;
         let effective = effective_params(params, &values);
         // ADR-0699: the guarded front-end parse, the same helper the
@@ -460,6 +478,7 @@ impl Connection {
             &handles.plan,
             cypher,
             &values,
+            &spellings,
             &handles.footprint,
         );
         Ok(Some(ParameterizedCompile {
@@ -474,6 +493,7 @@ impl Connection {
                 handles,
                 text: cypher.to_owned(),
                 values,
+                spellings,
                 bytes,
             },
         }))
@@ -498,6 +518,7 @@ impl Connection {
             handles,
             text,
             values,
+            spellings,
             bytes: _,
         } = pending;
         let mut cache = crate::plan_cache::lock(&self.inner);
@@ -506,6 +527,7 @@ impl Connection {
             raw: crate::plan_cache::RawStatement {
                 text: text.into(),
                 values: Arc::new(values),
+                spellings,
             },
             hold,
         });

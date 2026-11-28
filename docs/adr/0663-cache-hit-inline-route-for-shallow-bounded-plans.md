@@ -137,3 +137,14 @@ fact; the wait-shape role ADR-0504 already solved.
   collapsed deep statement), and the route's own suite proves the family
   runs inline on that same 2 MiB stack while cold, deep, unbounded and
   placeholder-bearing statements stay on the worker.
+
+## Later references
+
+- Partially superseded by
+  [[adr/0718-authored-spellings-ride-the-normalization]]: the result
+  epilogue's authored-name restore no longer re-parses the statement
+  (the spellings ride the normalization output and the restore is a
+  substitution), so the third containment conjunct's stated rationale —
+  the re-parse's recursion on an unasserted thread — no longer exists.
+  The conjunct itself stays in force until the widening change that
+  removes it lands with its own tests and measurement.

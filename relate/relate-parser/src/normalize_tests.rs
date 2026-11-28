@@ -2,6 +2,7 @@
 //! rewritten text, and the not-cacheable bailouts.
 
 use super::*;
+use crate::auto_parameter::{authored_spellings, substitute_auto_parameters, AuthoredSpellings};
 use NormalizedValue::Int;
 
 /// Normalize with every preview gate closed (the dialect floor).
@@ -673,4 +674,163 @@ fn deeply_nested_lists_decline_instead_of_recursing() {
         panic!("the inside-cap payload normalizes");
     };
     assert_eq!(inner.template, "RETURN $__AUTO_LIST_0__");
+}
+
+/// The authored-spelling substitution (ADR-0718): a placeholder in
+/// rendered column text becomes its authored spelling, matched by exact
+/// name, quote-aware, in a single pass.
+mod substitute {
+    use super::*;
+
+    /// The spellings of a normalization, zipped through the one
+    /// construction — the substitution's own fixture.
+    fn spellings_of(src: &str) -> AuthoredSpellings {
+        let NormalizeOutcome::Normalized(normalized) = norm(src) else {
+            panic!("expected {src:?} to normalize");
+        };
+        authored_spellings(&normalized.values, &normalized.spellings)
+    }
+
+    /// Every extracted literal's placeholder substitutes back to its
+    /// authored source spelling — the plain column shapes.
+    #[test]
+    fn a_placeholder_substitutes_to_its_authored_spelling() {
+        assert_eq!(
+            substitute_auto_parameters("$__AUTO_INT_0__", &spellings_of("RETURN 1")),
+            "1"
+        );
+        assert_eq!(
+            substitute_auto_parameters(
+                "$__AUTO_INT_0__ + $__AUTO_INT_1__",
+                &spellings_of("RETURN 1 + 2")
+            ),
+            "1 + 2"
+        );
+        // A string literal's spelling keeps its quotes; a list's keeps its
+        // brackets — the authored name is the source text.
+        assert_eq!(
+            substitute_auto_parameters("$__AUTO_STR_0__", &spellings_of("RETURN 'x'")),
+            "'x'"
+        );
+        assert_eq!(
+            substitute_auto_parameters("$__AUTO_LIST_0__", &spellings_of("RETURN [1, 2]")),
+            "[1, 2]"
+        );
+        // Nothing carried: the text passes through untouched.
+        assert_eq!(
+            substitute_auto_parameters(
+                "n.x + $myParam",
+                &spellings_of("MATCH (n) RETURN n.x + $myParam")
+            ),
+            "n.x + $myParam"
+        );
+    }
+
+    /// A lookalike that is not a carried name stays verbatim — the
+    /// call-argument guard keeps string literals out of extraction, so a
+    /// placeholder-shaped string's content must survive the substitution
+    /// of a sibling extracted literal.
+    #[test]
+    fn a_lookalike_that_is_not_carried_stays_verbatim() {
+        // The call-argument guard keeps the string out of extraction, so
+        // the only carried name is the extracted `1`'s `__AUTO_INT_0__`;
+        // the string's `$__AUTO_INT_9__` content is not it — verbatim,
+        // while the real placeholder substitutes.
+        let spellings = spellings_of("RETURN startsWith(n.x, '$__AUTO_INT_9__') + 1");
+        assert_eq!(
+            spellings
+                .iter()
+                .map(|spelling| spelling.placeholder.as_str())
+                .collect::<Vec<_>>(),
+            vec!["__AUTO_INT_0__"]
+        );
+        assert_eq!(
+            substitute_auto_parameters(
+                "startsWith(n.x, '$__AUTO_INT_9__') + $__AUTO_INT_0__",
+                &spellings
+            ),
+            "startsWith(n.x, '$__AUTO_INT_9__') + 1"
+        );
+    }
+
+    /// A carried name inside a string literal is never substituted from
+    /// within its quotes — the quote-aware scan refuses the one case an
+    /// exact-name match alone cannot.
+    #[test]
+    fn a_carried_name_inside_a_string_literal_stays_verbatim() {
+        // The extracted `1` carries `__AUTO_INT_0__`; the string's content
+        // spells the SAME name. Only the unquoted occurrence substitutes.
+        let spellings = spellings_of("RETURN startsWith(n.x, '$__AUTO_INT_0__') + 1");
+        assert_eq!(
+            substitute_auto_parameters(
+                "startsWith(n.x, '$__AUTO_INT_0__') + $__AUTO_INT_0__",
+                &spellings
+            ),
+            "startsWith(n.x, '$__AUTO_INT_0__') + 1"
+        );
+        // A backslash-escaped quote closes nothing; the doubled-quote-free
+        // grammar keeps the span open until the real closer.
+        // The string is a call argument (not extracted), so the only
+        // carried name is the extracted `1`'s `__AUTO_INT_0__`; the
+        // backslash-escaped quote keeps the string span open through the
+        // lookalike, and only the unquoted occurrence substitutes.
+        let spellings = spellings_of(r#"RETURN startsWith(n.x, 'a\'b') + 1"#);
+        assert_eq!(
+            spellings[0].placeholder, "__AUTO_INT_0__",
+            "the call-argument string is not extracted; only the 1 is"
+        );
+        assert_eq!(
+            substitute_auto_parameters(
+                r#"startsWith(n.x, 'a\'$__AUTO_INT_0__') + $__AUTO_INT_0__"#,
+                &spellings
+            ),
+            r#"startsWith(n.x, 'a\'$__AUTO_INT_0__') + 1"#
+        );
+    }
+
+    /// The output is never re-scanned: an extracted string whose authored
+    /// spelling itself contains placeholder-lookalike text lands once.
+    #[test]
+    fn a_spelling_containing_lookalike_text_lands_once() {
+        let spellings = spellings_of("RETURN '$__AUTO_INT_0__'");
+        assert_eq!(spellings[0].placeholder, "__AUTO_STR_0__");
+        assert_eq!(
+            substitute_auto_parameters("$__AUTO_STR_0__", &spellings),
+            "'$__AUTO_INT_0__'"
+        );
+    }
+
+    /// The splice preserves the literal span's trailing whitespace, so a
+    /// multi-space original's spacing survives into the plan's column
+    /// text and the substitution reproduces the source exactly.
+    #[test]
+    fn multi_space_spacing_survives_the_substituted_name() {
+        let spellings = spellings_of("RETURN 1  +  2");
+        assert_eq!(
+            substitute_auto_parameters("$__AUTO_INT_0__  +  $__AUTO_INT_1__", &spellings),
+            "1  +  2"
+        );
+    }
+
+    /// A truncated or malformed name-shaped run copies verbatim: the
+    /// reader refuses a missing index, a missing closing `__`, or a bare
+    /// prefix — the `$` falls through as ordinary text.
+    #[test]
+    fn malformed_name_shapes_copy_verbatim() {
+        let spellings = spellings_of("RETURN 1");
+        for text in [
+            "$__AUTO_INT_",
+            "$__AUTO_INT_x__",
+            "$__AUTO_",
+            "$__AUTO_INT_0_",
+            "$myParam",
+            "$",
+        ] {
+            assert_eq!(
+                substitute_auto_parameters(text, &spellings),
+                text,
+                "{text:?} copies verbatim"
+            );
+        }
+    }
 }

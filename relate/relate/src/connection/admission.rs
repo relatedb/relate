@@ -92,13 +92,13 @@ pub(super) struct Admission {
     /// reading. `None` on every uncached path — a plan the cache never
     /// served has no entry to grade.
     pub(super) cache_template: Option<Arc<str>>,
-    /// The store's resolved preview set, read once under the publication
-    /// guard before the cache lookup (ADR-0378's one owner): every
-    /// consumer after admission — the uncached parse already inside, and
-    /// the dispatch epilogue's authored-name restore, whose re-parse must
-    /// run under the same derived options — reads this copy instead of
-    /// re-opening the guard (ADR-0663).
-    pub(super) preview: relate_core::PreviewFeatures,
+    /// The statement's authored spellings (ADR-0718), one per extracted
+    /// literal, empty on every original-text compile (such a plan never
+    /// carries a placeholder — the reserved-prefix caller check excludes
+    /// the one spelling that could, and an empty list substitutes
+    /// nothing, so no `None` variant is needed). Shared from the cache
+    /// channel that already carried the values.
+    pub(super) spellings: Arc<relate_parser::AuthoredSpellings>,
 }
 
 impl Connection {
@@ -205,7 +205,7 @@ impl Connection {
                         clocks,
                     });
                 }
-                match self.admit_hit(cypher, params, hit, clocks, preview)? {
+                match self.admit_hit(cypher, params, hit, clocks)? {
                     Some(admission) => {
                         // A probe hit that passed the rule AND admitted
                         // is the inline route's own — the observable the
@@ -275,20 +275,30 @@ impl Connection {
         params: &BTreeMap<String, Value>,
         hit: HitPayload,
         clocks: AdmitClocks,
-        preview: relate_core::PreviewFeatures,
     ) -> Result<Option<Admission>> {
         let parse = clocks.parse_started.elapsed();
         // LABS-832: the PLAN phase — the freshness admission (footprint,
         // epoch and grade), a possible replan from the carried AST, the
         // hit verification, and the admission gates.
         let plan_started = Instant::now();
+        // The spellings stay the hit payload's own Arc — handed to the
+        // admission below, never echoed through the CacheHit (the caller
+        // already owned what the echo would return).
+        let spellings = Arc::clone(&hit.spellings);
         let CacheHit {
             plan,
             stamp,
             effective,
             outcome,
             template,
-        } = self.admit_from_cache(cypher, hit.handles, hit.stage, &hit.values, params)?;
+        } = self.admit_from_cache(
+            cypher,
+            hit.handles,
+            hit.stage,
+            &hit.values,
+            &spellings,
+            params,
+        )?;
         // A shared plan was compiled for one literal value. The two
         // value-dependent classes that survive to a hit each have exactly
         // one owner — the bound float/integer site class is vetoed here
@@ -317,7 +327,6 @@ impl Connection {
                 preamble: PreambleMode::Execute,
                 logical: plan,
                 stamp,
-                preview,
             },
             crate::phase_timing::AdmissionTiming {
                 parse,
@@ -332,6 +341,7 @@ impl Connection {
             Some(effective),
             PlanMemory::Cached,
             Some(template),
+            spellings,
         )))
     }
 
@@ -377,13 +387,13 @@ impl Connection {
                 seed,
                 clocks.parse_started,
             )? {
+                let seed_spellings = Arc::clone(&compiled.pending.spellings);
                 let admission = stage_admission(
                     clocks,
                     StagedPlan {
                         preamble: compiled.preamble,
                         logical: Arc::clone(&compiled.logical),
                         stamp: compiled.stamp,
-                        preview,
                     },
                     crate::phase_timing::AdmissionTiming {
                         parse: compiled.parse,
@@ -394,6 +404,11 @@ impl Connection {
                     Some(compiled.effective),
                     PlanMemory::Cacheable(Box::new(compiled.pending)),
                     None,
+                    // The seed's spellings, shared with the pending the
+                    // same Arc way the hit shares its payload's: the
+                    // compiled plan runs with them (its columns carry the
+                    // placeholders), the insert remembers them.
+                    seed_spellings,
                 );
                 if cache_insert_eligible(&admission, cypher) {
                     return Ok(admission);
@@ -423,7 +438,6 @@ impl Connection {
                 preamble: mode,
                 logical,
                 stamp,
-                preview,
             },
             crate::phase_timing::AdmissionTiming {
                 parse,
@@ -434,6 +448,7 @@ impl Connection {
             None,
             PlanMemory::Statement(bytes),
             None,
+            Arc::new(Vec::new()),
         ))
     }
 
@@ -551,6 +566,7 @@ fn stage_admission(
     effective: Option<BTreeMap<String, Value>>,
     memory: PlanMemory,
     cache_template: Option<Arc<str>>,
+    spellings: Arc<relate_parser::AuthoredSpellings>,
 ) -> Admission {
     Admission {
         started: clocks.started,
@@ -563,7 +579,7 @@ fn stage_admission(
         effective,
         memory,
         cache_template,
-        preview: staged.preview,
+        spellings,
     }
 }
 
@@ -577,7 +593,6 @@ struct StagedPlan {
     preamble: PreambleMode,
     logical: Arc<LogicalPlan>,
     stamp: ResultStamp,
-    preview: relate_core::PreviewFeatures,
 }
 
 /// ADR-0503's insert eligibility, read from the finished admission — the

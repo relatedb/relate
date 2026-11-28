@@ -145,15 +145,21 @@ pub(crate) struct PlanCacheEntry {
     pub(crate) hold: Option<PlanHold>,
 }
 
-/// The raw-string fast path's memory: one exact statement text and the
-/// values its literals extracted. The same text always extracts the same
-/// values, so the pair stays valid for as long as the entry does.
+/// The raw-string fast path's memory: one exact statement text, the
+/// values its literals extracted, and each extracted literal's authored
+/// spelling (ADR-0718 — the naming path's substitution input, recorded
+/// once so a raw hit never normalizes). The same text always extracts
+/// the same values and spellings, so the triple stays valid for as long
+/// as the entry does.
 pub(crate) struct RawStatement {
     pub(crate) text: Box<str>,
     /// Shared so a raw hit hands the values out as a pointer clone: the
     /// hit path's only copy is the one it must make anyway, into the
     /// statement's effective parameter map.
     pub(crate) values: Arc<Vec<(String, Value)>>,
+    /// The `(placeholder, authored spelling)` pairs, parallel to
+    /// `values` — shared for the same reason.
+    pub(crate) spellings: Arc<relate_parser::AuthoredSpellings>,
 }
 
 /// The entry's shared handles a lookup hit carries (ADR-0503): its
@@ -232,6 +238,10 @@ impl PlanCacheEntry {
 pub(crate) struct HitPayload {
     pub(crate) handles: EntryHandles,
     pub(crate) values: Arc<Vec<(String, Value)>>,
+    /// The statement's authored spellings (ADR-0718): stage 1's come from
+    /// the entry's recorded triple, stage 2's from the normalization that
+    /// just ran — either way, one pointer clone beside the values.
+    pub(crate) spellings: Arc<relate_parser::AuthoredSpellings>,
     /// Which lookup stage produced the hit (LABS-1120), typed as the
     /// outcome it becomes when admission serves it as carried — the hit
     /// flavor itself, never a second vocabulary it converts into.
@@ -354,9 +364,11 @@ impl PlanCache {
             .position(|entry| entry.raw.text.as_ref() == cypher)?;
         let handles = self.entries[index].handles();
         let values = Arc::clone(&self.entries[index].raw.values);
+        let spellings = Arc::clone(&self.entries[index].raw.spellings);
         let hit = HitPayload {
             handles,
             values,
+            spellings,
             stage: PlanCacheOutcome::HitRawFastPath,
         };
         self.touch_at(index);
@@ -399,6 +411,7 @@ impl PlanCache {
                 &plan,
                 &entry.raw.text,
                 &entry.raw.values,
+                &entry.raw.spellings,
                 &footprint,
             );
             // A re-plan must land even when the pool cannot grow the hold:
@@ -463,7 +476,13 @@ impl PlanCache {
     /// a raw hit carries are, by construction, the ones the entry already
     /// remembers. Ownership is taken only in the record arm, where the
     /// slice is cloned into the entry.
-    pub(crate) fn note_raw(&mut self, template: &str, text: &str, values: &[(String, Value)]) {
+    pub(crate) fn note_raw(
+        &mut self,
+        template: &str,
+        text: &str,
+        values: &[(String, Value)],
+        spellings: &relate_parser::AuthoredSpellings,
+    ) {
         // The same memory bound the insert enforces: a template hit can
         // carry a text far larger than the one the entry was built from
         // (whitespace and comments normalize away), and the raw memory
@@ -475,7 +494,10 @@ impl PlanCache {
         }
         if let Some(index) = self.position_of(template) {
             let entry = &mut self.entries[index];
-            if entry.raw.text.as_ref() == text && entry.raw.values.as_slice() == values {
+            if entry.raw.text.as_ref() == text
+                && entry.raw.values.as_slice() == values
+                && entry.raw.spellings.as_slice() == spellings
+            {
                 return;
             }
             let logical = entry_bytes(
@@ -484,6 +506,7 @@ impl PlanCache {
                 &entry.handles.plan,
                 text,
                 values,
+                spellings,
                 &entry.handles.footprint,
             );
             // A larger raw text is remembered only when the cache hold can
@@ -496,6 +519,7 @@ impl PlanCache {
             entry.raw = RawStatement {
                 text: text.into(),
                 values: Arc::new(values.to_vec()),
+                spellings: Arc::new(spellings.to_vec()),
             };
         }
     }

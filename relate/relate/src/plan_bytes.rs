@@ -28,6 +28,7 @@ pub(crate) fn entry_bytes(
     plan: &LogicalPlan,
     text: &str,
     values: &[(String, Value)],
+    spellings: &[relate_parser::AuthoredSpelling],
     footprint: &PlanFootprint,
 ) -> u64 {
     str_logical_bytes(template)
@@ -35,7 +36,30 @@ pub(crate) fn entry_bytes(
         .saturating_add(plan_bytes(plan))
         .saturating_add(str_logical_bytes(text))
         .saturating_add(values_bytes(values))
+        .saturating_add(spellings_bytes(spellings))
         .saturating_add(footprint_bytes(footprint))
+}
+
+/// Logical bytes of the raw record's authored spellings (ADR-0718): each
+/// pair's two strings — the same charge `values_bytes` makes of the
+/// values they parallel, so the stored naming input is never free.
+fn spellings_bytes(spellings: &[relate_parser::AuthoredSpelling]) -> u64 {
+    pairs_bytes(spellings, |spelling| {
+        (
+            str_logical_bytes(&spelling.placeholder),
+            str_logical_bytes(&spelling.authored),
+        )
+    })
+}
+
+/// The one pairs fold `values_bytes` and `spellings_bytes` share: each
+/// entry's name charge and its payload charge, saturated — the name
+/// charge has one home, never two folds.
+fn pairs_bytes<T>(items: &[T], charge: impl Fn(&T) -> (u64, u64)) -> u64 {
+    items.iter().fold(0u64, |total, item| {
+        let (name, payload) = charge(item);
+        total.saturating_add(name).saturating_add(payload)
+    })
 }
 
 /// Logical bytes of a plan's token footprint (ADR-0687): the property-key
@@ -102,10 +126,8 @@ fn add(bytes: &Cell<u64>, more: u64) {
 }
 
 fn values_bytes(values: &[(String, Value)]) -> u64 {
-    values.iter().fold(0u64, |total, (name, value)| {
-        total
-            .saturating_add(str_logical_bytes(name))
-            .saturating_add(value.logical_bytes())
+    pairs_bytes(values, |(name, value)| {
+        (str_logical_bytes(name), value.logical_bytes())
     })
 }
 
@@ -313,6 +335,7 @@ mod tests {
             &plan,
             "RETURN 1 AS one",
             &[],
+            &[],
             &PlanFootprint::default(),
         );
         let seek = |planned: u64, bound: i64| SeekRecord {
@@ -329,7 +352,7 @@ mod tests {
             seeks: vec![seek(3, 1), seek(5, 2)],
             absent: false,
         };
-        let charged = entry_bytes("t", &query, &plan, "RETURN 1 AS one", &[], &footprint);
+        let charged = entry_bytes("t", &query, &plan, "RETURN 1 AS one", &[], &[], &footprint);
         assert_eq!(
             charged - bare,
             2 * std::mem::size_of::<(TokenId, Option<u64>)>() as u64
