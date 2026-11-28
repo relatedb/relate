@@ -52,19 +52,24 @@ pub(crate) struct RenderOpts {
 /// the bundle in one place, and `.info` — the one other caller — reads only
 /// `code`.
 pub(crate) struct StatementRun {
+    /// The agent-feedback hint's prefill fact for a failed run: the
+    /// classified code name, recorded by the arm that classified it.
+    pub(crate) hint_code: Option<&'static str>,
     pub(crate) code: i32,
     pub(crate) effect: StatementEffect,
     pub(crate) plan_produced: bool,
 }
 
 impl StatementRun {
-    /// A run that executed nothing: the failure already reported, so there
-    /// are no effect facts to carry.
-    fn failed(code: i32) -> Self {
+    /// A failure that carries the agent-feedback hint's prefill fact (the
+    /// classified code name) out to the process-stderr wrapper — the
+    /// injected-writer report itself stays hint-free.
+    fn failed_with_code(hint_code: Option<&'static str>, code: i32) -> Self {
         Self {
             code,
             effect: StatementEffect::None,
             plan_produced: false,
+            hint_code,
         }
     }
 }
@@ -103,7 +108,7 @@ pub(crate) fn exec_relate_query(
     // pointer exists for. The injected-writer form stays hint-free, so a
     // test's captured sinks are clean.
     if run.code != 0 {
-        crate::agent_feedback_cmd::write_hint(&mut io::stderr());
+        crate::agent_feedback_cmd::write_hint(&mut io::stderr(), run.hint_code);
     }
     run
 }
@@ -136,13 +141,10 @@ fn exec_relate_query_to(
     conn.set_statement_timeout(timeout.filter(|limit| !limit.is_zero()));
     let result = conn.query_with_params(query, params.clone());
     if let (Err(relate::Error::TimedOut { .. }), Some(limit)) = (&result, timeout) {
-        return StatementRun::failed(errors::report_timeout_to(
-            &formatter.mode,
-            limit,
-            progress,
-            out,
-            diagnostics,
-        ));
+        return StatementRun::failed_with_code(
+            Some(errors::timeout_code_name()),
+            errors::report_timeout_to(&formatter.mode, limit, progress, out, diagnostics),
+        );
     }
     match result {
         Ok(r) => {
@@ -244,6 +246,7 @@ fn exec_relate_query_to(
                     code: 1,
                     effect: r.effect,
                     plan_produced,
+                    hint_code: None,
                 };
             }
 
@@ -261,6 +264,7 @@ fn exec_relate_query_to(
             // and keeps its effect for the transaction ledger while its plan
             // table is the run's own report.
             StatementRun {
+                hint_code: None,
                 // Exit 1 when the render failed OR the plan was refused
                 // (ADR-0628: for an EXPLAIN the plan IS the payload) — the
                 // effect is the execution's fact either way and still
@@ -273,17 +277,24 @@ fn exec_relate_query_to(
         // ADR-0230: strictly a fallback after the failed parse — the
         // suggestion line renders only for a syntax error whose first word
         // is a near-miss of a command; the envelope is unchanged.
-        Err(e) => StatementRun::failed(errors::report_query_error_to(
-            "",
-            &e,
-            &formatter.mode,
-            errors::ReportCtx {
-                progress,
-                suggestion: crate::suggest::command_suggestion_line(&e, query),
-            },
-            out,
-            diagnostics,
-        )),
+        Err(e) => StatementRun::failed_with_code(
+            // The hint's prefill fact: this error's classified code name
+            // (the exit table's own). The injected-writer report below
+            // never writes the hint — the process-stderr wrapper above
+            // does, once this arm has returned, with this code.
+            Some(errors::classified_code_name(&e)),
+            errors::report_query_error_to(
+                "",
+                &e,
+                &formatter.mode,
+                errors::ReportCtx {
+                    progress,
+                    suggestion: crate::suggest::command_suggestion_line(&e, query),
+                },
+                out,
+                diagnostics,
+            ),
+        ),
     }
 }
 

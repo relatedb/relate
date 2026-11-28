@@ -62,6 +62,7 @@ mod extensions;
 // its mode.
 mod agent_feedback_cmd;
 mod feedback_cmd;
+mod lifecycle;
 // The feedback grant ask (ADR-0588 §3 as revised): one module for both ask
 // surfaces — the first-run ask and the windowed install/upgrade resurface —
 // so their preconditions and persistence are one shape.
@@ -260,7 +261,7 @@ fn main() {
     // already exited inside flags::parse — see `conflict_error`'s doc for
     // the ADR-0306 §6 policy.
     if let Some(cmd) = lifecycle {
-        run_lifecycle_command(cmd, &mut telemetry, feedback_surface);
+        lifecycle::run_lifecycle_command(cmd, &mut telemetry, feedback_surface);
     }
 
     // Stdin terminal-ness is read once per run so the classification below
@@ -394,6 +395,9 @@ fn main() {
     // the resolutions that needed it first.
     let output_mode_choice =
         mode.unwrap_or_else(|| default_mode(stdout_is_tty, agent_mode.is_on()));
+    // The hint's prefill fact: a statement run's failures name the query
+    // surface, the one visible command a statement run is.
+    agent_feedback_cmd::set_run_command("query");
     run_relate(RunOpts {
         db_path: &db_path,
         session,
@@ -641,8 +645,10 @@ fn exit_help(telemetry: &mut telemetry::Telemetry, page: &str) -> ! {
 pub(crate) fn print_error(msg: impl std::fmt::Display) {
     write_error(&mut io::stderr(), msg);
     // LABS-1736: the pointer is the agent channel's own concern — the hint
-    // call owns its gate and latch (see `agent_feedback_cmd`).
-    agent_feedback_cmd::write_hint(&mut io::stderr());
+    // call owns its gate and latch (see `agent_feedback_cmd`). This sink
+    // holds no classified code, so the prefill carries the run's command
+    // word alone; the classified report paths pass their own code.
+    agent_feedback_cmd::write_hint(&mut io::stderr(), None);
 }
 
 /// The sanitized stderr line for a success or notice announcement —
@@ -651,6 +657,17 @@ pub(crate) fn print_error(msg: impl std::fmt::Display) {
 /// run must leave the latch unspent for the error that may still come.
 pub(crate) fn print_notice(msg: impl std::fmt::Display) {
     write_error(&mut io::stderr(), msg);
+}
+
+/// The one emission of a probe's optional advisory note (ADR-0358 §6): a
+/// proceeding run's note goes through the notice sink, so the
+/// agent-feedback hint's once-per-run latch stays for a failure that may
+/// still come. The route/probe sites hand their `note` here instead of
+/// each re-spelling the guard.
+pub(crate) fn print_advisory_note(note: Option<&str>) {
+    if let Some(note) = note {
+        print_notice(note);
+    }
 }
 
 /// [`print_error`]'s writer form: the one sanitized rendering of a
@@ -671,183 +688,6 @@ pub(crate) fn write_error(sink: &mut dyn std::io::Write, msg: impl std::fmt::Dis
 /// dropped-on-failure rule.
 pub(crate) fn write_report(sink: &mut dyn std::io::Write, line: impl std::fmt::Display) {
     let _ = writeln!(sink, "{line}");
-}
-
-/// Run a parsed lifecycle command and exit with its status code: 0 on
-/// success, 2 for usage errors (unknown agent) and commands not included in
-/// this build, 1 for runtime errors. Emits `RELATE-CLI_COMMAND`
-/// (ADR-0079 §4) and flushes before exiting.
-fn run_lifecycle_command(
-    cmd: LifecycleCommand,
-    telemetry: &mut telemetry::Telemetry,
-    surface: agent_mode::FeedbackSurface,
-) -> ! {
-    // The lifecycle run's delivery window (ADR-0615): the drain starts
-    // here — the command's own runtime (a download, a copy, a serve
-    // lifetime) is the window it POSTs in, instead of the microseconds
-    // after the command body that the event's emit used to allow — and
-    // the exit joins it. The off transition is the one carve-out
-    // (the vocabulary predicate): a run about to forbid delivery never
-    // starts one (ADR-0545 §5).
-    if !cmd.forbids_delivery_window() {
-        telemetry.deliver_backlog_at_exit();
-    }
-    // The command word for the RELATE-CLI_COMMAND event, captured before
-    // the match consumes cmd.
-    let name = cmd.name();
-    match cmd {
-        // A per-command `--help` (after a compiled-in command word) prints
-        // the command's help page and exits 0 through the shared flush path:
-        // the same two events as the top-level help, no COMMAND event, and
-        // nothing after the word parsed or executed. A mode-gated topic the
-        // run does not own is the absent surface's unknown command instead
-        // (ADR-0588 §3).
-        LifecycleCommand::Help { topic } => match topic.surface() {
-            Some(own) if own != surface => {
-                let exit_code = feedback_cmd::refuse_absent_surface(topic.word(), surface);
-                finish_command(telemetry, name, None, exit_code);
-            }
-            _ => exit_help(telemetry, &help::command_help(topic)),
-        },
-        // The resolved action's pre-scanned page (`run <name> --help`):
-        // the same help-exit sequence as every command's page — the two
-        // help events, no COMMAND event, nothing runs (LABS-552).
-        #[cfg(feature = "extensions")]
-        LifecycleCommand::RunHelp { page } => exit_help(telemetry, &page),
-        LifecycleCommand::NotIncluded { command } => {
-            print_error(format!(
-                "Error: the '{command}' command is not included in this build of relate"
-            ));
-            exit_flushed(telemetry, 2);
-        }
-        #[cfg(feature = "skill")]
-        LifecycleCommand::Skill { args } => {
-            // The typed action, captured before run() consumes the args: the
-            // ask gate reads the variant, the telemetry word derives from it
-            // (LABS-1737).
-            let action = args.action;
-            let asking_run = matches!(
-                action,
-                skill_cmd::SkillAction::Mutate(skill_cmd::MutateAction::Install)
-            );
-            let exit_code = skill_cmd::run(args);
-            feedback_ask::ask_after_command(exit_code, surface, asking_run);
-            finish_command(telemetry, name, Some(action.as_str()), exit_code);
-        }
-        #[cfg(feature = "upgrade")]
-        LifecycleCommand::Upgrade { opts } => {
-            // LABS-1737: a real upgrade (never a --check) is the windowed
-            // ask's resurface surface; the gate lives in the ask module.
-            let check = opts.check;
-            let exit_code = upgrade_cmd::run(opts);
-            feedback_ask::ask_after_command(exit_code, surface, !check);
-            finish_command(telemetry, name, check.then_some("check"), exit_code);
-        }
-        LifecycleCommand::Feedback { args } => {
-            // The mode gate runs before the grammar: the absent surface is
-            // an unknown command, never this grammar's usage error.
-            if surface != agent_mode::FeedbackSurface::Human {
-                let exit_code = feedback_cmd::refuse_absent_surface("feedback", surface);
-                finish_command(telemetry, name, None, exit_code);
-            }
-            let action = match feedback_cmd::parse_action(&args) {
-                Ok(action) => action,
-                Err(err) => flags::command_usage_error(help::HelpTopic::Feedback, &err),
-            };
-            let action_word = action.as_str();
-            let exit_code = feedback_cmd::run(action);
-            finish_command(telemetry, name, Some(action_word), exit_code);
-        }
-        LifecycleCommand::AgentFeedback { args } => {
-            if surface != agent_mode::FeedbackSurface::Agent {
-                let exit_code = feedback_cmd::refuse_absent_surface("agent-feedback", surface);
-                finish_command(telemetry, name, None, exit_code);
-            }
-            let input = match agent_feedback_cmd::parse(&args) {
-                Ok(input) => input,
-                Err(err) => flags::command_usage_error(help::HelpTopic::AgentFeedback, &err),
-            };
-            let exit_code = agent_feedback_cmd::run(&input);
-            finish_command(telemetry, name, None, exit_code);
-        }
-        #[cfg(feature = "telemetry")]
-        LifecycleCommand::Telemetry { action } => {
-            // The command owns the handle: `off` disarms it (one ordered
-            // transition, ADR-0545 §5) and `status` reports the state
-            // this same handle resolved, so env layers override the
-            // config file exactly as in Telemetry::new.
-            let exit_code = telemetry_cmd::run(action, telemetry);
-            finish_command(telemetry, name, Some(action.as_str()), exit_code);
-        }
-        #[cfg(feature = "pull")]
-        LifecycleCommand::Pull { cmd } => {
-            let exit_code = pull_cmd::run(cmd);
-            finish_command(telemetry, name, None, exit_code);
-        }
-        #[cfg(feature = "push")]
-        LifecycleCommand::Push { cmd } => {
-            let exit_code = push_cmd::run(cmd);
-            finish_command(telemetry, name, None, exit_code);
-        }
-        LifecycleCommand::Clone { cmd } => {
-            let exit_code = clone_cmd::run(cmd);
-            finish_command(telemetry, name, None, exit_code);
-        }
-        #[cfg(feature = "extensions")]
-        LifecycleCommand::Run { cmd } => {
-            // ADR-0429 §9: the report says command `run`, action
-            // `extension` — never a user-chosen name (ADR-0079
-            // anonymity), which is also what keeps the event's
-            // `&'static str` fields honest: the installed name is
-            // data, not a static.
-            let exit_code = crate::extensions::run::run(cmd, telemetry);
-            finish_command(telemetry, name, Some("extension"), exit_code);
-        }
-        #[cfg(feature = "info")]
-        LifecycleCommand::Info { cmd } => {
-            let exit_code = info_cmd::run(cmd);
-            finish_command(telemetry, name, None, exit_code);
-        }
-        #[cfg(feature = "serve")]
-        LifecycleCommand::Serve { cmd } => {
-            // `serve` runs until SIGINT/SIGTERM (ADR-0232), then returns the
-            // shutdown code; the COMMAND event and exit happen here.
-            let exit_code = serve_cmd::run(cmd);
-            finish_command(telemetry, name, None, exit_code);
-        }
-        #[cfg(feature = "agent-context")]
-        LifecycleCommand::AgentContext { command } => {
-            let exit_code = agent_context_cmd::run(command);
-            finish_command(telemetry, name, command.map(|spec| spec.word), exit_code);
-        }
-        #[cfg(feature = "extensions")]
-        LifecycleCommand::Extension { action } => {
-            // ADR-0431 §3: the action word is the event's action — an
-            // `&'static str`, never a package name (ADR-0079 anonymity),
-            // the `skill` command's pattern.
-            let action_word = action.as_str();
-            let exit_code = extension_cmd::run(action);
-            finish_command(telemetry, name, Some(action_word), exit_code);
-        }
-    }
-}
-
-/// The shared tail of every [`run_lifecycle_command`] arm that ran a
-/// command: emit `RELATE-CLI_COMMAND` (ADR-0079 §4) and exit through
-/// [`exit_flushed`]. `name` is the command word as telemetry reports it
-/// (`update` reports "upgrade"); `action` is the sub-action, if any.
-fn finish_command(
-    telemetry: &mut telemetry::Telemetry,
-    name: &'static str,
-    action: Option<&'static str>,
-    exit_code: i32,
-) -> ! {
-    telemetry.emit(telemetry::Event::Command {
-        command: name,
-        action,
-        success: exit_code == 0,
-    });
-    exit_flushed(telemetry, exit_code);
 }
 
 /// The one argv builder for the command-parser unit tests (the `*_cmd`

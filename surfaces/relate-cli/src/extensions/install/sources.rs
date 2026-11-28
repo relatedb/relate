@@ -83,10 +83,8 @@ pub(super) fn install_from_index(
              relate extension install {name} --from DIR"
         )),
     )?;
-    if let Some(note) = &probe.note {
-        // ADR-0358 §6's one fallback note, like the upgrade prints it.
-        crate::print_error(note);
-    }
+    // ADR-0358 §6's one fallback note, through the shared advisory sink.
+    crate::print_advisory_note(probe.note.as_deref());
     let tarball = probe.probe_bytes;
     // Change nothing on a mismatch: the extensions dir keeps its prior state.
     verify_checksum(row.asset, &row.sha256, &tarball)?;
@@ -437,11 +435,8 @@ pub(super) fn install_from_github(
              relate extension install {name} --from DIR"
         )),
     )?;
-    if let Some(note) = &probe.note {
-        // ADR-0358 §6's one fallback note, printed sanitized like the
-        // channel install's.
-        crate::print_error(note);
-    }
+    // ADR-0358 §6's one fallback note, through the shared advisory sink.
+    crate::print_advisory_note(probe.note.as_deref());
     let tarball = probe.probe_bytes;
     verify_checksum(&resolved.asset, &pin.asset_sha256, &tarball)?;
     let manifest = unpack_and_check(name, &tarball, staged)?;

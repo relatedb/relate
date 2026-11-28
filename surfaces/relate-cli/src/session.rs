@@ -543,9 +543,14 @@ impl Exec<'_> {
         // bookmark; the shell's `.commit` reports success only — no
         // bookmark echo is printed.
         let code = report(self.conn.commit().map(|_| ()));
-        if let Some(note) = zero_effect::commit_note(code, self.query_ctx.source, self.txn_ledger) {
-            print_error(note);
-        }
+        // A proceeding run's summary is an advisory, not a diagnostic: the
+        // one emission, so it never spends the agent-feedback hint's
+        // once-per-run latch.
+        crate::print_advisory_note(zero_effect::commit_note(
+            code,
+            self.query_ctx.source,
+            self.txn_ledger,
+        ));
         self.reset_ledger(code);
         code
     }
@@ -592,11 +597,10 @@ impl Exec<'_> {
             },
         );
         let code = run.code;
-        if let Some(note) =
-            zero_effect::note_run(&mut self.txn_ledger, self.query_ctx.source, &run, at)
-        {
-            print_error(note);
-        }
+        // A proceeding run's note is an advisory: the one emission.
+        crate::print_advisory_note(
+            zero_effect::note_run(&mut self.txn_ledger, self.query_ctx.source, &run, at).as_deref(),
+        );
         code
     }
 

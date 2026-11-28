@@ -110,6 +110,7 @@ mod note_run_tests {
             code,
             effect,
             plan_produced: false,
+            hint_code: None,
         }
     }
 

@@ -198,13 +198,10 @@ fn run_inner(opts: &UpgradeOpts) -> Result<(), UpgradeError> {
         token.as_deref(),
         Some(&format!("reinstall manually: {INSTALL_ONE_LINER}")),
     )?;
-    if let Some(note) = &probe.note {
-        // ADR-0358 §6: the one fallback note, through the shared sanitized
-        // stderr writer like every other interpolated diagnostic. The route
-        // module returns the note instead of printing it, so all console
-        // output stays here.
-        crate::print_error(note);
-    }
+    // ADR-0358 §6's one fallback note, through the shared advisory sink
+    // (the route module returns the note instead of printing it, so all
+    // console output stays here).
+    crate::print_advisory_note(probe.note.as_deref());
     let sig_bytes = probe.route.download(SUMS_SIG_ASSET)?;
     // Authenticate the manifest before trusting any hash it carries
     // (ADR-0115): the signature must verify over the exact SHA256SUMS bytes.
@@ -218,7 +215,9 @@ fn run_inner(opts: &UpgradeOpts) -> Result<(), UpgradeError> {
     // requested version predates the header (ADR-0457 §3).
     match bind_signed_version(&sums, tag, latest_version)? {
         ManifestBinding::Authenticated => {}
-        ManifestBinding::Legacy => crate::print_error(format!(
+        // A run-continuing advisory like the fallback note above: the
+        // notice sink, so it never spends the hint's latch.
+        ManifestBinding::Legacy => crate::print_notice(format!(
             "warning: SHA256SUMS from {tag} has no signed version header (legacy manifest, \
              accepted only at or below {})",
             legacy_ceiling_label()

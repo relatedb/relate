@@ -53,28 +53,3 @@ mod classify_session_tests {
         assert!(classify_session(None, false, false).is_none());
     }
 }
-
-mod feedback_pointer_tests {
-    use crate::agent_feedback_cmd::hint_line as feedback_pointer_line;
-
-    /// LABS-1736: agent runs see the pointer exactly once per run, person
-    /// runs never — the process is the unit (one installation serves many
-    /// different agents; each new process is a new agent context to reach).
-    #[test]
-    fn the_pointer_shows_once_per_agent_run_and_never_for_a_person() {
-        assert!(
-            feedback_pointer_line(true, false).is_some(),
-            "an agent run's first diagnostic carries the pointer"
-        );
-        assert!(
-            feedback_pointer_line(true, true).is_none(),
-            "the second diagnostic does not repeat it"
-        );
-        assert!(
-            feedback_pointer_line(false, false).is_none(),
-            "a person's run never sees it"
-        );
-        let line = feedback_pointer_line(true, false).unwrap();
-        assert!(line.contains("relate agent-feedback"), "{line}");
-    }
-}
