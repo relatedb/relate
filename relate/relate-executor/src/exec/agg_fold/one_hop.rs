@@ -29,7 +29,9 @@ use crate::store::RelTypes;
 
 use super::super::candidates::{node_ok, oriented_start, resolve_rel_seek, SeekedRel};
 use super::super::match_folds::FoldCtx;
-use super::super::pushdown::flatten_and_owned;
+use super::super::pushdown::{
+    conjuncts_hold, flatten_and_owned, match_scope, ready_conjuncts, Residual,
+};
 use super::super::scope::{for_each_pattern_bound_name, visible_keys};
 use super::super::WalkTallies;
 use super::{
@@ -407,10 +409,13 @@ impl<'a> OneHopFold<'a> {
         self.offer_hop(base, rid, eid, rung)
     }
 
-    /// The start-binding preamble both paths share: the start node's
+    /// The start-admission preamble both paths share: the start node's
     /// label/property checks, then the row clone with the node stub
-    /// bound. `None` declines the start.
-    fn start_base(&self, row: &Row, sid: NodeId) -> Result<Option<Row>> {
+    /// bound, then the conjuncts only the start decides (`start_ready`,
+    /// derived once per input row): a start failing one has no surviving
+    /// hop, so its walk is skipped. The per-hop offer still re-evaluates
+    /// the whole WHERE, so this only prunes. `None` declines the start.
+    fn start_base(&self, row: &Row, sid: NodeId, start_ready: &[&Expr]) -> Result<Option<Row>> {
         let Self {
             graph,
             path,
@@ -422,6 +427,9 @@ impl<'a> OneHopFold<'a> {
         }
         let mut base = row.clone();
         bind_node_seat(&path.nodes[0], &mut base, graph, sid);
+        if !conjuncts_hold(graph, &base, start_ready, output.params)? {
+            return Ok(None);
+        }
         Ok(Some(base))
     }
 
@@ -453,6 +461,17 @@ impl<'a> OneHopFold<'a> {
             .map(|name| name.to_string());
         for row in rows {
             let rung = RowRung::past(row, [node_var.as_deref(), rel_var.as_deref()]);
+            // Derived once per input row, over the walker's own scope (the
+            // row's visible names plus the names the pattern binds): a
+            // conjunct naming only the start variable is decidable on the
+            // start node before any of its hops walk.
+            let scope = match_scope(graph, row, std::slice::from_ref(self.path));
+            let residual = Residual {
+                conjuncts: &conjuncts,
+                scope: &scope,
+            };
+            let start_ready =
+                ready_conjuncts(&residual, row, self.path.nodes[0].variable.as_ref(), &[]);
             // LABS-161: an elementId()/id() equality on the rel variable (or
             // a row-bound rel) seeks the rel directly instead of scanning
             // every start node's adjacency per row.
@@ -467,7 +486,7 @@ impl<'a> OneHopFold<'a> {
                 FoldSeek::Decline => {}
                 FoldSeek::Gone => continue,
                 FoldSeek::Anchored(sid, rid) => {
-                    if let Some(base) = self.start_base(row, sid)? {
+                    if let Some(base) = self.start_base(row, sid, &start_ready)? {
                         // LABS-448: the walk phase — the seek route's hop runs
                         // the same shared `accept` (the `tallies.walk()`
                         // bump and `graph.hop` read the `Rels` kind counts), so
@@ -499,7 +518,7 @@ impl<'a> OneHopFold<'a> {
             )?;
             for sid in starts {
                 self.graph.cancel_tick()?;
-                let Some(base) = self.start_base(row, sid)? else {
+                let Some(base) = self.start_base(row, sid, &start_ready)? else {
                     continue;
                 };
                 crate::ctx::phase_walk(|| {

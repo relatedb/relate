@@ -169,3 +169,19 @@ fn one_hop_fold_start_scan_answers_an_empty_seek_with_no_rows() {
     assert!(rows.rows.is_empty());
     assert_eq!(walks, 0, "an empty seek walks nothing: {walks}");
 }
+
+#[test]
+fn one_hop_fold_hoists_an_unseekable_start_conjunct_before_the_walk() {
+    // `toLower(e.id)` is no seek, so the funnel returns every entity; the
+    // conjunct names only the start, so a start that fails it must not
+    // walk its adjacency (only `e0`'s 3 mentions walk, not all 8).
+    let matched = "MATCH (e:Entity)<-[r:RESOLVED_TO]-(m:Mention) WHERE toLower(e.id) = 'e0'";
+    let (stmt, held) = written_and_held(matched, REST);
+    assert_agrees(&stmt, &held);
+    let (rows, walks) = walked(&stmt);
+    assert_eq!(
+        rows.rows,
+        vec![grouped("e0", "exact", 2), grouped("e0", "plural", 1)]
+    );
+    assert_eq!(walks, 3, "the start conjunct prunes the walk: {walks}");
+}
