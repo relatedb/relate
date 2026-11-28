@@ -1,3 +1,4 @@
+use crate::vector::coords::VectorCoords;
 use crate::vector::float16::{bfloat16_bits, f16_bits_to_f32, f32_to_f16_bits};
 use chrono::{DateTime, FixedOffset, NaiveDate, NaiveDateTime, NaiveTime};
 use indexmap::IndexMap;
@@ -195,6 +196,20 @@ pub fn float_text(f: f64) -> String {
     rendered
 }
 
+/// Why [`VectorCoordKind::coerce`] rejected a coordinate — the reason
+/// vocabulary the boundary that renders it maps to its typed error
+/// (ADR-0706); the model owns no user-facing sentence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CoordError {
+    /// Not finite (a NaN is only tolerated for the integer kinds, where
+    /// it coerces to zero, matching live Neo4j).
+    NonFinite,
+    /// Truncated value outside the kind's integer width.
+    Overflow,
+    /// The float does not survive the kind's precision.
+    Inexact,
+}
+
 /// A vector coordinate type (CIP-216/CIP-200): the numeric types valid
 /// inside `VECTOR<...>`/`VECTOR(...)`. `Int64`/`Float64` double as ordinary
 /// plain property types (aliases for `INTEGER`/`FLOAT`) outside a vector
@@ -335,6 +350,43 @@ impl VectorCoordKind {
     /// converted by their own path.
     pub fn is_exact(self, f: f64) -> bool {
         f.is_finite() && self.narrow_float(f) == Some(f)
+    }
+
+    /// Coerce one `vector()` coordinate to this kind's `Coord` — the one
+    /// spelling of the kind→family mapping and the per-kind value rules
+    /// (integer truncation/width, float narrowing/finiteness), beside
+    /// `holds_int`/`narrow_float`. `Err` carries the caller-facing
+    /// reason; the executor maps it to its typed errors.
+    pub fn coerce(self, n: f64) -> Result<crate::Coord, CoordError> {
+        if self.is_integer() {
+            let n = if n.is_nan() { 0.0 } else { n };
+            if !n.is_finite() {
+                return Err(CoordError::NonFinite);
+            }
+            let truncated = n.trunc();
+            let in_cast_range = truncated >= i64::MIN as f64 && truncated <= i64::MAX as f64;
+            let value = truncated as i64;
+            if !(in_cast_range && self.holds_int(value)) {
+                return Err(CoordError::Overflow);
+            }
+            Ok(crate::Coord::I(value))
+        } else {
+            if !n.is_finite() {
+                return Err(CoordError::NonFinite);
+            }
+            self.narrow_float(n)
+                .map(crate::Coord::F)
+                .ok_or(CoordError::Inexact)
+        }
+    }
+
+    /// Whether this kind lives in the packed `f32` family — the one
+    /// predicate every f32-membership test reads (ADR-0706).
+    pub fn is_f32_family(self) -> bool {
+        matches!(
+            self,
+            VectorCoordKind::Float16 | VectorCoordKind::BFloat16 | VectorCoordKind::Float32
+        )
     }
 
     /// Whether the integer `n` is a coordinate this kind holds — within
@@ -511,15 +563,14 @@ pub enum CypherValue {
     Point(PointValue),
     Geometry(GeometryValue),
     /// CIP-200 VECTOR runtime value: a fixed-length, homogeneously-typed
-    /// numeric vector distinct from `List`. `values` elements are always
-    /// `CypherValue::Int` when `coord.is_integer()`, `CypherValue::Float`
-    /// otherwise (never `Null` or any other variant -- enforced by the
-    /// `vector()` constructor, the only way to produce one). `dim` is
-    /// always `values.len()`.
+    /// numeric vector distinct from `List`, its coordinates packed per
+    /// family (ADR-0706). Homogeneous and kind-exact by construction —
+    /// the canonical [`CypherValue::vector`] constructor is the only way
+    /// to produce one. The dimension is `coords.len()` — carried by the
+    /// family buffer, never a second field that could desync.
     Vector {
         coord: VectorCoordKind,
-        dim: usize,
-        values: Vec<CypherValue>,
+        coords: VectorCoords,
     },
 }
 
@@ -527,6 +578,22 @@ impl CypherValue {
     /// Returns true if this value is Null.
     pub fn is_null(&self) -> bool {
         matches!(self, CypherValue::Null)
+    }
+
+    /// The one way a `Vector` is built (ADR-0706): `dim` is
+    /// `coords.len()`, and no site constructs the variant by hand, so the
+    /// packed form cannot desync from `coord` or `dim`. The constructor
+    /// owns the whole exactness invariant
+    /// ([`VectorCoords::assert_conforms`]) — family/kind pairing and
+    /// every coordinate's width and precision — so no consumer downstream
+    /// re-validates (the encode-side checks this replaces lived in
+    /// `serde_value`). User-input rejection stays typed at the coercion
+    /// boundaries (`vector()`'s Overflow/TypeError, the serde decoder's
+    /// fail-closed paths); this assert fires only on an engine bug that
+    /// bypasses them.
+    pub fn vector(coord: VectorCoordKind, coords: VectorCoords) -> CypherValue {
+        coords.assert_conforms(coord);
+        CypherValue::Vector { coord, coords }
     }
 
     /// True for the five temporal variants (`Date`, `Time`, `DateTime`,
@@ -842,15 +909,20 @@ impl fmt::Display for CypherValue {
             CypherValue::Duration(d) => write!(f, "{d}"),
             CypherValue::Point(p) => write!(f, "{p}"),
             CypherValue::Geometry(g) => write!(f, "{g}"),
-            CypherValue::Vector { coord, dim, values } => {
+            CypherValue::Vector { coord, coords } => {
                 write!(f, "vector([")?;
-                for (i, v) in values.iter().enumerate() {
+                for (i, c) in coords.iter().enumerate() {
                     if i > 0 {
                         write!(f, ", ")?;
                     }
-                    write!(f, "{v}")?;
+                    write!(f, "{c}")?;
                 }
-                write!(f, "], {}, {} NOT NULL)", dim, coord.canonical_name())
+                write!(
+                    f,
+                    "], {}, {} NOT NULL)",
+                    coords.len(),
+                    coord.canonical_name()
+                )
             }
         }
     }
@@ -892,15 +964,20 @@ impl PartialEq for CypherValue {
             (
                 CypherValue::Vector {
                     coord: ca,
-                    dim: da,
-                    values: va,
+                    coords: va,
                 },
                 CypherValue::Vector {
                     coord: cb,
-                    dim: db,
-                    values: vb,
+                    coords: vb,
                 },
-            ) => ca == cb && da == db && va == vb,
+            ) => {
+                // The one vector-equality policy (ADR-0706): same kind,
+                // elementwise-exact numeric coordinates — the same rule
+                // the scalar arms apply and the core value's
+                // `eq_non_null` shares, so `vector([1], … FLOAT)` equals
+                // its integer spelling on both value types.
+                ca == cb && va.numeric_eq(vb)
+            }
             (
                 CypherValue::Path {
                     nodes: n1,
@@ -1261,22 +1338,16 @@ mod tests {
 
     #[test]
     fn test_vector_display() {
-        let v = CypherValue::Vector {
-            coord: VectorCoordKind::Int64,
-            dim: 3,
-            values: vec![
-                CypherValue::Int(1),
-                CypherValue::Int(2),
-                CypherValue::Int(3),
-            ],
-        };
+        let v = CypherValue::vector(
+            VectorCoordKind::Int64,
+            VectorCoords::from_int(vec![1i64, 2, 3]),
+        );
         assert_eq!(format!("{v}"), "vector([1, 2, 3], 3, INTEGER NOT NULL)");
 
-        let float_v = CypherValue::Vector {
-            coord: VectorCoordKind::Float32,
-            dim: 2,
-            values: vec![CypherValue::Float(1.0), CypherValue::Float(2.5)],
-        };
+        let float_v = CypherValue::vector(
+            VectorCoordKind::Float32,
+            VectorCoords::from_f32(vec![1.0f32, 2.5]),
+        );
         assert_eq!(
             format!("{float_v}"),
             "vector([1.0, 2.5], 2, FLOAT32 NOT NULL)"
@@ -1285,26 +1356,23 @@ mod tests {
 
     #[test]
     fn test_vector_equality_compares_coord_dim_and_values() {
-        let a = CypherValue::Vector {
-            coord: VectorCoordKind::Int32,
-            dim: 2,
-            values: vec![CypherValue::Int(1), CypherValue::Int(2)],
-        };
+        let a = CypherValue::vector(
+            VectorCoordKind::Int32,
+            VectorCoords::from_int(vec![1i64, 2]),
+        );
         let same = a.clone();
         assert_eq!(a, same);
 
-        let different_coord = CypherValue::Vector {
-            coord: VectorCoordKind::Int64,
-            dim: 2,
-            values: vec![CypherValue::Int(1), CypherValue::Int(2)],
-        };
+        let different_coord = CypherValue::vector(
+            VectorCoordKind::Int64,
+            VectorCoords::from_int(vec![1i64, 2]),
+        );
         assert_ne!(a, different_coord);
 
-        let different_values = CypherValue::Vector {
-            coord: VectorCoordKind::Int32,
-            dim: 2,
-            values: vec![CypherValue::Int(2), CypherValue::Int(1)],
-        };
+        let different_values = CypherValue::vector(
+            VectorCoordKind::Int32,
+            VectorCoords::from_int(vec![2i64, 1]),
+        );
         assert_ne!(a, different_values);
 
         // A vector is never equal to a plain list, even with identical
@@ -1315,11 +1383,7 @@ mod tests {
 
     #[test]
     fn test_vector_type_name_and_ordering_is_unordered() {
-        let a = CypherValue::Vector {
-            coord: VectorCoordKind::Int32,
-            dim: 1,
-            values: vec![CypherValue::Int(1)],
-        };
+        let a = CypherValue::vector(VectorCoordKind::Int32, VectorCoords::from_int(vec![1i64]));
         let b = a.clone();
         assert_eq!(a.type_name(), "VECTOR");
         // `CypherValue::partial_cmp` deliberately has no Vector<->Vector

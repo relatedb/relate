@@ -37,8 +37,11 @@ fn main() -> Result<()> {
         other => panic!("expected a string, got {other:?}"),
     }
     match (embedding, embedding.clone()) {
-        (Value::Vector { values: a, .. }, Value::Vector { values: b, .. }) => {
-            assert!(Arc::ptr_eq(a, &b))
+        // ADR-0706: the packed family's buffer is the shared payload —
+        // one address comparison, every family (the query builds a
+        // FLOAT32 vector, so naming a family here was also wrong).
+        (Value::Vector { coords: a, .. }, Value::Vector { coords: b, .. }) => {
+            assert_eq!(a.arc_id(), b.arc_id())
         }
         other => panic!("expected a vector, got {other:?}"),
     }

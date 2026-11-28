@@ -10,56 +10,43 @@ use pyo3::prelude::*;
 use pyo3::types::PyList;
 use relate_model::value::VectorCoordKind;
 use relate_model::CypherValue;
+use relate_model::VectorCoords;
 
 /// The coordinate payload with the family encoded once at construction:
 /// [`Coordinates::from_engine`] selects the variant from
 /// `VectorCoordKind::is_integer()` at the one construction site, so every
-/// later read — `values()`, `__hash__`, `to_cypher()` — matches the variant
-/// instead of re-deriving `Int`/`Float` per element.
+/// later read — `values()`, `__hash__`, `to_cypher()` — matches the
+/// variant instead of re-deriving `Int`/`Float` per element. The variant
+/// IS the engine's packed family (ADR-0706); the declared kind is carried
+/// beside it.
 #[derive(Debug, Clone, PartialEq)]
 enum Coordinates {
-    /// The integer-family kinds: one `i64` per coordinate.
+    /// The packed `Int` family: one `i64` per coordinate (legal under a
+    /// float kind too — its equality with the float spelling is the exact
+    /// numeric rule, ADR-0706).
     Ints(Vec<i64>),
-    /// The floating-point kinds: one `f64` per coordinate.
+    /// The packed float families (`F32`/`F64`): one `f64` per coordinate.
     Floats(Vec<f64>),
 }
 
 impl Coordinates {
-    /// Build the payload for one engine vector. The engine guarantees the
-    /// family: `values` elements are always `CypherValue::Int` exactly when
-    /// `coord.is_integer()` (the `vector()` constructor is the only way to
-    /// produce one and enforces it) — a violation of that invariant is the
-    /// typed error below, never silently re-sniffed.
-    fn from_engine(coord: VectorCoordKind, values: &[CypherValue]) -> PyResult<Self> {
-        let mismatched = |expected: &str, other: &CypherValue| {
-            PyRuntimeError::new_err(format!(
-                "vector coordinate is not {expected}, as the {} coordinate family requires: {other:?}",
-                coord.canonical_name()
-            ))
-        };
-        if coord.is_integer() {
-            let ints = values
-                .iter()
-                .map(|value| match value {
-                    CypherValue::Int(i) => Ok(*i),
-                    other => Err(mismatched("an integer", other)),
-                })
-                .collect::<PyResult<Vec<_>>>()?;
-            Ok(Self::Ints(ints))
-        } else {
-            let floats = values
-                .iter()
-                .map(|value| match value {
-                    CypherValue::Float(f) => Ok(*f),
-                    other => Err(mismatched("a float", other)),
-                })
-                .collect::<PyResult<Vec<_>>>()?;
-            Ok(Self::Floats(floats))
+    /// Build the payload for one engine vector (ADR-0706's packed read):
+    /// the payload variant IS the family — selected from the packed
+    /// variant alone, the kind carried beside it by the caller. The `Int`
+    /// family under a float kind is a legal value (its equality with the
+    /// float spelling is the exact numeric rule), so it surfaces as
+    /// `Ints` and `to_cypher` round-trips it rather than failing closed.
+    fn from_engine(coords: &VectorCoords) -> Self {
+        match coords {
+            VectorCoords::Int(xs) => Self::Ints(xs.to_vec()),
+            // The F32 family's coordinates widen to the floats Python reads.
+            VectorCoords::F32(xs) => Self::Floats(xs.iter().map(|&x| f64::from(x)).collect()),
+            VectorCoords::F64(xs) => Self::Floats(xs.to_vec()),
         }
     }
 
-    /// The coordinates back as engine values — the parameter conversion and
-    /// the `str()` rendering both read this.
+    /// The coordinates back as engine values — the parameter conversion
+    /// and the `str()` rendering both read this.
     fn to_values(&self) -> Vec<CypherValue> {
         match self {
             Self::Ints(ints) => ints.iter().map(|i| CypherValue::Int(*i)).collect(),
@@ -99,15 +86,6 @@ impl std::hash::Hash for Coordinates {
     }
 }
 
-/// A Cypher vector: a coordinate type and its coordinates.
-///
-/// `coordinate_type` is the engine's canonical coordinate-type name
-/// (`INTEGER8`, `INTEGER16`, `INTEGER32`, `INTEGER`, `FLOAT16`, `BFLOAT16`,
-/// `FLOAT32`, `FLOAT`); `values` is the coordinate list — `int`s for the
-/// integer kinds, `float`s for the floating-point kinds; `dimension` (also
-/// `len()`) is its length. `str()` is the engine's own rendering
-/// (`vector([1.0, 2.0], 2, FLOAT32 NOT NULL)`).
-///
 /// A `Vector` read from a result binds back as a query parameter unchanged.
 /// It has no Python constructor: build a new vector in Cypher with
 /// `vector($list, $dimension, FLOAT32)` — the engine's constructor owns the
@@ -126,21 +104,42 @@ impl Vector {
     /// is selected from the kind here, and the fields are private, so a
     /// `Vector` can never carry a kind/payload mismatch — this is the only
     /// construction site (convert.rs).
-    pub(super) fn from_engine(coord: VectorCoordKind, values: &[CypherValue]) -> PyResult<Self> {
-        Ok(Self {
+    pub(super) fn from_engine(coord: VectorCoordKind, coords: &VectorCoords) -> Self {
+        Self {
             coord,
-            values: Coordinates::from_engine(coord, values)?,
-        })
+            values: Coordinates::from_engine(coords),
+        }
+    }
+
+    /// The payload's numeric key — each coordinate tagged by its numeric
+    /// domain (integral values key as their `i64`, others by float bit
+    /// pattern), the same normalization the engine's equivalence keys
+    /// use. Tagging keeps the two domains from colliding, so `__eq__`
+    /// and `__hash__` agree with each other and with Cypher `=`; it is
+    /// Rust-internal (not a Python attribute).
+    fn numeric_key(&self) -> Vec<(u8, u64)> {
+        match &self.values {
+            Coordinates::Ints(ints) => ints.iter().map(|&i| (0u8, i as u64)).collect(),
+            Coordinates::Floats(floats) => floats
+                .iter()
+                .map(|&f| match relate_model::canonical_key::f64_exact_i64(f) {
+                    Some(i) => (0u8, i as u64),
+                    None => (1u8, f.to_bits()),
+                })
+                .collect(),
+        }
     }
 
     /// The engine value this vector carries — the parameter conversion and
     /// the `str()` rendering both read it.
     pub(super) fn to_cypher(&self) -> CypherValue {
-        CypherValue::Vector {
-            coord: self.coord,
-            dim: self.values.len(),
-            values: self.values.to_values(),
-        }
+        // The one packing policy (ADR-0706): the payload's family matches
+        // the kind by construction (from_engine selected it), so the
+        // canonical constructor accepts — this expect is the invariant
+        // spelling, not a handled failure.
+        let coords = VectorCoords::from_cypher_values(self.coord, &self.values.to_values())
+            .expect("from_engine pairs the payload family with the kind");
+        CypherValue::vector(self.coord, coords)
     }
 }
 
@@ -190,20 +189,27 @@ impl Vector {
         match other.cast::<Vector>() {
             Ok(o) => {
                 let o = o.get();
-                o.coord == self.coord && o.values == self.values
+                // The engine's one vector-equality rule (ADR-0706): the
+                // kind gate plus the numeric comparison over the payload
+                // key, so an `Int` payload equals its float spelling
+                // exactly as `=` does in Cypher — and `__hash__` reads
+                // the same key, so the two operators cannot disagree.
+                self.coord == o.coord && self.numeric_key() == o.numeric_key()
             }
             Err(_) => false,
         }
     }
 
-    /// Consistent with `__eq__`: hashes the coordinate type and every
-    /// coordinate (the `Hash` impl on `Coordinates` owns the per-family
-    /// policy), so equal vectors hash equal (dict keys, set members).
+    /// Consistent with `__eq__`: hashes the coordinate type and the same
+    /// numeric key equality compares, so equal vectors hash equal (dict
+    /// keys, set members).
     fn __hash__(&self) -> u64 {
         use std::hash::{Hash, Hasher};
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         self.coord.hash(&mut hasher);
-        self.values.hash(&mut hasher);
+        for key in self.numeric_key() {
+            key.hash(&mut hasher);
+        }
         hasher.finish()
     }
 }

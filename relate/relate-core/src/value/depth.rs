@@ -146,9 +146,7 @@ impl<'a> Iterator for Children<'a> {
 /// non-exhaustive-match compile error at this one classification site.
 fn container(value: &Value) -> Option<(PayloadKey, Children<'_>)> {
     match value {
-        Value::List(xs) | Value::Vector { values: xs, .. } => {
-            Some((payload_key(xs), Children::Values(xs.iter())))
-        }
+        Value::List(xs) => Some((payload_key(xs), Children::Values(xs.iter()))),
         Value::Map(map) => Some((payload_key(map), Children::MapValues(map.values()))),
         Value::Node(node) => Some((
             payload_key(node),
@@ -166,6 +164,9 @@ fn container(value: &Value) -> Option<(PayloadKey, Children<'_>)> {
                 current: None,
             },
         )),
+        // A packed Vector (ADR-0706) has no child Values — its
+        // coordinates are one homogeneous numeric slice — so it walks as
+        // a scalar, not a container.
         Value::Null
         | Value::Bool(_)
         | Value::Int(_)
@@ -174,6 +175,7 @@ fn container(value: &Value) -> Option<(PayloadKey, Children<'_>)> {
         | Value::Temporal(_)
         | Value::Point(_)
         | Value::Uuid(_)
+        | Value::Vector { .. }
         | Value::Bytes(_) => None,
     }
 }

@@ -1,9 +1,11 @@
 //! CIP-121/CIP-214 vector similarity, matching Neo4j float32 rounding.
 //! The stored vector-index option schema (the metric narrowing, the key
 //! table, the one parse) lives in [`crate::vector_config`]; this module
-//! owns the scoring kernels only.
+//! owns the scoring kernels and the one candidate-coordinate reader
+//! ([`CandidateCoords`], ADR-0706) every ranked scan scores through.
 
 use relate_core::Value;
+use relate_model::VectorCoords;
 
 use crate::vector_config::StorableMetric;
 
@@ -61,6 +63,20 @@ pub(crate) fn similarity_row(
     row: &[f32],
 ) -> Option<f64> {
     similarity(metric, query, row.len(), |i| Some(f64::from(row[i])))
+}
+
+/// The scan score of a packed `VECTOR` value's own coordinates
+/// (ADR-0706): [`similarity_values`]' twin over the value's stored
+/// family — the same kernel, each coordinate widened to the `f64` the
+/// `Value` walk read (an `f32` family coordinate's `f64` was the widen;
+/// an integer coordinate's was `as f64`), so the score is bit-identical
+/// and needs no matrix to serve it.
+pub(crate) fn similarity_coords(
+    metric: StorableMetric,
+    query: &PreparedQuery<'_>,
+    coords: &VectorCoords,
+) -> Option<f64> {
+    similarity(metric, query, coords.len(), |i| Some(coords.coord_f64(i)))
 }
 
 /// The one scan score (ADR-0705): the query's length and zero guards,
@@ -192,12 +208,60 @@ pub(crate) fn value_coord(value: &Value) -> Option<f64> {
     }
 }
 
-/// The `Value` coordinate list of a candidate property: a VECTOR or a list.
-/// `None` skips the candidate, exactly as `vector_operand` does.
-pub(crate) fn value_coords(value: &Value) -> Option<&[Value]> {
+/// A candidate property's coordinates: a packed `VECTOR` (ADR-0706) or a
+/// plain list. `None` skips the candidate, exactly as `vector_operand`
+/// does. The one reader both scan shapes score through.
+pub(crate) enum CandidateCoords<'a> {
+    Vector(&'a VectorCoords),
+    List(&'a [Value]),
+}
+
+pub(crate) fn value_coords(value: &Value) -> Option<CandidateCoords<'_>> {
     match value {
-        Value::Vector { values, .. } | Value::List(values) => Some(values),
+        Value::Vector { coords, .. } => Some(CandidateCoords::Vector(coords)),
+        Value::List(values) => Some(CandidateCoords::List(values)),
         _ => None,
+    }
+}
+
+impl CandidateCoords<'_> {
+    pub(crate) fn len(&self) -> usize {
+        match self {
+            CandidateCoords::Vector(coords) => coords.len(),
+            CandidateCoords::List(values) => values.len(),
+        }
+    }
+
+    /// The coordinates as one `f64` list — the packed family's own
+    /// widening, or the list's fallible `value_coord` walk (the same
+    /// skip contract the scan applies). The query side's one conversion.
+    pub(crate) fn to_f64_vec(&self) -> Option<Vec<f64>> {
+        match self {
+            CandidateCoords::Vector(coords) => Some(coords.to_f64_vec()),
+            CandidateCoords::List(values) => values.iter().map(value_coord).collect(),
+        }
+    }
+
+    /// The `i`th coordinate as `f64` — the one uniform fallible read over
+    /// both sources: a packed `VECTOR`'s coordinates are finite numbers by
+    /// construction (infallible), a plain list's entries take the scan's
+    /// own `value_coord` skip contract.
+    pub(crate) fn coord_f64(&self, i: usize) -> Option<f64> {
+        match self {
+            // Bounds-checked: the `Option` signature is honest, never a
+            // panic behind it.
+            CandidateCoords::Vector(coords) => (i < coords.len()).then(|| coords.coord_f64(i)),
+            CandidateCoords::List(values) => values.get(i).and_then(value_coord),
+        }
+    }
+
+    /// The scan score over either source — the one dispatch, through the
+    /// per-source kernel twins.
+    pub(crate) fn score(&self, metric: StorableMetric, query: &PreparedQuery<'_>) -> Option<f64> {
+        match self {
+            CandidateCoords::Vector(coords) => similarity_coords(metric, query, coords),
+            CandidateCoords::List(values) => similarity_values(metric, query, values),
+        }
     }
 }
 
@@ -294,14 +358,14 @@ mod tests {
                 let coords = value_coords(&b_values).expect("list coordinates");
                 let prepared = PreparedQuery::prepare(&a);
                 assert_eq!(
-                    similarity_values(StorableMetric::Cosine, &prepared, coords),
+                    coords.score(StorableMetric::Cosine, &prepared),
                     Some(round_f32(
                         (round_f32(cosine_raw_sequential(&a, &b)) + 1.0) / 2.0
                     )),
                     "cosine d={d} trial={trial}"
                 );
                 assert_eq!(
-                    similarity_values(StorableMetric::Euclidean, &prepared, coords),
+                    coords.score(StorableMetric::Euclidean, &prepared),
                     Some(round_f32(
                         1.0 / (1.0 + euclidean_squared_sequential(&a, &b))
                     )),
@@ -333,7 +397,7 @@ mod tests {
                     let values = Value::List(value_list(&widened));
                     let coords = value_coords(&values).expect("list coordinates");
                     let prepared = PreparedQuery::prepare(&query);
-                    let from_values = similarity_values(metric, &prepared, coords);
+                    let from_values = coords.score(metric, &prepared);
                     let from_row = similarity_row(metric, &prepared, &row);
                     assert_eq!(
                         from_values.map(f64::to_bits),

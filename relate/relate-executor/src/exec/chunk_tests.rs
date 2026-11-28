@@ -22,6 +22,7 @@ use crate::row::{Row, RowNames};
 
 use super::chunk::{typed_kind, typed_slot, Chunk, ColumnData};
 use crate::test_support::config_with_floor;
+use relate_model::VectorCoords;
 
 fn rows_from(names: &[&str], cells: &[Vec<Value>]) -> Vec<Row> {
     let names: Vec<String> = names.iter().map(|name| (*name).to_string()).collect();
@@ -209,10 +210,7 @@ fn every_structural_variant_round_trips_through_the_fallback() {
         }),
         Value::Point(PointValue::cartesian_2d(1.5, -2.5)),
         Value::Uuid(0x0123_4567_89ab_cdef_0123_4567_89ab_cdef),
-        Value::Vector {
-            coord: VectorCoordKind::Float64,
-            values: Arc::new(vec![Value::Float(0.5)]),
-        },
+        Value::vector(VectorCoordKind::Float64, VectorCoords::from_f64(vec![0.5])),
         Value::Bytes(Arc::from(vec![1u8, 2, 3])),
         Value::Null,
     ];
@@ -462,9 +460,16 @@ fn value() -> BoxedStrategy<Value> {
         1 => any::<u128>().prop_map(Value::Uuid),
         1 => (
             prop_oneof![Just(VectorCoordKind::Int64), Just(VectorCoordKind::Float64)],
-            vec(scalar(), 0..3)
+            vec(any::<f64>().prop_filter("finite", |f| f.is_finite()), 0..3)
         )
-            .prop_map(|(coord, values)| Value::Vector { coord, values: Arc::new(values) }),
+            .prop_map(|(coord, values)| {
+                let coords = if coord == VectorCoordKind::Int64 {
+                    VectorCoords::from_int(values.iter().map(|&f| f as i64).collect::<Vec<_>>())
+                } else {
+                    VectorCoords::from_f64(values)
+                };
+                Value::vector(coord, coords)
+            }),
         1 => any::<Vec<u8>>().prop_map(|b| Value::Bytes(Arc::from(b))),
     ]
     .boxed()

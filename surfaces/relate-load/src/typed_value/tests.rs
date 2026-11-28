@@ -4,6 +4,7 @@ use relate::{Database, Temporal, Value};
 use relate_core::bare_type_name;
 use relate_core::PointValue;
 use relate_model::point::{EwktError, PointDomainError};
+use relate_model::VectorCoords;
 use serde_json::json;
 
 use super::*;
@@ -118,10 +119,10 @@ fn mappable_property_cells_decode_to_engine_values() {
     );
     assert_eq!(
         properties["vector"],
-        Value::Vector {
-            coord: VectorCoordKind::Float64,
-            values: vec![Value::Float(1.0), Value::Float(2.0)].into(),
-        }
+        Value::vector(
+            VectorCoordKind::Float64,
+            VectorCoords::from_f64(vec![1.0, 2.0]),
+        )
     );
     assert_eq!(
         properties["list_integer"],

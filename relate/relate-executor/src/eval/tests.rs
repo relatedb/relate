@@ -7,6 +7,7 @@
 use super::*;
 use crate::graph::Graph;
 use relate_core::VectorCoordKind;
+use relate_model::VectorCoords;
 use std::sync::Arc;
 
 /// CIP-272: a map comprehension's key must be a non-null string. Live
@@ -134,10 +135,10 @@ fn variable_read_and_row_carry_share_payloads() {
     row.insert("string".into(), Value::String("x".repeat(1_000).into()));
     row.insert(
         "vector".into(),
-        Value::Vector {
-            coord: VectorCoordKind::Float64,
-            values: vec![Value::Float(1.0), Value::Float(2.0), Value::Float(3.0)].into(),
-        },
+        Value::vector(
+            VectorCoordKind::Float64,
+            VectorCoords::from_f64(vec![1.0, 2.0, 3.0]),
+        ),
     );
 
     let g = Graph::default();
@@ -163,13 +164,16 @@ fn variable_read_and_row_carry_share_payloads() {
     assert!(Arc::ptr_eq(bound, &read_back));
 
     let (
-        Value::Vector { values: bound, .. },
+        Value::Vector { coords: bound, .. },
         Value::Vector {
-            values: read_back, ..
+            coords: read_back, ..
         },
     ) = (&row["vector"], read("vector"))
     else {
         panic!("vector variable did not read back as a vector");
+    };
+    let (VectorCoords::F64(bound), VectorCoords::F64(read_back)) = (bound, read_back) else {
+        panic!("vector variable changed family on read back");
     };
     assert!(Arc::ptr_eq(bound, &read_back));
 

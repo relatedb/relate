@@ -65,6 +65,32 @@ fn elementwise_eq(a: &[Value], b: &[Value], depth: u32) -> bool {
             .all(|(x, y)| x.eq_non_null_at(y, depth))
 }
 
+/// The packed form's elementwise equality — the model's one
+/// vector-equality policy ([`VectorCoords::numeric_eq`]), shared with
+/// `CypherValue::eq` so the two value types cannot disagree.
+fn coords_eq(a: &VectorCoords, b: &VectorCoords) -> bool {
+    a.numeric_eq(b)
+}
+
+/// One packed coordinate against another, numerically — the comparator
+/// `order_by_cmp_at`'s vector arm runs per element: same-kind pairs are
+/// same-family (the constructor's pairing), so the cross-kind arms are
+/// the exact `cmp_i64_f64` rule the scalar arms use, and float pairs
+/// compare through the `f64` both families widen to (finite by
+/// construction, so `partial_cmp` is total here).
+fn coord_order(a: Coord, b: Coord) -> Ordering {
+    match (a, b) {
+        (Coord::I(x), Coord::I(y)) => x.cmp(&y),
+        (Coord::F(x), Coord::F(y)) => x.partial_cmp(&y).unwrap_or(Ordering::Equal),
+        (Coord::I(x), Coord::F(y)) => {
+            relate_model::canonical_key::cmp_i64_f64(x, y).unwrap_or(Ordering::Equal)
+        }
+        (Coord::F(x), Coord::I(y)) => relate_model::canonical_key::cmp_i64_f64(y, x)
+            .map(Ordering::reverse)
+            .unwrap_or(Ordering::Equal),
+    }
+}
+
 /// The size-then-keys prefix both map comparators share: size first, then
 /// the sorted key lists element by element. Both operands are `BTreeMap`s,
 /// so iteration is already key order and equal lengths plus equal key lists
@@ -240,18 +266,25 @@ impl Value {
             (
                 Value::Vector {
                     coord: ac,
-                    values: av,
+                    coords: av,
                 },
                 Value::Vector {
                     coord: bc,
-                    values: bv,
+                    coords: bv,
                 },
-            ) if descends(depth) => {
-                // Elementwise-exact, like the List arm: a derived `av == bv`
-                // is variant-strict (`Int(1)` vs `Float(1.0)` differs), which
-                // disagreed with the equivalence keys' numeric normalization
-                // of vector elements.
-                ac == bc && elementwise_eq(av, bv, depth + 1)
+            ) => {
+                // No depth guard: a packed vector (ADR-0706) holds no
+                // child Values, so nothing recurses — the List arm's
+                // guard would only saturate a comparison that cannot
+                // nest.
+                // Elementwise-exact, like the List arm (ADR-0706's packed
+                // form): equal kinds pair equal float families, but the
+                // `Int` family is legal under every kind — so a same-kind
+                // pair may cross families, and its equality stays the
+                // exact numeric rule the `Vec<Value>` walk computed
+                // (`Int(1)` equals `Float(1.0)`, and past 2^53 the
+                // `eq_i64_f64` rule keeps large integers exact).
+                ac == bc && coords_eq(av, bv)
             }
             _ => false,
         }
@@ -359,13 +392,15 @@ impl Value {
             (
                 Value::Vector {
                     coord: ac,
-                    values: av,
+                    coords: av,
                 },
                 Value::Vector {
                     coord: bc,
-                    values: bv,
+                    coords: bv,
                 },
-            ) if descends(depth) => {
+            ) => {
+                // No depth guard: a packed vector holds no child Values
+                // (ADR-0706), so nothing recurses to bound.
                 let type_order = ac
                     .order_rank()
                     .cmp(&bc.order_rank())
@@ -373,12 +408,17 @@ impl Value {
                 if type_order != Ordering::Equal {
                     return type_order;
                 }
+                // Same rank, same length: element by element through the
+                // one numeric coordinate comparator — equal kinds pair
+                // equal families, and a same-rank cross-kind pair (an
+                // `Int` family under a float kind) takes the exact
+                // `cmp_i64_f64` rule `coord_order` spells.
                 lexicographic(
                     av.iter(),
                     bv.iter(),
                     Ordering::Equal,
                     Ordering::Equal,
-                    |x, y| x.order_by_cmp_at(y, depth + 1),
+                    coord_order,
                 )
             }
             // The same-rank scalars (numbers across int/float, strings,

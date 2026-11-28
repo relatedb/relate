@@ -3,11 +3,10 @@ use relate_model::CypherValue;
 
 #[test]
 fn vector_normalizes_to_a_structured_encoding_never_a_string() {
-    let v = CypherValue::Vector {
-        coord: relate_model::VectorCoordKind::Float32,
-        dim: 2,
-        values: vec![CypherValue::Float(1.5), CypherValue::Float(2.5)],
-    };
+    let v = CypherValue::vector(
+        relate_model::VectorCoordKind::Float32,
+        relate_model::VectorCoords::from_f32(vec![1.5, 2.5]),
+    );
     assert_eq!(
         normalize_cypher(&v),
         serde_json::json!({"type": "FLOAT32", "dim": 2, "values": [1.5, 2.5]})

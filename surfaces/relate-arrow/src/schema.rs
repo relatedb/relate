@@ -177,9 +177,9 @@ pub fn value_kind(v: &CypherValue) -> ColType {
         }
         CypherValue::Point(p) if p.z.is_some() => ColType::TypedJson,
         CypherValue::Point(_) | CypherValue::Geometry(_) => ColType::Spatial,
-        CypherValue::Vector { coord, dim, .. } => ColType::Vector {
+        CypherValue::Vector { coord, coords } => ColType::Vector {
             coord: *coord,
-            dim: *dim,
+            dim: coords.len(),
         },
         CypherValue::Node { .. } => ColType::Node,
         CypherValue::Relationship { .. } => ColType::Relationship,
@@ -299,6 +299,7 @@ pub(crate) fn infer_column(
 mod tests {
     use super::*;
     use relate_model::value::IsoDuration;
+    use relate_model::VectorCoords;
 
     #[test]
     #[allow(clippy::approx_constant)]
@@ -577,13 +578,17 @@ mod tests {
         assert_eq!(inferred.datetime_offset, None);
     }
 
+    /// The one FLOAT32 vector builder the two shape tests share.
+    fn f32_vector(xs: Vec<f64>) -> CypherValue {
+        CypherValue::vector(
+            VectorCoordKind::Float32,
+            VectorCoords::from_f32(xs.into_iter().map(|x| x as f32).collect::<Vec<_>>()),
+        )
+    }
+
     #[test]
     fn vectors_same_shape_merge() {
-        let v = |xs: Vec<f64>| CypherValue::Vector {
-            coord: VectorCoordKind::Float32,
-            dim: xs.len(),
-            values: xs.into_iter().map(CypherValue::Float).collect(),
-        };
+        let v = f32_vector;
         let rows = rows_of("x", vec![v(vec![1.0, 2.0]), v(vec![3.0, 4.0])]);
         assert_eq!(
             infer_column_type("x", &rows),
@@ -596,11 +601,7 @@ mod tests {
 
     #[test]
     fn vectors_different_dim_are_typed_json() {
-        let v = |xs: Vec<f64>| CypherValue::Vector {
-            coord: VectorCoordKind::Float32,
-            dim: xs.len(),
-            values: xs.into_iter().map(CypherValue::Float).collect(),
-        };
+        let v = f32_vector;
         let rows = rows_of("x", vec![v(vec![1.0, 2.0]), v(vec![3.0, 4.0, 5.0])]);
         assert_eq!(infer_column_type("x", &rows), ColType::TypedJson);
     }

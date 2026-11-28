@@ -1,21 +1,17 @@
 use super::super::*;
 use super::one_col;
 use arrow_array::Float32Array;
+use relate_model::VectorCoords;
 use serde_json::Value;
 
 #[test]
 fn vector_maps_to_fixed_size_list() {
     let (cols, rows) = one_col(
         "v",
-        vec![CypherValue::Vector {
-            coord: VectorCoordKind::Float32,
-            dim: 3,
-            values: vec![
-                CypherValue::Float(1.0),
-                CypherValue::Float(2.0),
-                CypherValue::Float(3.0),
-            ],
-        }],
+        vec![CypherValue::vector(
+            VectorCoordKind::Float32,
+            VectorCoords::from_f32(vec![1.0, 2.0, 3.0]),
+        )],
     );
     let batch = result_to_record_batch(&cols, &rows).unwrap();
     match batch.schema().field(0).data_type() {
@@ -44,115 +40,41 @@ fn vector_maps_to_fixed_size_list() {
     assert_eq!(floats.values(), &[1.0f32, 2.0, 3.0]);
 }
 
-/// A `Vector` value; `dim` is passed apart from `values` so malformed
-/// declarations stay expressible.
-fn vector(coord: VectorCoordKind, dim: usize, values: Vec<CypherValue>) -> CypherValue {
-    CypherValue::Vector { coord, dim, values }
+/// A well-formed `Vector` value from already-coerced coordinates (the
+/// canonical constructor derives `dim`, ADR-0706 — the malformed shapes
+/// this helper used to build are unconstructible now, rejected at the
+/// constructor instead of the arrow layer).
+fn vector(coord: VectorCoordKind, values: Vec<CypherValue>) -> CypherValue {
+    CypherValue::vector(
+        coord,
+        VectorCoords::from_cypher_values(coord, &values)
+            .expect("test constructs well-formed vectors"),
+    )
 }
 
 #[test]
 fn malformed_vectors_return_arrow_errors_before_building_or_chunking() {
-    let invalid = vec![
-        vector(VectorCoordKind::Int8, 2, vec![CypherValue::Int(1)]),
-        vector(VectorCoordKind::Int8, i32::MAX as usize + 1, vec![]),
-        vector(
-            VectorCoordKind::Int8,
-            1,
-            vec![CypherValue::Str("bad".into())],
-        ),
-        vector(VectorCoordKind::Int8, 1, vec![CypherValue::Int(128)]),
-        vector(VectorCoordKind::Int16, 1, vec![CypherValue::Int(32768)]),
-        vector(VectorCoordKind::Int32, 1, vec![CypherValue::Int(i64::MAX)]),
-        vector(
-            VectorCoordKind::Float32,
-            1,
-            vec![CypherValue::Float(f64::MAX)],
-        ),
-        vector(
-            VectorCoordKind::Float32,
-            1,
-            vec![CypherValue::Float(1e-300)],
-        ),
-        vector(VectorCoordKind::Float32, 1, vec![CypherValue::Float(0.1)]),
-        vector(
-            VectorCoordKind::Float32,
-            1,
-            vec![CypherValue::Float(f64::NAN)],
-        ),
-        vector(
-            VectorCoordKind::Float32,
-            1,
-            vec![CypherValue::Float(f64::INFINITY)],
-        ),
-        vector(VectorCoordKind::Float64, 1, vec![CypherValue::Int(5)]),
-    ];
-    for bad in invalid {
-        let (cols, rows) = one_col("v", vec![CypherValue::Null, bad.clone()]);
-        let dimension_exceeds_budget =
-            matches!(&bad, CypherValue::Vector { dim, .. } if *dim > MAX_VECTOR_CHILD_ELEMENTS);
-        for error in [
-            result_to_record_batch(&cols, &rows).unwrap_err(),
-            result_to_record_batches(&cols, &rows, 1).unwrap_err(),
-        ] {
-            assert!(
-                matches!(error, ArrowError::InvalidArgumentError(_)),
-                "{bad:?}: {error}"
-            );
-            if dimension_exceeds_budget {
-                assert!(error.to_string().contains("child element bound"), "{error}");
-            } else {
-                assert!(error.to_string().contains("column 'v' row 1"), "{error}");
-            }
-        }
-        if dimension_exceeds_budget {
-            // The full-result budget runs first; the direct builder still
-            // rejects an unrepresentable Arrow list size on its own.
-            let err = build_vector_array(
-                "v",
-                VectorCoordKind::Int8,
-                i32::MAX as usize + 1,
-                std::slice::from_ref(&bad),
-                0,
-            )
-            .unwrap_err();
-            assert!(err.to_string().contains("exceeds i32"), "{err}");
-        }
-        // Malformed values cannot bypass validation via the mixed fallback.
-        let (cols, rows) = one_col("v", vec![CypherValue::Int(0), bad]);
-        assert!(result_to_record_batch(&cols, &rows).is_err());
-    }
-    let nested = CypherValue::List(vec![CypherValue::Vector {
-        coord: VectorCoordKind::Int8,
-        dim: 1,
-        values: vec![CypherValue::Int(128)],
-    }]);
+    // Since ADR-0706 the arrow layer has exactly one malformed value
+    // class it still owns — a length over the child budget — plus the
+    // physical-shape refusals. The width/precision/non-finite classes
+    // are the canonical constructor's own (the model suite's
+    // `vector_constructor_rejects_*` pins), and the `Int` family under a
+    // float kind is a legal value the float rows widen (F-10-8), so it
+    // encodes rather than erroring.
+    // The direct builder rejects an unrepresentable Arrow list size on
+    // its own (the batch-level budget is
+    // `vector_child_budget_is_inclusive_checked_and_full_result`'s).    // A legal Int-family vector under a float kind encodes — through the
+    // fixed-size-list child (widened by the float row) in a uniform
+    // column, and through the lossless typed-json fallback in a mixed
+    // one.
+    let int_backed = vector(VectorCoordKind::Float64, vec![CypherValue::Int(5)]);
+    let (cols, rows) = one_col("v", vec![CypherValue::Null, int_backed.clone()]);
+    assert!(result_to_record_batch(&cols, &rows).is_ok());
+    let (cols, rows) = one_col("v", vec![CypherValue::Int(0), int_backed.clone()]);
+    assert!(result_to_record_batch(&cols, &rows).is_ok());
+    let nested = CypherValue::List(vec![int_backed]);
     let (cols, rows) = one_col("nested", vec![nested]);
-    assert!(result_to_record_batch(&cols, &rows).is_err());
-}
-
-#[test]
-fn malformed_direct_vector_in_later_chunk_returns_no_partial_batches() {
-    let good = CypherValue::Vector {
-        coord: VectorCoordKind::Int8,
-        dim: 1,
-        values: vec![CypherValue::Int(7)],
-    };
-    let bad = CypherValue::Vector {
-        coord: VectorCoordKind::Int8,
-        dim: 1,
-        values: vec![CypherValue::Int(128)],
-    };
-    let (cols, rows) = one_col("v", vec![good.clone(), good, bad]);
-    assert_eq!(
-        result_to_record_batches(&cols, &rows[..2], 1)
-            .unwrap()
-            .len(),
-        2
-    );
-    let err = result_to_record_batches(&cols, &rows, 1).unwrap_err();
-    assert!(matches!(err, ArrowError::InvalidArgumentError(_)));
-    assert!(err.to_string().contains("column 'v' row 2"), "{err}");
-    assert!(err.to_string().contains("out of range"), "{err}");
+    assert!(result_to_record_batch(&cols, &rows).is_ok());
 }
 
 #[test]
@@ -175,11 +97,7 @@ fn vector_child_budget_is_inclusive_checked_and_full_result() {
     let mut rows = vec![IndexMap::new(); 10_000];
     rows[0].insert(
         "v".into(),
-        CypherValue::Vector {
-            coord: VectorCoordKind::Int8,
-            dim: 100_000,
-            values: vec![CypherValue::Int(1); 100_000],
-        },
+        vector(VectorCoordKind::Int8, vec![CypherValue::Int(1); 100_000]),
     );
     let columns = vec!["v".to_string()];
     for error in [
@@ -198,11 +116,10 @@ fn float32_exact_values_preserve_bits_including_negative_zero() {
     let xs = [0.1_f32 as f64, f32::from_bits(1) as f64, -0.0_f64];
     let (cols, rows) = one_col(
         "v",
-        vec![CypherValue::Vector {
-            coord: VectorCoordKind::Float32,
-            dim: xs.len(),
-            values: xs.iter().copied().map(CypherValue::Float).collect(),
-        }],
+        vec![CypherValue::vector(
+            VectorCoordKind::Float32,
+            VectorCoords::from_f32(xs.iter().map(|&x| x as f32).collect::<Vec<_>>()),
+        )],
     );
     let batch = result_to_record_batch(&cols, &rows).unwrap();
     let arr = batch
@@ -217,20 +134,18 @@ fn float32_exact_values_preserve_bits_including_negative_zero() {
         assert_eq!((floats.value(i) as f64).to_bits(), value.to_bits());
     }
     let decoded = crate::from_arrow::record_batch_to_rows(&batch).unwrap().1;
-    let CypherValue::Vector { values, .. } = &decoded[0]["v"] else {
+    let CypherValue::Vector { coords, .. } = &decoded[0]["v"] else {
         panic!("expected Vector");
     };
-    for (value, expected) in values.iter().zip(xs) {
-        let CypherValue::Float(value) = value else {
-            panic!("expected Float")
-        };
-        assert_eq!(value.to_bits(), expected.to_bits());
+    for (i, expected) in xs.into_iter().enumerate() {
+        assert_eq!(coords.coord_f64(i).to_bits(), expected.to_bits());
     }
 }
 
 /// Every floating coordinate kind admits only a value its own precision
 /// spells exactly (`VectorCoordKind::is_exact`); one that would be silently
-/// rounded is rejected instead of widened into the array.
+/// rounded is rejected — since ADR-0706 at the canonical constructor,
+/// where the packed family is built, not at the arrow child converter.
 #[test]
 fn every_float_coordinate_kind_rejects_a_non_exact_value() {
     let cases = [
@@ -242,18 +157,9 @@ fn every_float_coordinate_kind_rejects_a_non_exact_value() {
         (VectorCoordKind::Float64, f64::INFINITY),
     ];
     for (coord, value) in cases {
-        let (cols, rows) = one_col(
-            "v",
-            vec![CypherValue::Vector {
-                coord,
-                dim: 1,
-                values: vec![CypherValue::Float(value)],
-            }],
-        );
-        let error = result_to_record_batch(&cols, &rows).unwrap_err();
         assert!(
-            error.to_string().contains("loses precision"),
-            "{coord:?}: {error}"
+            VectorCoords::from_cypher_values(coord, &[CypherValue::Float(value)]).is_none(),
+            "{coord:?} accepted {value}"
         );
     }
 }
@@ -280,16 +186,8 @@ fn all_eight_vector_kinds_preserve_values_nulls_and_chunked_schemas() {
             "v",
             vec![
                 CypherValue::Null,
-                CypherValue::Vector {
-                    coord: kind,
-                    dim: 1,
-                    values: vec![coord.clone()],
-                },
-                CypherValue::Vector {
-                    coord: kind,
-                    dim: 1,
-                    values: vec![coord],
-                },
+                vector(kind, vec![coord.clone()]),
+                vector(kind, vec![coord]),
             ],
         );
         let single = result_to_record_batch(&cols, &rows).unwrap();
@@ -373,10 +271,8 @@ fn all_eight_vector_kinds_preserve_values_nulls_and_chunked_schemas() {
 
 #[test]
 fn different_vector_dimensions_use_lossless_typed_columns() {
-    let vector = |values: Vec<i64>| CypherValue::Vector {
-        coord: VectorCoordKind::Int16,
-        dim: values.len(),
-        values: values.into_iter().map(CypherValue::Int).collect(),
+    let vector = |values: Vec<i64>| {
+        CypherValue::vector(VectorCoordKind::Int16, VectorCoords::from_int(values))
     };
     let (cols, rows) = one_col("v", vec![vector(vec![1]), vector(vec![2, 3])]);
     let batches = result_to_record_batches(&cols, &rows, 1).unwrap();

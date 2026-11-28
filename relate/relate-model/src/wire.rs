@@ -142,6 +142,7 @@ use serde_json::{Map, Value};
 
 use crate::point::{is_geographic, point_axis_keys};
 use crate::value::{CypherValue, GeometryValue, PointValue};
+use crate::vector::coords::Coord;
 
 /// The `kind` discriminator of a wire node object (ADR-0223). Decoder sides
 /// match on these constants instead of re-typing the literals.
@@ -230,16 +231,26 @@ pub fn value_to_wire_json(val: &CypherValue) -> Value {
         | CypherValue::Duration(_) => Value::String(val.to_string()),
         CypherValue::Point(p) => point_to_wire_json(p),
         CypherValue::Geometry(g) => geometry_to_wire_json(g),
-        CypherValue::Vector { coord, dim, values } => {
+        CypherValue::Vector { coord, coords } => {
             let mut obj = Map::new();
             obj.insert(
                 "type".into(),
                 Value::String(coord.canonical_name().to_string()),
             );
-            obj.insert("dim".into(), Value::Number((*dim as u64).into()));
+            obj.insert("dim".into(), Value::Number((coords.len() as u64).into()));
             obj.insert(
                 "values".into(),
-                Value::Array(values.iter().map(value_to_wire_json).collect()),
+                Value::Array(
+                    // The packed read (ADR-0706): each coordinate encodes
+                    // exactly as the `Int`/`Float` value it replaced.
+                    coords
+                        .iter()
+                        .map(|c| match c {
+                            Coord::I(n) => Value::Number(n.into()),
+                            Coord::F(f) => json_f64(f),
+                        })
+                        .collect(),
+                ),
             );
             Value::Object(obj)
         }

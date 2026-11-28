@@ -140,7 +140,17 @@ pub(crate) fn owned_heap(value: &Value) -> u64 {
             }
         }
         Value::List(items) => unique_list(items),
-        Value::Vector { values, .. } => unique_list(values),
+        // The packed coordinates are one Arc'd slice (ADR-0706): the
+        // unique heap is the slice's own bytes, charged only when this
+        // value is the buffer's sole owner — the width and uniqueness
+        // tests are the model's own accessors.
+        Value::Vector { coords, .. } => {
+            if coords.is_unique() {
+                coords.byte_len()
+            } else {
+                0
+            }
+        }
         Value::Map(entries) => {
             if Arc::strong_count(entries) == 1 {
                 map_value_heap(entries)

@@ -198,10 +198,13 @@ fn vector(payload: &Json, tag: &str) -> Result<Value, DecodeError> {
         };
         values.push(value);
     }
-    Ok(Value::Vector {
-        coord,
-        values: values.into(),
-    })
+    // The one decode-side packing policy (ADR-0706): validated
+    // coordinates land in the family buffer through the canonical
+    // constructor — out-of-kind-range integers now fail at decode
+    // instead of surviving to a later encode.
+    let coords = relate_core::pack_decoded_values(coord, &values)
+        .map_err(|reason| malformed(tag, reason))?;
+    Ok(Value::vector(coord, coords))
 }
 
 fn list(payload: &Json, tag: &str) -> Result<Value, DecodeError> {

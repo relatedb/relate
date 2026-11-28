@@ -10,6 +10,7 @@ use std::collections::BTreeMap;
 use relate::{Temporal, Value};
 use relate_core::PointValue;
 use relate_model::identifier::quote_identifier_always;
+use relate_model::Coord;
 use serde_json::Value as Json;
 
 use crate::LoadError;
@@ -128,10 +129,18 @@ pub(crate) fn encode_value(value: &Value) -> Result<Json, LoadError> {
         Value::Temporal(t) => Ok(envelope(temporal_tag(t), Json::String(t.iso_string()))),
         Value::Point(p) => Ok(envelope(WireTag::Point, Json::String(point_ewkt(p)))),
         Value::Uuid(u) => Ok(envelope(WireTag::Uuid, Json::String(relate::uuid_hyphenated(*u)))),
-        Value::Vector { coord, values } => {
-            let coordinates: Vec<Json> = values
+        Value::Vector { coord, coords } => {
+            // The packed read (ADR-0706): each coordinate's decimal
+            // string, exactly as the per-`Value` walk spelled it.
+            let coordinates: Vec<Json> = coords
                 .iter()
-                .map(|v| decimal_string(v).map(Json::String))
+                .map(|c| {
+                    decimal_string(&match c {
+                        Coord::I(n) => Value::Int(n),
+                        Coord::F(f) => Value::Float(f),
+                    })
+                    .map(Json::String)
+                })
                 .collect::<Result<_, _>>()?;
             Ok(envelope(
                 WireTag::Vector,
@@ -251,6 +260,7 @@ pub(crate) fn quote_ident(name: &str) -> Result<String, LoadError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use relate_model::VectorCoords;
     use std::collections::BTreeMap;
 
     fn round_trips(value: Value) {
@@ -320,10 +330,10 @@ mod tests {
     /// the declared coordinate kind.
     #[test]
     fn vector_encodes_as_the_coordinates_object() {
-        let value = Value::Vector {
-            coord: relate_core::VectorCoordKind::Float64,
-            values: vec![Value::Float(0.5), Value::Float(-1.25)].into(),
-        };
+        let value = Value::vector(
+            relate_core::VectorCoordKind::Float64,
+            VectorCoords::from_f64(vec![0.5, -1.25]),
+        );
         let encoded = encode_value(&value).unwrap();
         assert_eq!(
             encoded,

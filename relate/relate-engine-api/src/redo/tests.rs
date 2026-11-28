@@ -386,12 +386,15 @@ fn golden_values() -> Vec<(&'static str, Value)> {
         ),
         ("bool", Value::Bool(true)),
         ("null", Value::Null),
+        // Homogeneous coordinates (ADR-0706): a family mix inside one
+        // vector is unconstructible — the decode side rejects it
+        // fail-closed.
         (
             "vector",
-            Value::Vector {
-                coord: relate_core::VectorCoordKind::Float64,
-                values: vec![Value::Int(1), Value::Float(2.5)].into(),
-            },
+            Value::vector(
+                relate_core::VectorCoordKind::Float64,
+                relate_model::VectorCoords::from_f64(vec![1.0, 2.5]),
+            ),
         ),
         (
             "nested_list",

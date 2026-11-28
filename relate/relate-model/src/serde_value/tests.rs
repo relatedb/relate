@@ -409,8 +409,12 @@ fn typed_decode_rejects_missing_wrong_and_out_of_range_fields() {
             serde_json::json!({"__type":"vector","coord":"FLOAT32","dim":1,"values":[1.0e100]}),
             "$.values[0]",
         ),
+        // An integer JSON number under a float kind decodes into the Int
+        // family since ADR-0706 — the encoder writes exactly this shape
+        // for one, so rejecting it made a checkpoint unreadable. The
+        // still-rejected float-kind shape is a non-number entry.
         (
-            serde_json::json!({"__type":"vector","coord":"FLOAT","dim":1,"values":[1]}),
+            serde_json::json!({"__type":"vector","coord":"FLOAT","dim":1,"values":["1"]}),
             "$.values[0]",
         ),
         (
@@ -654,11 +658,13 @@ fn valid_geometry_and_vector_shapes_round_trip() {
         (VectorCoordKind::Float32, CypherValue::Float(1.5)),
         (VectorCoordKind::Float64, CypherValue::Float(1.25)),
     ] {
-        let value = CypherValue::Vector {
-            coord,
-            dim: 1,
-            values: vec![item],
+        let coords = match (&item, coord) {
+            (CypherValue::Int(n), _) => VectorCoords::from_int(vec![*n]),
+            (CypherValue::Float(f), VectorCoordKind::Float64) => VectorCoords::from_f64(vec![*f]),
+            (CypherValue::Float(f), _) => VectorCoords::from_f32(vec![*f as f32]),
+            _ => unreachable!("the table holds one coordinate per kind"),
         };
+        let value = CypherValue::vector(coord, coords);
         assert_eq!(
             try_json_to_cypher_value(&cypher_value_to_json(&value).unwrap()).unwrap(),
             value
@@ -670,19 +676,15 @@ fn valid_geometry_and_vector_shapes_round_trip() {
 fn float32_exact_preserves_finite_bits_only() {
     for value in [0.0, -0.0, 1.5, f32::MIN_POSITIVE as f64] {
         assert!(float32_exact(value), "{value:?}");
-        let encoded = cypher_value_to_json(&CypherValue::Vector {
-            coord: VectorCoordKind::Float32,
-            dim: 1,
-            values: vec![CypherValue::Float(value)],
-        })
+        let encoded = cypher_value_to_json(&CypherValue::vector(
+            VectorCoordKind::Float32,
+            VectorCoords::from_f32(vec![value as f32]),
+        ))
         .unwrap();
-        let CypherValue::Vector { values, .. } = try_json_to_cypher_value(&encoded).unwrap() else {
+        let CypherValue::Vector { coords, .. } = try_json_to_cypher_value(&encoded).unwrap() else {
             panic!("expected vector")
         };
-        let CypherValue::Float(decoded) = values[0] else {
-            panic!("expected float")
-        };
-        assert_eq!(decoded.to_bits(), value.to_bits());
+        assert_eq!(coords.coord_f64(0).to_bits(), value.to_bits());
     }
     for value in [0.1, f64::MAX, f64::INFINITY, f64::NEG_INFINITY, f64::NAN] {
         assert!(!float32_exact(value), "{value:?}");
@@ -787,67 +789,42 @@ fn persistence_encoder_rejects_non_finite_and_graph_entities_at_nested_paths() {
     );
 }
 
+// ADR-0706 moved the shape/variant/range validation this test used to
+// exercise at the encoder into the canonical `CypherValue::vector`
+// constructor: a malformed Vector can no longer be *constructed*, so
+// nothing downstream re-checks it. The dim-mismatch shape is gone
+// entirely (the constructor derives `dim`); the range/precision/family
+// rejections are the constructor's invariant asserts, covered below. The
+// typed user-input rejections live at the coercion boundaries — the
+// serde decoder's fail-closed paths and `vector()`'s error classes.
 #[test]
-fn persistence_encoder_validates_vector_shape_variant_and_range() {
-    let cases = [
-        (VectorCoordKind::Int8, 2, vec![CypherValue::Int(1)], "$.dim"),
-        (
-            VectorCoordKind::Int8,
-            1,
-            vec![CypherValue::Int(128)],
-            "$.values[0]",
-        ),
-        (
-            VectorCoordKind::Int16,
-            1,
-            vec![CypherValue::Int(32768)],
-            "$.values[0]",
-        ),
-        (
-            VectorCoordKind::Int32,
-            1,
-            vec![CypherValue::Int(i64::from(i32::MAX) + 1)],
-            "$.values[0]",
-        ),
-        (
-            VectorCoordKind::Int64,
-            1,
-            vec![CypherValue::Float(1.0)],
-            "$.values[0]",
-        ),
-        (
-            VectorCoordKind::Float32,
-            1,
-            vec![CypherValue::Float(0.1)],
-            "$.values[0]",
-        ),
-        (
-            VectorCoordKind::Float32,
-            1,
-            vec![CypherValue::Float(f64::INFINITY)],
-            "$.values[0]",
-        ),
-        (
-            VectorCoordKind::Float64,
-            1,
-            vec![CypherValue::Int(1)],
-            "$.values[0]",
-        ),
-        (
-            VectorCoordKind::Float64,
-            1,
-            vec![CypherValue::Float(f64::NAN)],
-            "$.values[0]",
-        ),
-    ];
-    for (coord, dim, values, path) in cases {
-        let value = CypherValue::Vector { coord, dim, values };
-        assert_eq!(
-            cypher_value_to_json(&value).unwrap_err().path,
-            path,
-            "{value:?}"
-        );
-    }
+#[should_panic(expected = "out of INTEGER8 range")]
+fn vector_constructor_rejects_a_width_overflow() {
+    CypherValue::vector(VectorCoordKind::Int8, VectorCoords::from_int(vec![128]));
+}
+
+#[test]
+#[should_panic(expected = "loses precision")]
+fn vector_constructor_rejects_a_kind_inexact_coordinate() {
+    // The F32 family is always f32-exact by representation, so the
+    // precision assert can only fire for the narrower float kinds: an
+    // f32-representable value outside Float16's range.
+    CypherValue::vector(VectorCoordKind::Float16, VectorCoords::from_f32(vec![1e5]));
+}
+
+#[test]
+#[should_panic(expected = "non-finite")]
+fn vector_constructor_rejects_a_nan_float64_coordinate() {
+    CypherValue::vector(
+        VectorCoordKind::Float64,
+        VectorCoords::from_f64(vec![f64::NAN]),
+    );
+}
+
+#[test]
+#[should_panic(expected = "family does not match kind")]
+fn vector_constructor_rejects_a_family_kind_mismatch() {
+    CypherValue::vector(VectorCoordKind::Int64, VectorCoords::from_f64(vec![1.0]));
 }
 
 #[test]
@@ -874,11 +851,10 @@ fn canonical_spatial_vector_and_escaped_map_json_shapes() {
                 "srid": 7203, "coordinates": [[1.5, -2.25]]}],
         })
     );
-    let vector = CypherValue::Vector {
-        coord: VectorCoordKind::Float32,
-        dim: 2,
-        values: vec![CypherValue::Float(-0.0), CypherValue::Float(1.5)],
-    };
+    let vector = CypherValue::vector(
+        VectorCoordKind::Float32,
+        VectorCoords::from_f32(vec![-0.0f32, 1.5]),
+    );
     let encoded = cypher_value_to_json(&vector).unwrap();
     assert_eq!(
         encoded,

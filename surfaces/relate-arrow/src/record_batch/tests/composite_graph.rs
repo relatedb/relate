@@ -1,6 +1,7 @@
 use super::super::*;
 use super::one_col;
 use relate_model::value::{IsoDuration, PointValue};
+use relate_model::VectorCoords;
 use serde_json::Value;
 
 #[test]
@@ -148,24 +149,11 @@ fn model_payload_errors_identify_column_absolute_row_and_coordinate_path() {
         labels: vec![],
         properties: props,
     };
-    let bad_composite = CypherValue::Map(IndexMap::from([(
-        "outer".into(),
-        CypherValue::List(vec![
-            CypherValue::Int(1),
-            CypherValue::Map(IndexMap::from([(
-                "embedding".into(),
-                CypherValue::Vector {
-                    coord: VectorCoordKind::Float32,
-                    dim: 1,
-                    values: vec![CypherValue::Float(0.1)],
-                },
-            )])),
-        ]),
-    )]));
-    for (bad, path) in [
-        (bad_graph, "$.properties.location[1].y:"),
-        (bad_composite, "$.outer[1].embedding.values[0]:"),
-    ] {
+    // The bad composite this test also carried — an inexact-Float32
+    // vector nested in a map — is unconstructible under ADR-0706's
+    // checked constructor, so its encode error is the constructor's own
+    // now; the nested geometry path below keeps the error shape pinned.
+    for (bad, path) in [(bad_graph, "$.properties.location[1].y:")] {
         let (cols, rows) = one_col("payload", vec![CypherValue::Null, bad]);
         for err in [
             result_to_record_batch(&cols, &rows).unwrap_err(),
@@ -250,11 +238,7 @@ fn composite_typed_payloads_retain_temporal_spatial_and_vector_tags() {
     );
     map.insert(
         "vector".into(),
-        CypherValue::Vector {
-            coord: VectorCoordKind::Int8,
-            dim: 1,
-            values: vec![CypherValue::Int(-2)],
-        },
+        CypherValue::vector(VectorCoordKind::Int8, VectorCoords::from_int(vec![-2])),
     );
     let (cols, rows) = one_col("data", vec![CypherValue::Map(map)]);
     let batch = result_to_record_batch(&cols, &rows).unwrap();
@@ -355,11 +339,8 @@ fn typed_json_fallbacks_share_exact_field_wire_and_roundtrip() {
         labels: vec![],
         properties: IndexMap::new(),
     };
-    let vector = |xs: Vec<i64>| CypherValue::Vector {
-        coord: VectorCoordKind::Int16,
-        dim: xs.len(),
-        values: xs.into_iter().map(CypherValue::Int).collect(),
-    };
+    let vector =
+        |xs: Vec<i64>| CypherValue::vector(VectorCoordKind::Int16, VectorCoords::from_int(xs));
     let cases = [
         (
             "homogeneous list",

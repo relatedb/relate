@@ -3,6 +3,7 @@ use relate_core::{integer_args, ErrorKind};
 use super::super::render_scalar;
 use super::*;
 use crate::graph::Graph;
+use relate_model::VectorCoords;
 
 /// The type rejection's two pins: the typed `InvalidArgumentType` variant
 /// and the site's authored detail text.
@@ -52,10 +53,7 @@ fn string_interp_renders_every_scalar_kind_in_order() {
         chrono::NaiveDate::from_ymd_opt(2024, 2, 29).unwrap(),
     ));
     let point = Value::Point(PointValue::cartesian_2d(1.5, -2.0));
-    let vector = Value::Vector {
-        coord: VectorCoordKind::Int64,
-        values: vec![Value::Int(1), Value::Int(2)].into(),
-    };
+    let vector = Value::vector(VectorCoordKind::Int64, VectorCoords::from_int(vec![1, 2]));
 
     // Each part renders as its toString() form.
     let parts = vec![

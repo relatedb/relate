@@ -46,9 +46,10 @@ fn wrap_acc_once(acc: Value, acc_depth: &mut u32) -> Result<Value> {
 fn accumulator_allocation_bytes(value: &Value) -> u64 {
     use crate::workspace::buffer_bytes;
     match value {
-        Value::List(xs) | Value::Vector { values: xs, .. } => {
-            buffer_bytes(xs.len(), std::mem::size_of::<Value>() as u64)
-        }
+        Value::List(xs) => buffer_bytes(xs.len(), std::mem::size_of::<Value>() as u64),
+        // The packed coordinates charge at the family's element width
+        // (ADR-0706) — the one width table, no per-family arms.
+        Value::Vector { coords, .. } => buffer_bytes(coords.len(), coords.element_bytes()),
         Value::Map(entries) => crate::workspace::map_entries_bytes(entries.len()),
         Value::String(text) => relate_core::str_logical_bytes(text),
         Value::Bytes(bytes) => relate_core::bytes_logical_bytes(bytes),

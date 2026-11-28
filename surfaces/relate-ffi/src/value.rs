@@ -36,7 +36,7 @@ use std::sync::OnceLock;
 use chrono::{Datelike, NaiveDate, NaiveTime, Timelike};
 use relate::{node_element_id, rel_element_id, Namespace};
 use relate_core::temporal::zone_region;
-use relate_model::{CypherValue, IndexMap};
+use relate_model::{Coord, CypherValue, IndexMap, VectorCoords};
 
 use crate::abi::relate_status;
 
@@ -811,10 +811,10 @@ pub unsafe extern "C" fn relate_value_vector_dtype(v: *const relate_value) -> *c
     }
 }
 
-/// The coordinates of a VECTOR.
-fn vector_values(cv: &CypherValue) -> Option<&[CypherValue]> {
+/// The packed coordinates of a VECTOR (ADR-0706).
+fn vector_coords(cv: &CypherValue) -> Option<&VectorCoords> {
     match cv {
-        CypherValue::Vector { values, .. } => Some(values),
+        CypherValue::Vector { coords, .. } => Some(coords),
         _ => None,
     }
 }
@@ -823,7 +823,7 @@ fn vector_values(cv: &CypherValue) -> Option<&[CypherValue]> {
 /// `v` must be null or a live handle.
 #[no_mangle]
 pub unsafe extern "C" fn relate_value_vector_dim(v: *const relate_value) -> i64 {
-    unsafe { with_value(v, |h| vector_values(h.value()).map(|xs| xs.len() as i64)).unwrap_or(-1) }
+    unsafe { with_value(v, |h| vector_coords(h.value()).map(|xs| xs.len() as i64)).unwrap_or(-1) }
 }
 
 /// Coordinate `i` of a floating-point VECTOR.
@@ -836,7 +836,22 @@ pub unsafe extern "C" fn relate_value_vector_float(
     i: i64,
     out: *mut f64,
 ) -> relate_status {
-    unsafe { read_scalar(v, out, |cv| float_of(vector_values(cv)?.get(index(i)?)?)) }
+    unsafe {
+        read_scalar(v, out, |cv| {
+            let i = index(i)?;
+            // A float-kind vector only: the `Int` family under a float
+            // kind is a legal value and widens (ADR-0706), but an
+            // integer-kind vector keeps the accessor split — its
+            // coordinates read through `relate_value_vector_int`.
+            let CypherValue::Vector { coord, coords } = cv else {
+                return None;
+            };
+            if coord.is_integer() || i >= coords.len() {
+                return None;
+            }
+            Some(coords.coord_f64(i))
+        })
+    }
 }
 
 /// Coordinate `i` of an integer VECTOR.
@@ -850,9 +865,16 @@ pub unsafe extern "C" fn relate_value_vector_int(
     out: *mut i64,
 ) -> relate_status {
     unsafe {
-        read_scalar(v, out, |cv| match vector_values(cv)?.get(index(i)?)? {
-            CypherValue::Int(n) => Some(*n),
-            _ => None,
+        read_scalar(v, out, |cv| {
+            let coords = vector_coords(cv)?;
+            let i = index(i)?;
+            if i >= coords.len() {
+                return None;
+            }
+            match coords.coord_at(i) {
+                Coord::I(n) => Some(n),
+                Coord::F(_) => None,
+            }
         })
     }
 }

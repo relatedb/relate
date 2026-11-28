@@ -7,6 +7,7 @@
 
 use super::*;
 use relate_core::{Node, PointValue};
+use relate_model::VectorCoords;
 use relate_test_support::temporal::dst_overlap_half;
 use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
@@ -44,26 +45,14 @@ fn vector_keys_agree_with_vector_eq_both_directions() {
     // `=` and the equivalence key must give the same verdict on vectors:
     // numerically equal elements collapse (equal), different values or
     // coordinate kinds do not (unequal).
-    let int_backed = Value::Vector {
-        coord: VectorCoordKind::Float64,
-        values: vec![Value::Int(1)].into(),
-    };
-    let float_backed = Value::Vector {
-        coord: VectorCoordKind::Float64,
-        values: vec![Value::Float(1.0)].into(),
-    };
+    let int_backed = Value::vector(VectorCoordKind::Float64, VectorCoords::from_int(vec![1]));
+    let float_backed = Value::vector(VectorCoordKind::Float64, VectorCoords::from_f64(vec![1.0]));
     assert!(int_backed.eq_non_null(&float_backed));
     assert_eq!(key(int_backed.clone()), key(float_backed));
-    let two = Value::Vector {
-        coord: VectorCoordKind::Float64,
-        values: vec![Value::Float(2.0)].into(),
-    };
+    let two = Value::vector(VectorCoordKind::Float64, VectorCoords::from_f64(vec![2.0]));
     assert!(!int_backed.eq_non_null(&two));
     assert_ne!(key(int_backed.clone()), key(two));
-    let other_kind = Value::Vector {
-        coord: VectorCoordKind::Int32,
-        values: vec![Value::Int(1)].into(),
-    };
+    let other_kind = Value::vector(VectorCoordKind::Int32, VectorCoords::from_int(vec![1]));
     assert!(!int_backed.eq_non_null(&other_kind));
     assert_ne!(key(int_backed), key(other_kind));
 }
@@ -267,20 +256,11 @@ fn property_index_key_shares_the_grouping_tree() {
 
 #[test]
 fn vector_elements_normalize_numerically() {
-    let a = Value::Vector {
-        coord: VectorCoordKind::Float64,
-        values: vec![Value::Int(1)].into(),
-    };
-    let b = Value::Vector {
-        coord: VectorCoordKind::Float64,
-        values: vec![Value::Float(1.0)].into(),
-    };
+    let a = Value::vector(VectorCoordKind::Float64, VectorCoords::from_int(vec![1]));
+    let b = Value::vector(VectorCoordKind::Float64, VectorCoords::from_f64(vec![1.0]));
     assert_eq!(key(a), key(b.clone()));
     // The coordinate kind stays part of the key.
-    let c = Value::Vector {
-        coord: VectorCoordKind::Int32,
-        values: vec![Value::Int(1)].into(),
-    };
+    let c = Value::vector(VectorCoordKind::Int32, VectorCoords::from_int(vec![1]));
     assert_ne!(key(b), key(c));
 }
 
@@ -367,11 +347,11 @@ fn property_index_rejects_nan_anywhere() {
         z: None,
     });
     assert_eq!(GroupKey::for_property_index(&p), None);
-    let v = Value::Vector {
-        coord: VectorCoordKind::Float64,
-        values: vec![nan()].into(),
-    };
-    assert_eq!(GroupKey::for_property_index(&v), None);
+    // A packed VECTOR (ADR-0706) cannot hold a NaN — its coordinates
+    // are finite by construction — so the vector case this walk used to
+    // decline is unconstructible; the NaN decline stays pinned by the
+    // scalar and list cases above.
+    assert_eq!(GroupKey::for_property_index(&Value::Float(f64::NAN)), None);
     // NaN-free values stay indexable.
     assert!(GroupKey::for_property_index(&Value::Int(1)).is_some());
 }
@@ -394,10 +374,9 @@ fn identity_narrower_than_eq_exactly_for_named_zone_datetimes() {
     let mut m = BTreeMap::new();
     m.insert("at".to_string(), zoned.clone());
     assert!(identity_narrower_than_eq(&Value::Map(m.into())));
-    assert!(identity_narrower_than_eq(&Value::Vector {
-        coord: VectorCoordKind::Float64,
-        values: vec![zoned].into(),
-    }));
+    // A packed VECTOR (ADR-0706) holds only finite numbers, so a
+    // narrow-identity temporal can no longer nest inside one; the bare
+    // and list nestings above keep the decline pinned.
     // An offset-only datetime never declines: `ZoneId::Offset`'s
     // (instant, offset) identity is a bijection of its `=` class
     // (wall clock, offset) — the identity bucket answers `=` exactly.

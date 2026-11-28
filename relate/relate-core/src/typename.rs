@@ -54,10 +54,10 @@ pub fn value_type_name(value: &Value) -> String {
             temporal::TemporalKind::DateTime => "ZONED DATETIME",
             temporal::TemporalKind::Duration => "DURATION",
         }),
-        Value::Vector { coord, values } => format!(
+        Value::Vector { coord, coords } => format!(
             "VECTOR<{}{NOT_NULL_SUFFIX}>({}){NOT_NULL_SUFFIX}",
             coord.canonical_name(),
-            values.len()
+            coords.len()
         ),
         Value::List(values) => list_type_name(values),
     }

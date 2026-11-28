@@ -15,7 +15,7 @@
 //! 'cartesian'})`), the same rendering [`Value::to_display_string`]
 //! carries.
 
-use super::{Node, Relationship, Value};
+use super::{Coord, Node, Relationship, Value};
 
 impl Value {
     /// Live Neo4j's `AnyValue.prettyPrint()`, the rendering its error
@@ -73,11 +73,21 @@ impl Value {
             // `vec` is an unknown function there, probed): the container
             // family's wrapped form, coordinates pretty-printed like any
             // other element.
-            Value::Vector { values, .. } => super::guarded_container(
-                depth,
-                |joined| format!("Vector{{{joined}}}"),
-                |d| values.iter().map(|v| v.pretty_print_at(d)).collect(),
-            ),
+            // The packed coordinates (ADR-0706) pretty-print as the
+            // scalars they are — the same Long/Double forms the walk
+            // above gives them — with the container family's wrapped
+            // form. No child Values, so the guard cannot stop a
+            // recursion; the family render is direct.
+            Value::Vector { coords, .. } => {
+                // The scalars' own pretty forms (the Int/Float arms
+                // above), one spelling through the shared helper.
+                let joined = coords
+                    .iter()
+                    .map(coord_pretty)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("Vector{{{joined}}}")
+            }
         }
     }
 }
@@ -138,6 +148,15 @@ fn double_scientific(f: f64) -> String {
     let exponent: i64 = exponent.parse().expect("a LowerExp exponent is an integer");
     let (mantissa, exponent) = round_half_up_at_six(mantissa, exponent);
     format!("{mantissa}e{exponent:+03}")
+}
+
+/// A packed coordinate's pretty form — the `Value::Int`/`Value::Float`
+/// arms' renders, spelled once for the vector arm (ADR-0706).
+fn coord_pretty(c: Coord) -> String {
+    match c {
+        Coord::I(i) => format!("Long({i})"),
+        Coord::F(f) => format!("Double({})", double_scientific(f)),
+    }
 }
 
 /// Round a `{:e}` mantissa string (`"1.0078125"`, `"-1.5"`, `"9"`) half-up
