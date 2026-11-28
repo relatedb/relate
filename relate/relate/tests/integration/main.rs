@@ -112,6 +112,7 @@ mod pattern_prop_policy;
 mod pipelined_write_batch;
 mod plan_cache_subscript_literals;
 mod point_index;
+mod point_list_crs;
 mod pokec_fixture;
 mod predicate_list_coercion;
 mod procedure_validation;
