@@ -129,10 +129,17 @@ fn convert_list(vals: &[Value], projection: ListProjection) -> Result<Value> {
     if value.is_null() {
         return Ok(Value::Null);
     }
-    let coerce_float = |v: &Value| v.as_number().map(Value::Float).unwrap_or(Value::Null);
     let items: Cow<'_, [Value]> = match value {
         Value::List(xs) => Cow::Borrowed(xs.as_slice()),
-        Value::Vector { values, .. } => Cow::Owned(values.iter().map(coerce_float).collect()),
+        // The packed coordinates widen straight to the FLOAT values the
+        // per-`Value` coercion produced (ADR-0706) — one synthesized
+        // element per coordinate, no intermediate `Value` list beyond
+        // the projection's own input.
+        Value::Vector { coords, .. } => Cow::Owned(
+            (0..coords.len())
+                .map(|i| Value::Float(coords.coord_f64(i)))
+                .collect(),
+        ),
         _ => return Err(Error::ty("list conversion requires a list or vector")),
     };
     let converted = items

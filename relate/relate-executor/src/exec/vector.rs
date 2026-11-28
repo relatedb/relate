@@ -24,32 +24,30 @@ use crate::exec::search_filters::{
 use crate::overlay::ExecGraph;
 use crate::row::Row;
 use crate::vector_config::{StorableMetric, StoredVectorConfig};
-use crate::vector_similarity::{
-    similarity_row, similarity_values, value_coord, value_coords, PreparedQuery,
-};
+use crate::vector_similarity::{similarity_row, value_coords, PreparedQuery};
 
 pub(crate) fn vector_operand(value: &Value) -> Result<Option<Vec<f64>>> {
-    let values = match value {
-        Value::Null => return Ok(None),
-        Value::Vector { values, .. } | Value::List(values) => values,
-        _ => {
-            return Err(Error::ty(
-                "InvalidValueType: vector search requires a numeric list or VECTOR",
-            ))
-        }
+    // The query side converts once per search (ADR-0256) through the one
+    // candidate reader (ADR-0706): a packed VECTOR widens out of its
+    // family, a list keeps the per-element read — both with the scan's
+    // own skip contract for non-numbers.
+    if matches!(value, Value::Null) {
+        return Ok(None);
+    }
+    let Some(coords) = value_coords(value) else {
+        return Err(Error::ty(
+            "InvalidValueType: vector search requires a numeric list or VECTOR",
+        ));
     };
+    let values = coords
+        .to_f64_vec()
+        .ok_or_else(|| Error::ty("InvalidValueType: vector coordinates must be finite numbers"))?;
     if values.is_empty() {
         return Err(Error::ty(
             "InvalidValueType: vector search requires a non-empty vector",
         ));
     }
-    let mut out = Vec::with_capacity(values.len());
-    for value in values.iter() {
-        out.push(value_coord(value).ok_or_else(|| {
-            Error::ty("InvalidValueType: vector coordinates must be finite numbers")
-        })?);
-    }
-    Ok(Some(out))
+    Ok(Some(values))
 }
 
 /// One drift contract for every invalid stored index option: the
@@ -215,7 +213,7 @@ fn value_window(
         let Some(coords) = value_coords(value) else {
             return Ok(None);
         };
-        let Some(score) = similarity_values(*metric, prepared, coords) else {
+        let Some(score) = coords.score(*metric, prepared) else {
             return Ok(None);
         };
         if !search_filter_passes(graph, id, properties, filters)? {

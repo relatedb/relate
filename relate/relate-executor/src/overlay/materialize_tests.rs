@@ -8,6 +8,7 @@ use std::sync::Arc;
 use super::{ExecGraph, MaterializeCache};
 use crate::graph::Graph;
 use relate_core::{Node, Value};
+use relate_model::VectorCoords;
 
 #[test]
 fn materialize_passes_entity_free_payloads_through() {
@@ -45,15 +46,18 @@ fn materialize_passes_entity_free_payloads_through() {
     };
     assert!(Arc::ptr_eq(&out, &m));
 
-    let values: Arc<Vec<Value>> = Arc::new(vec![Value::Float(1.0), Value::Float(2.0)]);
-    let vector = Value::Vector {
-        coord: relate_core::VectorCoordKind::Float64,
-        values: Arc::clone(&values),
-    };
-    let Value::Vector { values: out, .. } =
+    let values: Arc<[f64]> = Arc::from(vec![1.0, 2.0]);
+    let vector = Value::vector(
+        relate_core::VectorCoordKind::Float64,
+        VectorCoords::from_f64(Arc::clone(&values)),
+    );
+    let Value::Vector { coords: out, .. } =
         view.materialize_cached(vector, &mut MaterializeCache::default())
     else {
         panic!("expected a vector");
+    };
+    let VectorCoords::F64(out) = out else {
+        panic!("expected the f64 family");
     };
     assert!(Arc::ptr_eq(&out, &values));
 }

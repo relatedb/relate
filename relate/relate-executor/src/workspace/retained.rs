@@ -118,15 +118,26 @@ impl<'a> RowWalk<'a> {
     /// only grow, so that transition happens exactly once. Returns the
     /// allocation's id and whether this was the first sight.
     fn note<T: ?Sized>(&mut self, allocation: &Arc<T>, own_bytes: u64) -> (usize, bool) {
+        self.note_by(
+            Arc::as_ptr(allocation) as *const u8,
+            Arc::strong_count(allocation),
+            own_bytes,
+        )
+    }
+
+    /// [`RowWalk::note`] keyed by an address and a holders figure — the
+    /// family-agnostic twin the packed-vector arm uses through
+    /// [`VectorCoords::arc_id`]/[`VectorCoords::arc_strong_count`].
+    fn note_by(&mut self, addr: *const u8, holders: usize, own_bytes: u64) -> (usize, bool) {
         #[cfg(test)]
         NOTE_OPS.with(|ops| ops.set(ops.get() + 1));
-        let id = Arc::as_ptr(allocation) as *const () as usize;
+        let id = addr as usize;
         let (noted, first) = match self.seen.entry(id) {
             Entry::Occupied(entry) => (entry.into_mut(), false),
             Entry::Vacant(entry) => (
                 entry.insert(RowAllocation {
                     bytes: own_bytes,
-                    holders: Arc::strong_count(allocation) as u64,
+                    holders: holders as u64,
                     row_refs: 0,
                 }),
                 true,
@@ -156,12 +167,23 @@ impl<'a> RowWalk<'a> {
             Value::Bytes(payload) => {
                 self.note(payload, relate_core::bytes_logical_bytes(payload));
             }
-            Value::List(items) | Value::Vector { values: items, .. } => {
+            Value::List(items) => {
                 let (id, first) =
                     self.note(items, buffer_bytes(items.len(), size_of::<Value>() as u64));
                 if first {
                     self.expandable.insert(id, Expandable::Items(items));
                 }
+            }
+            // The packed coordinates are one immutable numeric slice
+            // (ADR-0706) — charged at the family's slice bytes (the one
+            // width table) and keyed by the one address accessor, with no
+            // child items to expand.
+            Value::Vector { coords, .. } => {
+                self.note_by(
+                    coords.arc_id(),
+                    coords.arc_strong_count(),
+                    coords.byte_len(),
+                );
             }
             Value::Map(entries) => {
                 // The map's key figure is deferred to charge time (see

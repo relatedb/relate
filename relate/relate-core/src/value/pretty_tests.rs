@@ -4,6 +4,7 @@
 //! concern owns both its source module and its pins.
 
 use super::*;
+use relate_model::VectorCoords;
 use std::sync::Arc;
 
 #[test]
@@ -141,10 +142,7 @@ fn pretty_print_matches_neo4j_2026_10() {
         // Engine-only scalar: the container family's form (live 2026.10.1
         // has no vector values to probe).
         (
-            Value::Vector {
-                coord: VectorCoordKind::Int8,
-                values: vec![Value::Int(1), Value::Int(2)].into(),
-            },
+            Value::vector(VectorCoordKind::Int8, VectorCoords::from_int(vec![1, 2])),
             "Vector{Long(1), Long(2)}",
         ),
         // Never reaches an operand-echoing message (null propagation

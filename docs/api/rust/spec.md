@@ -470,7 +470,7 @@ offending element's element id). There is no privilege check
 
 ## `Value`
 
-`Null`, `Bool`, `Int(i64)`, `Float(f64)`, `String(Arc<str>)`, `List(Arc<Vec<Value>>)`, `Map(Arc<BTreeMap<String, Value>>)`, `Node`, `Relationship`, `Path`, `Temporal` (openCypher date/time/localtime/datetime/localdatetime/duration; ADR-0021), `Point`, `Uuid(u128)` (CIP-246), `Vector { coord: VectorCoordKind, values: Arc<Vec<Value>> }`, `Bytes(Arc<[u8]>)`. Core `Value` has no `Geometry` variant.
+`Null`, `Bool`, `Int(i64)`, `Float(f64)`, `String(Arc<str>)`, `List(Arc<Vec<Value>>)`, `Map(Arc<BTreeMap<String, Value>>)`, `Node`, `Relationship`, `Path`, `Temporal` (openCypher date/time/localtime/datetime/localdatetime/duration; ADR-0021), `Point`, `Uuid(u128)` (CIP-246), `Vector { coord: VectorCoordKind, coords: VectorCoords }` (packed per coordinate family — `Arc<[f32]>` for FLOAT16/BFLOAT16/FLOAT32, `Arc<[f64]>` for FLOAT, `Arc<[i64]>` for the integer kinds; ADR-0706), `Bytes(Arc<[u8]>)`. Core `Value` has no `Geometry` variant.
 
 `Bytes` is a statement-scoped byte array ([ADR-0327](../../adr/0327-engine-statement-scoped-bytes-value.md)).
 No Cypher expression creates one: it enters as a parameter (`Value::Bytes`

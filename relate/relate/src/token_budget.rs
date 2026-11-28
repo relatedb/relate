@@ -564,11 +564,16 @@ fn mix_value(hash: &mut u64, value: &Value) {
         }
         Value::Temporal(temporal) => mix(hash, temporal.to_string().as_bytes()),
         Value::Point(point) => mix(hash, &format!("{point:?}").into_bytes()),
-        Value::Vector { coord, values } => {
+        Value::Vector { coord, coords } => {
             mix(hash, b"vector");
             mix(hash, &format!("{coord:?}").into_bytes());
-            for value in values.iter() {
-                mix_value(hash, value);
+            // The packed read (ADR-0706) mixes each coordinate exactly as
+            // the per-`Value` walk did — `Int` and `Float` share the
+            // little-endian byte mix, so the hash is unchanged.
+            for c in coords.iter() {
+                // `Int` and `Float` share the little-endian byte mix —
+                // the accessor spells the erase once.
+                mix(hash, &c.to_le_bytes());
             }
         }
     }

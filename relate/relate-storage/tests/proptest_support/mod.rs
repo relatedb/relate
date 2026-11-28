@@ -74,6 +74,7 @@ use proptest::test_runner::Config;
 use relate_core::temporal::parse_iso;
 use relate_core::{uuid_hyphenated, PointValue, Value, VectorCoordKind};
 use relate_executor::{Graph, RedoOp};
+use relate_model::VectorCoords;
 use relate_storage::SnapshotCodecKind;
 use serde_json::{json, Value as JsonValue};
 
@@ -389,7 +390,9 @@ pub fn checkpoint_persistable_ops(ops: Vec<RedoOp>) -> Vec<RedoOp> {
                     *z = persistable_f64(*z);
                 }
             }
-            Value::Vector { values, .. } | Value::List(values) => {
+            // A packed Vector (ADR-0706) holds only finite numbers by
+            // construction — nothing inside it to make persistable.
+            Value::List(values) => {
                 let mut owned = Arc::unwrap_or_clone(std::mem::take(values));
                 owned.iter_mut().for_each(persistable_value);
                 *values = owned.into();
@@ -403,6 +406,7 @@ pub fn checkpoint_persistable_ops(ops: Vec<RedoOp>) -> Vec<RedoOp> {
             | Value::Bool(_)
             | Value::Int(_)
             | Value::String(_)
+            | Value::Vector { .. }
             | Value::Temporal(_) => {}
             // Graph entities are query results, never property payloads (see
             // the module docs), and byte arrays are statement-scoped
@@ -593,17 +597,13 @@ fn point_value() -> impl Strategy<Value = Value> {
 /// float-coordinate vector of floats, matching the CIP-200 homogeneity rule.
 fn vector_value() -> impl Strategy<Value = Value> {
     prop_oneof![
-        prop::collection::vec(any::<i64>().prop_map(Value::Int), 1..4).prop_map(|values| {
-            Value::Vector {
-                coord: VectorCoordKind::Int64,
-                values: values.into(),
-            }
+        prop::collection::vec(any::<i64>(), 1..4).prop_map(|values| {
+            Value::vector(VectorCoordKind::Int64, VectorCoords::from_int(values))
         }),
-        prop::collection::vec(any::<f64>().prop_map(Value::Float), 1..4).prop_map(|values| {
-            Value::Vector {
-                coord: VectorCoordKind::Float64,
-                values: values.into(),
-            }
-        }),
+        // Finite floats only: the packed family's constructor invariant.
+        prop::collection::vec(any::<f64>().prop_filter("finite", |f| f.is_finite()), 1..4,)
+            .prop_map(|values| {
+                Value::vector(VectorCoordKind::Float64, VectorCoords::from_f64(values))
+            }),
     ]
 }

@@ -77,10 +77,7 @@ fn to_display_string_matches_neo4j_2026_09() {
         // `vector()`'s argument, never a `NOT NULL` type expression
         // (TypeConversion4 [3], StringInterpolation [1.10]).
         (
-            Value::Vector {
-                coord: VectorCoordKind::Int8,
-                values: vec![Value::Int(1), Value::Int(2)].into(),
-            },
+            Value::vector(VectorCoordKind::Int8, VectorCoords::from_int(vec![1, 2])),
             "vector([1, 2], 2, INTEGER8)",
         ),
     ];
@@ -91,25 +88,30 @@ fn to_display_string_matches_neo4j_2026_09() {
 
 #[test]
 fn vector_literal_is_a_value_constructor() {
-    let vector = |coord, values: Vec<Value>| Value::Vector {
-        coord,
-        values: values.into(),
-    };
+    let vector = |coord, values: VectorCoords| Value::vector(coord, values);
     assert_eq!(
-        vector(VectorCoordKind::Int8, vec![Value::Int(1), Value::Int(2)]).to_cypher_literal(),
+        vector(VectorCoordKind::Int8, VectorCoords::from_int(vec![1, 2])).to_cypher_literal(),
         "vector([1, 2], 2, INTEGER8)"
     );
     assert_eq!(
         vector(
             VectorCoordKind::Float32,
-            vec![Value::Float(1.0), Value::Float(2.5)]
+            VectorCoords::from_f32(vec![1.0, 2.5])
         )
         .to_cypher_literal(),
         "vector([1.0, 2.5], 2, FLOAT32)"
     );
+    // 256.0 is BFLOAT16-exact; the hand-built 257.0 this case used before
+    // ADR-0706 was a shape no engine path could produce (the `vector()`
+    // coercion narrows to the kind), and the checked constructor now
+    // refuses it.
     assert_eq!(
-        vector(VectorCoordKind::BFloat16, vec![Value::Float(257.0)]).to_cypher_literal(),
-        "vector([257.0], 1, BFLOAT16)"
+        vector(
+            VectorCoordKind::BFloat16,
+            VectorCoords::from_f32(vec![256.0])
+        )
+        .to_cypher_literal(),
+        "vector([256.0], 1, BFLOAT16)"
     );
 }
 
@@ -144,10 +146,10 @@ fn float_literal_policy_is_shared_by_scalars_and_vector_coordinates() {
             value
         );
     }
-    let vector = Value::Vector {
-        coord: VectorCoordKind::Float64,
-        values: vec![Value::Float(1.0e16)].into(),
-    };
+    let vector = Value::vector(
+        VectorCoordKind::Float64,
+        VectorCoords::from_f64(vec![1.0e16]),
+    );
     // The vector's literal embeds the very coordinate spelling the table
     // pins above.
     assert_eq!(
@@ -273,14 +275,17 @@ fn clone_shares_arc_payloads() {
     };
     assert!(Arc::ptr_eq(a, b));
 
-    let vector = Value::Vector {
-        coord: VectorCoordKind::Float32,
-        values: vec![Value::Float(1.0), Value::Float(2.0)].into(),
-    };
-    let (Value::Vector { values: a, .. }, Value::Vector { values: b, .. }) =
+    let vector = Value::vector(
+        VectorCoordKind::Float32,
+        VectorCoords::from_f32(vec![1.0, 2.0]),
+    );
+    let (Value::Vector { coords: a, .. }, Value::Vector { coords: b, .. }) =
         (&vector, &vector.clone())
     else {
         panic!("clone changed the variant");
+    };
+    let (VectorCoords::F32(a), VectorCoords::F32(b)) = (a, b) else {
+        panic!("clone changed the family");
     };
     assert!(Arc::ptr_eq(a, b));
 }
@@ -332,36 +337,24 @@ fn vector_eq_is_elementwise_numeric() {
     // elements compare by mathematical value, so an Int element matches
     // the Float it denotes. A derived `av == bv` (the old code) was
     // variant-strict and disagreed with DISTINCT/GROUP BY.
-    let int_backed = Value::Vector {
-        coord: VectorCoordKind::Float64,
-        values: vec![Value::Int(1)].into(),
-    };
-    let float_backed = Value::Vector {
-        coord: VectorCoordKind::Float64,
-        values: vec![Value::Float(1.0)].into(),
-    };
+    let int_backed = Value::vector(VectorCoordKind::Float64, VectorCoords::from_int(vec![1]));
+    let float_backed = Value::vector(VectorCoordKind::Float64, VectorCoords::from_f64(vec![1.0]));
     assert!(int_backed.eq_non_null(&float_backed));
     assert!(float_backed.eq_non_null(&int_backed));
     // ... including the exact large-magnitude rule elementwise.
-    let big_int_backed = Value::Vector {
-        coord: VectorCoordKind::Float64,
-        values: vec![Value::Int(9_007_199_254_740_993)].into(),
-    };
-    let near_float_backed = Value::Vector {
-        coord: VectorCoordKind::Float64,
-        values: vec![Value::Float(9_007_199_254_740_992.0)].into(),
-    };
+    let big_int_backed = Value::vector(
+        VectorCoordKind::Float64,
+        VectorCoords::from_int(vec![9_007_199_254_740_993]),
+    );
+    let near_float_backed = Value::vector(
+        VectorCoordKind::Float64,
+        VectorCoords::from_f64(vec![9_007_199_254_740_992.0]),
+    );
     assert!(!big_int_backed.eq_non_null(&near_float_backed));
     // Different values and different coordinate kinds stay unequal.
-    let two = Value::Vector {
-        coord: VectorCoordKind::Float64,
-        values: vec![Value::Float(2.0)].into(),
-    };
+    let two = Value::vector(VectorCoordKind::Float64, VectorCoords::from_f64(vec![2.0]));
     assert!(!int_backed.eq_non_null(&two));
-    let other_kind = Value::Vector {
-        coord: VectorCoordKind::Int32,
-        values: vec![Value::Int(1)].into(),
-    };
+    let other_kind = Value::vector(VectorCoordKind::Int32, VectorCoords::from_int(vec![1]));
     assert!(!int_backed.eq_non_null(&other_kind));
 }
 
@@ -412,10 +405,10 @@ fn logical_bytes_cases() -> Vec<(Value, u64)> {
         ),
         (Value::Uuid(7), 16),
         (
-            Value::Vector {
-                coord: VectorCoordKind::Float64,
-                values: vec![Value::Float(1.0), Value::Float(2.0)].into(),
-            },
+            Value::vector(
+                VectorCoordKind::Float64,
+                VectorCoords::from_f64(vec![1.0, 2.0]),
+            ),
             16 + 16,
         ),
     ]
@@ -512,10 +505,7 @@ fn tagged_roundtrip() {
         Value::from_json_tagged(&point.to_json_tagged()).unwrap(),
         point
     );
-    let vector = Value::Vector {
-        coord: VectorCoordKind::Int32,
-        values: vec![Value::Int(1), Value::Int(2)].into(),
-    };
+    let vector = Value::vector(VectorCoordKind::Int32, VectorCoords::from_int(vec![1, 2]));
     assert_eq!(
         Value::from_json_tagged(&vector.to_json_tagged()).unwrap(),
         vector

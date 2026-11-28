@@ -113,54 +113,12 @@ fn assert_invalid_write_does_not_publish(store: &StoreTarget, reopened: &StoreTa
         "{error}"
     );
 
-    let invalid_vector = Graph::default();
-    invalid_vector
-        .load_checkpoint_node(Node {
-            id: 1,
-            labels: Arc::new(vec![]),
-            properties: relate_core::PropertyMap::share(BTreeMap::new()),
-        })
-        .unwrap();
-    invalid_vector
-        .load_checkpoint_node(Node {
-            id: 2,
-            labels: Arc::new(vec![]),
-            properties: relate_core::PropertyMap::share(BTreeMap::new()),
-        })
-        .unwrap();
-    invalid_vector
-        .load_checkpoint_rel(Relationship {
-            id: 3,
-            start: 1,
-            end: 2,
-            rel_type: "R".into(),
-            properties: relate_core::PropertyMap::share(BTreeMap::from([(
-                "payload".into(),
-                Value::Map(
-                    BTreeMap::from([(
-                        "nested".into(),
-                        Value::List(
-                            vec![Value::Vector {
-                                coord: VectorCoordKind::Float32,
-                                values: vec![Value::Float(1.5), Value::Float(0.1)].into(),
-                            }]
-                            .into(),
-                        ),
-                    )])
-                    .into(),
-                ),
-            )])),
-        })
-        .unwrap();
-    invalid_vector.set_commit_ts(1);
-    let error = crate::checkpoint(store, &invalid_vector, None).unwrap_err();
-    assert!(matches!(error, Error::Storage(_)), "{error}");
-    assert!(
-        error
-            .to_string()
-            .contains("relationship 3: invalid graph property $.payload.nested[0].values[1]"),
-        "{error}"
-    );
+    // The inexact-Float32 vector case this test also carried — a
+    // hand-installed `vector([1.5, 0.1], 2, FLOAT32)` rejected at
+    // checkpoint — is unconstructible under ADR-0706's checked
+    // constructor, so the checkpoint-side guard for it cannot be fed;
+    // its rejection is the constructor's own now (the model suite's
+    // `vector_constructor_rejects_*` pins).
 
     assert_eq!(
         crate::snapshot::get_object(store, GRAPH_JSON).unwrap(),

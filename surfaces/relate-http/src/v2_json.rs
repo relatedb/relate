@@ -12,7 +12,7 @@ use relate_model::value::float_text;
 
 use crate::http::{APPLICATION_JSON, VND_NEO4J_QUERY};
 use relate_model::wire;
-use relate_model::CypherValue;
+use relate_model::{Coord, CypherValue};
 
 /// The response media type negotiated from the request's `Accept` header:
 /// the plain `application/json` rendering, or the Neo4j Query API v2 media
@@ -223,7 +223,7 @@ pub(crate) fn v2_value_json_at(
         // encodings (ADR-0236); the `{coordinates, crs}` object was the
         // Relate-only shape, which a client's Point decoder does not know.
         V::Point(p) => form.encode("Point", Json::String(relate_model::point::ewkt(p))),
-        V::Vector { coord, values, .. } => {
+        V::Vector { coord, coords, .. } => {
             let Some(next) = relate::next_depth(depth) else {
                 return Ok(Json::Null);
             };
@@ -234,15 +234,27 @@ pub(crate) fn v2_value_json_at(
                         // The Neo4j coordinatesType vocabulary (INT8 …
                         // FLOAT64); coordinates are strings there.
                         "coordinatesType": vector_coord_name(coord),
-                        "coordinates": values
+                        "coordinates": coords
                             .iter()
-                            .map(|v| Json::String(vector_coord_text(v)))
+                            .map(|c| Json::String(c.text()))
                             .collect::<Vec<_>>(),
                     }),
                 )
             } else {
-                // A plain vector is exactly a list of its coordinates.
-                list_json(values, form, next)?
+                // A plain vector is exactly a list of its coordinates —
+                // the packed read widens each coordinate to the FLOAT
+                // value the `Value` walk produced (ADR-0706).
+                list_json(
+                    &coords
+                        .iter()
+                        .map(|c| match c {
+                            Coord::I(n) => V::Int(n),
+                            Coord::F(f) => V::Float(f),
+                        })
+                        .collect::<Vec<_>>(),
+                    form,
+                    next,
+                )?
             }
         }
         // Geometry is a Relate extension the Neo4j client codecs do not
@@ -346,17 +358,6 @@ pub(crate) fn v2_map_json_at(
         .collect()
 }
 
-/// A vector coordinate's text (the typed Vector spells coordinates as
-/// strings): a float takes the surface's one rendering policy, so a
-/// non-finite coordinate reads `Infinity` like every other float, never the
-/// `CypherValue` Display's `Inf`.
-fn vector_coord_text(value: &CypherValue) -> String {
-    match value {
-        CypherValue::Float(f) => float_text(*f),
-        other => other.to_string(),
-    }
-}
-
 /// Which entity kind an element id encodes (the `4`/`5` digit and the
 /// `n`/`r` prefix travel together in [`element_id`]).
 #[derive(Clone, Copy)]
@@ -396,15 +397,15 @@ pub(crate) fn carries_entity(value: &relate::Value) -> bool {
         V::Node(_) | V::Relationship(_) | V::Path(_) => true,
         V::List(items) => items.iter().any(carries_entity),
         V::Map(map) => map.values().any(carries_entity),
-        // The plain form descends into a vector's values; the typed form
-        // spells them as numbers. A vector holds numbers by construction, so
-        // this is honest against the writer either way.
-        V::Vector { values, .. } => values.iter().any(carries_entity),
+        // A packed vector (ADR-0706) holds only finite numbers by
+        // construction, so it never carries an entity — the typed form
+        // spells them as numbers and the plain form never descends.
         V::Null
         | V::Bool(_)
         | V::Int(_)
         | V::Float(_)
         | V::String(_)
+        | V::Vector { .. }
         | V::Temporal(_)
         | V::Point(_)
         | V::Uuid(_)

@@ -1,5 +1,6 @@
 use super::*;
 use crate::value::{GeometryValue, IsoDuration, PointValue, VectorCoordKind};
+use crate::vector::coords::VectorCoords;
 use chrono::{FixedOffset, NaiveDate, NaiveTime, TimeZone};
 
 /// The fixed `elapsed_ms` the envelope fixtures pin (ADR-0221): real
@@ -254,15 +255,10 @@ pub fn value_fixtures() -> Vec<ValueFixture> {
         },
         ValueFixture {
             name: "vector",
-            value: CypherValue::Vector {
-                coord: VectorCoordKind::Float32,
-                dim: 3,
-                values: vec![
-                    CypherValue::Float(1.0),
-                    CypherValue::Float(2.0),
-                    CypherValue::Float(3.0),
-                ],
-            },
+            value: CypherValue::vector(
+                VectorCoordKind::Float32,
+                VectorCoords::from_f32(vec![1.0f32, 2.0, 3.0]),
+            ),
             expected: serde_json::json!({
                 "type": "FLOAT32",
                 "dim": 3,

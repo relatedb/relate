@@ -252,8 +252,8 @@ stays usable:
 | `relate_value_point(v, int32_t *srid, int32_t *dim, double *x, *y, *z)` | POINT | dim 2 or 3; x/y = longitude/latitude for a geographic srid; `z` written only when `*dim` is 3; every out-param must be non-NULL |
 | `relate_value_vector_dtype(v)` | VECTOR | the engine's canonical coordinate-type name — `INTEGER8`, `INTEGER16`, `INTEGER32`, `INTEGER`, `FLOAT16`, `BFLOAT16`, `FLOAT32` or `FLOAT`; result-owned |
 | `relate_value_vector_dim(v)` | VECTOR | the dimension |
-| `relate_value_vector_float(v, i, double *out)` | VECTOR | the four `FLOAT*` dtypes; the int family or an out-of-range index refuses |
-| `relate_value_vector_int(v, i, int64_t *out)` | VECTOR | the four `INTEGER*` dtypes; the float family or an out-of-range index refuses |
+| `relate_value_vector_float(v, i, double *out)` | VECTOR | the four `FLOAT*` dtypes; an integer-kind vector or an out-of-range index refuses (a float-kind vector widens an `Int`-family coordinate — ADR-0706) |
+| `relate_value_vector_int(v, i, int64_t *out)` | VECTOR | an `Int`-family coordinate; a float coordinate or an out-of-range index refuses |
 
 The rest of an entity reads through the generic accessors: a NODE's labels
 are its list (each item a STRING) and its properties its map; a

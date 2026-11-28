@@ -35,6 +35,7 @@ use std::collections::BTreeMap;
 
 use relate::Value;
 use relate_core::VectorCoordKind;
+use relate_model::VectorCoords;
 
 use common::connection;
 
@@ -226,18 +227,9 @@ fn vector_equality_and_distinct_share_the_elementwise_exact_rule() {
     // Int element vs the Float it denotes) can arrive via parameters; the
     // old derived-`PartialEq` vector arm in `eq_non_null` called them
     // unequal while DISTINCT/GROUP BY normalized the elements numerically.
-    let int_backed = Value::Vector {
-        coord: VectorCoordKind::Float64,
-        values: vec![Value::Int(1)].into(),
-    };
-    let float_backed = Value::Vector {
-        coord: VectorCoordKind::Float64,
-        values: vec![Value::Float(1.0)].into(),
-    };
-    let two = Value::Vector {
-        coord: VectorCoordKind::Float64,
-        values: vec![Value::Float(2.0)].into(),
-    };
+    let int_backed = Value::vector(VectorCoordKind::Float64, VectorCoords::from_int(vec![1]));
+    let float_backed = Value::vector(VectorCoordKind::Float64, VectorCoords::from_f64(vec![1.0]));
+    let two = Value::vector(VectorCoordKind::Float64, VectorCoords::from_f64(vec![2.0]));
 
     let mut c = connection();
     // `=` direction one: numerically equal elements -> true...

@@ -94,7 +94,7 @@ pub(super) fn bi_size(_graph: &ExecGraph<'_>, _n: &str, vals: Vec<Value>) -> Res
     unary_arg(vals, |value| match value {
         Value::List(xs) => Ok(Value::Int(xs.len() as i64)),
         Value::String(s) => Ok(Value::Int(s.chars().count() as i64)),
-        Value::Vector { values, .. } => Ok(Value::Int(values.len() as i64)),
+        Value::Vector { coords, .. } => Ok(Value::Int(coords.len() as i64)),
         Value::Path(_) => Err(Error::invalid_argument_value("size() on paths")),
         other => {
             // Same sentence as the 22N01 family, in size()'s legacy
@@ -381,6 +381,7 @@ mod tests {
     use super::*;
     use crate::graph::Graph;
     use crate::test_support::ints;
+    use relate_model::VectorCoords;
 
     #[test]
     fn tail_drops_the_head_of_a_shared_or_unique_list() {
@@ -493,10 +494,10 @@ mod tests {
                 Value::Bool(true),
                 Value::String("abc".into()),
                 Value::Map(std::collections::BTreeMap::new().into()),
-                Value::Vector {
-                    coord: relate_core::VectorCoordKind::Float64,
-                    values: vec![Value::Float(1.0)].into(),
-                },
+                Value::vector(
+                    relate_core::VectorCoordKind::Float64,
+                    VectorCoords::from_f64(vec![1.0]),
+                ),
             ] {
                 let error = builtin(&graph, name, vec![bad]).unwrap_err();
                 assert_invalid_argument(error, "LIST<ANY>");
@@ -522,10 +523,10 @@ mod tests {
             Value::Int(1),
             Value::Bool(true),
             Value::Map(std::collections::BTreeMap::new().into()),
-            Value::Vector {
-                coord: relate_core::VectorCoordKind::Float64,
-                values: vec![Value::Float(1.0)].into(),
-            },
+            Value::vector(
+                relate_core::VectorCoordKind::Float64,
+                VectorCoords::from_f64(vec![1.0]),
+            ),
         ] {
             let error = bi_reverse(&graph, "reverse", vec![bad]).unwrap_err();
             assert_invalid_argument(error, "STRING or LIST<ANY>");
@@ -555,10 +556,10 @@ mod tests {
             bi_size(
                 &graph,
                 "size",
-                vec![Value::Vector {
-                    coord: relate_core::VectorCoordKind::Float64,
-                    values: vec![Value::Float(1.0), Value::Float(2.0)].into(),
-                }]
+                vec![Value::vector(
+                    relate_core::VectorCoordKind::Float64,
+                    VectorCoords::from_f64(vec![1.0, 2.0]),
+                )]
             )
             .unwrap(),
             Value::Int(2)

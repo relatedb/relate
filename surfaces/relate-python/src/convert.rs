@@ -405,8 +405,8 @@ pub(super) fn cypher_value_to_py(
         // The one construction site: `Vector::from_engine` selects the
         // coordinate family from the kind (private fields — a Vector can
         // never carry a kind/payload mismatch).
-        CypherValue::Vector { coord, values, .. } => {
-            Ok(Py::new(py, Vector::from_engine(*coord, values)?)?.into_any())
+        CypherValue::Vector { coord, coords, .. } => {
+            Ok(Py::new(py, Vector::from_engine(*coord, coords))?.into_any())
         }
         // Geometries surface as their canonical, self-describing wire shape
         // (a plain dict), reusing the shared encoder.

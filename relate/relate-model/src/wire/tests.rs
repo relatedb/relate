@@ -109,11 +109,10 @@ fn no_structured_variant_is_a_display_string() {
 
 #[test]
 fn vector_is_structured_not_display_string() {
-    let v = CypherValue::Vector {
-        coord: crate::value::VectorCoordKind::Int8,
-        dim: 2,
-        values: vec![CypherValue::Int(1), CypherValue::Int(-2)],
-    };
+    let v = CypherValue::vector(
+        crate::value::VectorCoordKind::Int8,
+        crate::vector::coords::VectorCoords::from_int(vec![1i64, -2]),
+    );
     let got = value_to_wire_json(&v);
     assert_eq!(
         got,

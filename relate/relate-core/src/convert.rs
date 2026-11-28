@@ -196,14 +196,9 @@ pub fn cypher_to_value(v: &CypherValue) -> Value {
             nanos: d.seconds as i128 * 1_000_000_000 + d.nanoseconds as i128,
         }),
         CypherValue::Point(p) => Value::Point(p.clone()),
-        CypherValue::Vector { coord, values, .. } => Value::Vector {
-            coord: *coord,
-            values: values
-                .iter()
-                .map(cypher_to_value)
-                .collect::<Vec<_>>()
-                .into(),
-        },
+        // The packed form crosses as one Arc clone (ADR-0706) — the
+        // per-coordinate `cypher_to_value` walk is gone.
+        CypherValue::Vector { coord, coords, .. } => Value::vector(*coord, coords.clone()),
         // Documented deviation (mirrors the Uuid arm in `value_to_cypher`):
         // the core `Value` has no Geometry variant, so a Geometry crossing
         // the model -> core bridge degrades to Null. Persisted properties

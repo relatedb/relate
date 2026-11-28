@@ -153,18 +153,12 @@ fn sample() -> Vec<Value> {
         Value::Point(PointValue::cartesian_2d(2.0, 0.0)),
         Value::Point(PointValue::wgs84_2d(1.0, 0.0)),
         Value::Point(PointValue::cartesian_3d(1.0, 0.0, 0.0)),
-        Value::Vector {
-            coord: VectorCoordKind::Float64,
-            values: Arc::new(vec![Value::Float(1.0)]),
-        },
-        Value::Vector {
-            coord: VectorCoordKind::Float64,
-            values: Arc::new(vec![Value::Float(1.0), Value::Float(2.0)]),
-        },
-        Value::Vector {
-            coord: VectorCoordKind::Int32,
-            values: Arc::new(vec![Value::Int(1)]),
-        },
+        Value::vector(VectorCoordKind::Float64, VectorCoords::from_f64(vec![1.0])),
+        Value::vector(
+            VectorCoordKind::Float64,
+            VectorCoords::from_f64(vec![1.0, 2.0]),
+        ),
+        Value::vector(VectorCoordKind::Int32, VectorCoords::from_int(vec![1])),
     ]
 }
 

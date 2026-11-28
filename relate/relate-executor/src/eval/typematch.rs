@@ -67,9 +67,9 @@ pub(crate) fn value_matches_type(value: &Value, ty: &TypeExpr) -> bool {
             }
             matches!(
                 value,
-                Value::Vector { coord: actual, values }
+                Value::Vector { coord: actual, coords }
                     if coord.as_ref().is_none_or(|c| c == actual.canonical_name())
-                        && dimension.is_none_or(|d| d as usize == values.len())
+                        && dimension.is_none_or(|d| d as usize == coords.len())
             )
         }
     }

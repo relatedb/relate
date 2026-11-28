@@ -51,7 +51,7 @@ use arrow_array::{
 use arrow_schema::{DataType, Field, Fields, Schema};
 use chrono::{FixedOffset, NaiveDate, Timelike};
 use indexmap::IndexMap;
-use relate_model::{wire, CypherValue, GeometryValue, VectorCoordKind};
+use relate_model::{wire, Coord, CypherValue, GeometryValue, VectorCoordKind};
 
 use crate::geo_encoding::{geometries_to_wkb_array, MAX_GEOMETRY_DEPTH};
 use crate::schema::{self, ColType};
@@ -680,9 +680,9 @@ fn build_vector_array(
             let mut b = $builder;
             for (row, v) in vals.iter().enumerate() {
                 match v {
-                    CypherValue::Vector { coord: c, dim: d, values } if *c == coord && *d == dim && values.len() == dim => {
+                    CypherValue::Vector { coord: c, coords } if *c == coord && coords.len() == dim => {
                         valid.push(true);
-                        for (idx, e) in values.iter().enumerate() {
+                        for (idx, e) in coords.iter().enumerate() {
                             let converted = ($convert)(e).ok_or_else(|| ArrowError::InvalidArgumentError(
                                  format!("column '{name}' row {} vector coordinate {idx} has wrong type, is out of range for, or loses precision in {coord:?}", row_offset + row)))?;
                             b.append_value(converted);
@@ -704,71 +704,31 @@ fn build_vector_array(
     }
 
     let (child, child_dt): (ArrayRef, DataType) = match coord {
-        VectorCoordKind::Int8 => build_child!(
-            Int8Builder::new(),
-            DataType::Int8,
-            |e: &CypherValue| match e {
-                CypherValue::Int(i) => i8::try_from(*i).ok(),
-                _ => None,
-            },
-            0i8
-        ),
-        VectorCoordKind::Int16 => build_child!(
-            Int16Builder::new(),
-            DataType::Int16,
-            |e: &CypherValue| match e {
-                CypherValue::Int(i) => i16::try_from(*i).ok(),
-                _ => None,
-            },
-            0i16
-        ),
-        VectorCoordKind::Int32 => build_child!(
-            Int32Builder::new(),
-            DataType::Int32,
-            |e: &CypherValue| match e {
-                CypherValue::Int(i) => i32::try_from(*i).ok(),
-                _ => None,
-            },
-            0i32
-        ),
-        VectorCoordKind::Int64 => build_child!(
-            Int64Builder::new(),
-            DataType::Int64,
-            |e: &CypherValue| match e {
-                CypherValue::Int(i) => Some(*i),
-                _ => None,
-            },
-            0i64
-        ),
-        VectorCoordKind::Float32 => build_child!(
-            Float32Builder::new(),
-            DataType::Float32,
-            |e: &CypherValue| match e {
-                CypherValue::Float(f) if coord.is_exact(*f) => Some(*f as f32),
-                _ => None,
-            },
-            0f32
-        ),
-        // Every FLOAT16/BFLOAT16 coordinate widens exactly into a binary32,
-        // and Arrow has no narrower floating type.
-        VectorCoordKind::Float16 | VectorCoordKind::BFloat16 => build_child!(
-            Float32Builder::new(),
-            DataType::Float32,
-            |e: &CypherValue| match e {
-                CypherValue::Float(f) if coord.is_exact(*f) => Some(*f as f32),
-                _ => None,
-            },
-            0f32
-        ),
-        VectorCoordKind::Float64 => build_child!(
-            Float64Builder::new(),
-            DataType::Float64,
-            |e: &CypherValue| match e {
-                CypherValue::Float(f) if coord.is_exact(*f) => Some(*f),
-                _ => None,
-            },
-            0f64
-        ),
+        VectorCoordKind::Int8 => {
+            build_child!(Int8Builder::new(), DataType::Int8, narrow::<i8>, 0i8)
+        }
+        VectorCoordKind::Int16 => {
+            build_child!(Int16Builder::new(), DataType::Int16, narrow::<i16>, 0i16)
+        }
+        VectorCoordKind::Int32 => {
+            build_child!(Int32Builder::new(), DataType::Int32, narrow::<i32>, 0i32)
+        }
+        VectorCoordKind::Int64 => {
+            build_child!(Int64Builder::new(), DataType::Int64, narrow::<i64>, 0i64)
+        }
+        // Every FLOAT16/BFLOAT16/FLOAT32 coordinate lives in the f32
+        // family and widens exactly into Arrow's binary32 — one row, no
+        // narrower floating type exists.
+        // The three f32-family kinds share Arrow's binary32 child (no
+        // narrower float exists); the arms must be spelled for the
+        // match's exhaustiveness, the membership predicate lives on the
+        // kind.
+        VectorCoordKind::Float16 | VectorCoordKind::BFloat16 | VectorCoordKind::Float32 => {
+            build_child!(Float32Builder::new(), DataType::Float32, as_f32, 0f32)
+        }
+        VectorCoordKind::Float64 => {
+            build_child!(Float64Builder::new(), DataType::Float64, as_f64, 0f64)
+        }
     }?;
 
     let field = Arc::new(Field::new("item", child_dt, false));
@@ -779,6 +739,30 @@ fn build_vector_array(
         child,
         Some(nulls),
     )?))
+}
+
+/// once for the four integer rows of the builder table (ADR-0706).
+fn narrow<T: TryFrom<i64>>(coord: Coord) -> Option<T> {
+    match coord {
+        Coord::I(i) => T::try_from(i).ok(),
+        Coord::F(_) => None,
+    }
+}
+
+/// The float families' one accessor each — the twins of [`narrow`], so
+/// every builder-table row names one conversion (ADR-0706).
+/// The float families' one widening (ADR-0706): the `Int` family under a
+/// float kind is legal and reads as its number. Both arms succeed, so the
+/// read is total — `as_f32` narrows to the column's binary32.
+fn as_f64(coord: Coord) -> Option<f64> {
+    Some(match coord {
+        Coord::F(f) => f,
+        Coord::I(n) => n as f64,
+    })
+}
+
+fn as_f32(coord: Coord) -> Option<f32> {
+    Some(as_f64(coord)? as f32)
 }
 
 /// Build a `Struct{id, labels, properties}` array for a node column.

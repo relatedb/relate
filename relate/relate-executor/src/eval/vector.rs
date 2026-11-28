@@ -4,7 +4,8 @@ use relate_core::{Error, ErrorKind, Result, Value, VectorCoordKind};
 use relate_ir::VectorMetric;
 
 use crate::vector_config::{vector_dimension, VECTOR_DIMENSIONS_MAX, VECTOR_DIMENSIONS_MIN};
-use crate::vector_similarity::value_coords;
+use crate::vector_similarity::{value_coords, CandidateCoords};
+use relate_model::{CoordError, VectorCoords};
 
 /// Why a list/VECTOR argument is not a valid vector. The faults stay
 /// distinct because live Neo4j 2026.10.1 classes them differently: a null
@@ -21,38 +22,49 @@ enum CoordFault {
 /// [`CoordFault`] rather than a bare `None`, so a caller never re-scans the
 /// value to recover which class the rejection carries.
 fn as_floats(v: &Value) -> std::result::Result<Vec<f64>, CoordFault> {
-    let Some(values) = value_coords(v) else {
+    let Some(coords) = value_coords(v) else {
         return Err(CoordFault::NotNumeric);
     };
-    let mut out = Vec::with_capacity(values.len());
-    // A null anywhere wins over every other fault, and a wrong-typed entry
-    // over a non-finite one, matching live's invalid-vector classification.
-    let (mut null, mut not_numeric, mut non_finite) = (false, false, false);
-    for value in values {
-        match value {
-            Value::Int(i) => out.push(*i as f64),
-            // A NaN or infinite coordinate is not a valid vector (live
-            // 2026.10.1: 22N38, the `ArgumentError` class).
-            Value::Float(f) => {
-                non_finite |= !f.is_finite();
-                out.push(*f);
+    // A packed VECTOR (ADR-0706) is homogeneous and finite by
+    // construction, so none of the fault classes can arise from it — its
+    // coordinates widen in one pass. A plain list keeps the classified
+    // walk: a null, a wrong type or a non-finite entry is live's
+    // invalid-vector classification.
+    match coords {
+        CandidateCoords::Vector(packed) => Ok(packed.to_f64_vec()),
+        CandidateCoords::List(values) => {
+            let mut out = Vec::with_capacity(values.len());
+            // A null anywhere wins over every other fault, and a
+            // wrong-typed entry over a non-finite one, matching live's
+            // invalid-vector classification.
+            let (mut null, mut not_numeric, mut non_finite) = (false, false, false);
+            for value in values {
+                match value {
+                    Value::Int(i) => out.push(*i as f64),
+                    // A NaN or infinite coordinate is not a valid vector
+                    // (live 2026.10.1: 22N38, the `ArgumentError` class).
+                    Value::Float(f) => {
+                        non_finite |= !f.is_finite();
+                        out.push(*f);
+                    }
+                    Value::Null => null = true,
+                    _ => not_numeric = true,
+                }
             }
-            Value::Null => null = true,
-            _ => not_numeric = true,
+            let fault = if null {
+                Some(CoordFault::NullCoordinate)
+            } else if not_numeric {
+                Some(CoordFault::NotNumeric)
+            } else if non_finite {
+                Some(CoordFault::NonFinite)
+            } else {
+                None
+            };
+            match fault {
+                Some(fault) => Err(fault),
+                None => Ok(out),
+            }
         }
-    }
-    let fault = if null {
-        Some(CoordFault::NullCoordinate)
-    } else if not_numeric {
-        Some(CoordFault::NotNumeric)
-    } else if non_finite {
-        Some(CoordFault::NonFinite)
-    } else {
-        None
-    };
-    match fault {
-        Some(fault) => Err(fault),
-        None => Ok(out),
     }
 }
 
@@ -123,67 +135,35 @@ pub(crate) fn vector_construct(vals: &[Value]) -> Result<Value> {
         .to_ascii_uppercase();
     let coord = VectorCoordKind::from_alias(&coord_name)
         .ok_or_else(|| Error::ty("unknown vector coordinate type"))?;
-    let mut values = Vec::with_capacity(numbers.len());
-    for i in 0..numbers.len() {
-        let n = numbers
-            .number_at(i)
-            .ok_or_else(|| Error::ty("vector() coordinates must be numbers"))?;
-        values.push(coord_value(n, coord)?);
-    }
-    Ok(Value::Vector {
-        coord,
-        values: values.into(),
-    })
-}
-
-/// One `vector()` coordinate converted to `kind`: an integer kind
-/// truncates toward zero within the kind's width, a floating kind narrows
-/// to its precision.
-fn coord_value(n: f64, kind: VectorCoordKind) -> Result<Value> {
-    if kind.is_integer() {
-        int_coord(n, kind)
-    } else {
-        float_coord(n, kind)
-    }
-}
-
-/// Integer-family conversion: NaN coerces to 0, any other non-finite input
-/// is an error, and a finite value outside the kind's width is an
-/// `Overflow`. The value is truncated toward zero *before* the width test,
-/// as live Neo4j 2026.10 does: `vector([127.9], 1, INTEGER8)` is `127`, not
-/// an overflow.
-fn int_coord(n: f64, kind: VectorCoordKind) -> Result<Value> {
-    let n = if n.is_nan() { 0.0 } else { n };
-    if !n.is_finite() {
-        return Err(Error::ty("vector() coordinates must be finite numbers"));
-    }
-    let truncated = n.trunc();
-    // `f64 as i64` saturates, so the float-domain range test comes first: a
-    // truncated value outside INT64's range would clamp silently.
-    // `i64::MAX as f64` rounds up to 2^63, so the upper bound is inclusive
-    // at 2^63 — the one value past `i64::MAX`, which the saturating cast
-    // clamps to `i64::MAX` exactly as live Neo4j 2026.10 does. The kind's
-    // own width predicate then rejects the narrower kinds, so one test
-    // answers "does the truncated value fit this kind?".
-    let in_cast_range = truncated >= i64::MIN as f64 && truncated <= i64::MAX as f64;
-    let value = truncated as i64;
-    if !(in_cast_range && kind.holds_int(value)) {
-        return Err(Error::ty("Overflow"));
-    }
-    Ok(Value::Int(value))
-}
-
-/// Float-family conversion: the input must be finite, and the value
-/// narrowed to the coordinate kind's precision must stay finite (and thus
-/// fit the kind's range). The narrowing itself is the model's one
-/// [`VectorCoordKind::narrow_float`].
-fn float_coord(n: f64, kind: VectorCoordKind) -> Result<Value> {
-    if !n.is_finite() {
-        return Err(Error::ty("vector() coordinates must be finite numbers"));
-    }
-    kind.narrow_float(n)
-        .map(Value::Float)
-        .ok_or_else(|| Error::ty("InvalidVectorCoordinates"))
+    // The coerced coordinates land packed through the model's one
+    // kind→family spelling (ADR-0706): `VectorCoordKind::coerce` owns the
+    // per-kind value rules, `from_coords` picks the family — no local
+    // three-way branch.
+    let ns = (0..numbers.len())
+        .map(|i| {
+            numbers
+                .number_at(i)
+                .ok_or_else(|| Error::ty("vector() coordinates must be numbers"))
+        })
+        .collect::<Result<Vec<f64>>>()?;
+    let tokens = ns
+        .iter()
+        .map(|&n| {
+            coord.coerce(n).map_err(|reason| {
+                // One message per reason, at the boundary that renders it.
+                match reason {
+                    CoordError::NonFinite => {
+                        Error::ty("vector() coordinates must be finite numbers")
+                    }
+                    CoordError::Overflow => Error::ty("Overflow"),
+                    CoordError::Inexact => Error::ty("InvalidVectorCoordinates"),
+                }
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let coords = VectorCoords::from_coords(coord, tokens.into_iter())
+        .expect("coerced coordinates conform to their kind by construction");
+    Ok(Value::vector(coord, coords))
 }
 
 pub(crate) fn vector_dimension_count(vals: &[Value]) -> Result<Value> {
@@ -343,6 +323,7 @@ pub(crate) fn vector_euclidean(vals: &[Value]) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use relate_model::VectorCoords;
 
     fn list(xs: &[f64]) -> Value {
         Value::List(
@@ -362,10 +343,7 @@ mod tests {
         let v = construct(list(&[f64::NAN, 2.0]), 2, "INT8").unwrap();
         assert_eq!(
             v,
-            Value::Vector {
-                coord: VectorCoordKind::Int8,
-                values: vec![Value::Int(0), Value::Int(2)].into(),
-            }
+            Value::vector(VectorCoordKind::Int8, VectorCoords::from_int(vec![0, 2]))
         );
     }
 
@@ -382,10 +360,7 @@ mod tests {
     #[test]
     fn integer_coord_truncates_toward_zero_within_the_kind_width() {
         let one = |coord: &str, n: f64| construct(list(&[n]), 1, coord);
-        let int = |coord, value| Value::Vector {
-            coord,
-            values: vec![Value::Int(value)].into(),
-        };
+        let int = |coord, value| Value::vector(coord, VectorCoords::from_int(vec![value]));
         assert_eq!(one("INT8", 127.9).unwrap(), int(VectorCoordKind::Int8, 127));
         assert_eq!(
             one("INT8", -128.9).unwrap(),
@@ -409,10 +384,7 @@ mod tests {
         let v = construct(list(&[1.5]), 1, "FLOAT32").unwrap();
         assert_eq!(
             v,
-            Value::Vector {
-                coord: VectorCoordKind::Float32,
-                values: vec![Value::Float(1.5)].into(),
-            }
+            Value::vector(VectorCoordKind::Float32, VectorCoords::from_f32(vec![1.5]))
         );
         // 1e300 is a finite f64 but overflows f32.
         assert!(construct(list(&[1e300]), 1, "FLOAT32").is_err());
@@ -424,10 +396,10 @@ mod tests {
         let v = construct(list(&[1e300]), 1, "FLOAT64").unwrap();
         assert_eq!(
             v,
-            Value::Vector {
-                coord: VectorCoordKind::Float64,
-                values: vec![Value::Float(1e300)].into(),
-            }
+            Value::vector(
+                VectorCoordKind::Float64,
+                VectorCoords::from_f64(vec![1e300])
+            )
         );
         assert!(construct(list(&[f64::NAN]), 1, "FLOAT64").is_err());
         assert!(construct(list(&[f64::NEG_INFINITY]), 1, "FLOAT64").is_err());
@@ -461,19 +433,19 @@ mod tests {
         // FLOAT16: 10 mantissa bits, range +-65504.
         assert_eq!(
             construct(list(&[1.0, 0.1]), 2, "FLOAT16").unwrap(),
-            Value::Vector {
-                coord: VectorCoordKind::Float16,
-                values: vec![Value::Float(1.0), Value::Float(0.0999755859375)].into(),
-            }
+            Value::vector(
+                VectorCoordKind::Float16,
+                VectorCoords::from_f32(vec![1.0, 0.099975586]),
+            )
         );
         assert!(construct(list(&[65520.0]), 1, "FLOAT16").is_err());
         // BFLOAT16: the top 16 bits of a binary32.
         assert_eq!(
             construct(list(&[257.0]), 1, "BFLOAT16").unwrap(),
-            Value::Vector {
-                coord: VectorCoordKind::BFloat16,
-                values: vec![Value::Float(256.0)].into(),
-            }
+            Value::vector(
+                VectorCoordKind::BFloat16,
+                VectorCoords::from_f32(vec![256.0])
+            )
         );
         assert!(construct(list(&[1e39]), 1, "BFLOAT16").is_err());
     }

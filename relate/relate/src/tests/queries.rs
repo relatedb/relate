@@ -599,7 +599,7 @@ fn cip_expression_types_reductions_and_values() {
     assert_eq!(r.rows[0][2], Value::Float(5.0));
     assert!(matches!(
         &r.rows[0][3],
-        Value::Vector { values, .. } if values.len() == 3
+        Value::Vector { coords, .. } if coords.len() == 3
     ));
 
     let r = c

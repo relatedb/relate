@@ -19,7 +19,7 @@ use chrono::{DateTime, Duration as ChronoDuration, FixedOffset, NaiveDate, Naive
 use indexmap::IndexMap;
 use relate_model::serde_value::parse_numeric_offset;
 use relate_model::value::IsoDuration;
-use relate_model::{CypherValue, VectorCoordKind};
+use relate_model::{CypherValue, VectorCoordKind, VectorCoords};
 use std::collections::HashSet;
 
 use crate::geo_encoding::wkb_to_cypher_value;
@@ -667,64 +667,83 @@ fn fixed_size_list_to_vector(
         return Err(ArrowError::ParseError("null vector coordinate".into()));
     }
     let dim = child.len();
-    let (coord, values) = match child_dt {
-        DataType::Int8 => {
-            let a = downcast_array::<Int8Array>(child)?;
-            (
-                VectorCoordKind::Int8,
-                (0..dim)
-                    .map(|i| CypherValue::Int(a.value(i) as i64))
-                    .collect(),
-            )
-        }
-        DataType::Int16 => {
-            let a = downcast_array::<Int16Array>(child)?;
-            (
-                VectorCoordKind::Int16,
-                (0..dim)
-                    .map(|i| CypherValue::Int(a.value(i) as i64))
-                    .collect(),
-            )
-        }
-        DataType::Int32 => {
-            let a = downcast_array::<Int32Array>(child)?;
-            (
-                VectorCoordKind::Int32,
-                (0..dim)
-                    .map(|i| CypherValue::Int(a.value(i) as i64))
-                    .collect(),
-            )
-        }
-        DataType::Int64 => {
-            let a = downcast_array::<Int64Array>(child)?;
-            (
-                VectorCoordKind::Int64,
-                (0..dim).map(|i| CypherValue::Int(a.value(i))).collect(),
-            )
-        }
-        DataType::Float32 => {
-            let a = downcast_array::<Float32Array>(child)?;
-            (
-                VectorCoordKind::Float32,
-                (0..dim)
-                    .map(|i| CypherValue::Float(a.value(i) as f64))
+    // The arrow child array is already the packed per-family form
+    // (ADR-0706): one helper per Arrow primitive carries the collect, so
+    // each dispatch arm is a line naming its kind.
+    let (coord, coords) = match child_dt {
+        DataType::Int8 => (
+            VectorCoordKind::Int8,
+            int_coords::<arrow_array::types::Int8Type>(child, dim)?,
+        ),
+        DataType::Int16 => (
+            VectorCoordKind::Int16,
+            int_coords::<arrow_array::types::Int16Type>(child, dim)?,
+        ),
+        DataType::Int32 => (
+            VectorCoordKind::Int32,
+            int_coords::<arrow_array::types::Int32Type>(child, dim)?,
+        ),
+        DataType::Int64 => (
+            VectorCoordKind::Int64,
+            int_coords::<arrow_array::types::Int64Type>(child, dim)?,
+        ),
+        DataType::Float32 => (
+            VectorCoordKind::Float32,
+            VectorCoords::from_f32(
+                float_coords::<arrow_array::types::Float32Type>(child, dim)?
+                    .into_iter()
+                    .map(|v| v as f32)
                     .collect::<Vec<_>>(),
-            )
-        }
-        DataType::Float64 => {
-            let a = downcast_array::<Float64Array>(child)?;
-            (
-                VectorCoordKind::Float64,
-                (0..dim).map(|i| CypherValue::Float(a.value(i))).collect(),
-            )
-        }
+            ),
+        ),
+        DataType::Float64 => (
+            VectorCoordKind::Float64,
+            VectorCoords::from_f64(float_coords::<arrow_array::types::Float64Type>(child, dim)?),
+        ),
         _ => {
             return Err(ArrowError::CastError(format!(
                 "unsupported vector child type {child_dt:?}"
             )))
         }
     };
-    Ok(CypherValue::Vector { coord, dim, values })
+    Ok(CypherValue::vector(coord, coords))
+}
+
+/// The integer families' one collect: downcast to the column's Arrow
+/// primitive, widen each value to `i64` (the packed `Int` family), and
+/// pair it with its `VectorCoordKind`. `T::Native: Into<i64>` holds for
+/// every Arrow integer type, so one body serves all four.
+fn int_coords<T>(child: &dyn Array, dim: usize) -> Result<VectorCoords, ArrowError>
+where
+    T: arrow_array::types::ArrowPrimitiveType,
+    T::Native: Into<i64>,
+{
+    let a = downcast_array::<arrow_array::PrimitiveArray<T>>(child)?;
+    let xs = (0..dim).map(|i| a.value(i).into()).collect::<Vec<_>>();
+    Ok(VectorCoords::from_int(xs))
+}
+
+/// The float families' one collect: downcast, widen each value to `f64`,
+/// reject a non-finite coordinate with the one typed message, and return
+/// the widened vector — each dispatch arm builds its own family from it
+/// (one buffer, never two).
+fn float_coords<T>(child: &dyn Array, dim: usize) -> Result<Vec<f64>, ArrowError>
+where
+    T: arrow_array::types::ArrowPrimitiveType,
+    T::Native: Into<f64>,
+{
+    let a = downcast_array::<arrow_array::PrimitiveArray<T>>(child)?;
+    let mut xs = Vec::with_capacity(dim);
+    for i in 0..dim {
+        let v = a.value(i).into();
+        if !v.is_finite() {
+            return Err(ArrowError::ParseError(format!(
+                "non-finite vector coordinate {v} at {i}"
+            )));
+        }
+        xs.push(v);
+    }
+    Ok(xs)
 }
 
 fn labels_at(labels: &ListArray, idx: usize) -> Result<Vec<String>, ArrowError> {

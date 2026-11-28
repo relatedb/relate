@@ -7,7 +7,7 @@
 //! match: a new `Value` variant lands in both crossings by construction,
 //! never in a second copy that can drift.
 
-use relate_model::{CypherValue, IndexMap, VectorCoordKind};
+use relate_model::{CypherValue, IndexMap};
 
 use crate::convert::temporal_to_cypher;
 use crate::value::{next_depth, Node, Relationship, Value};
@@ -143,12 +143,6 @@ enum Frame<'a> {
         /// per-row hot path's one allocation, sized up front).
         out: IndexMap<String, CypherValue>,
     },
-    Vector {
-        coord: VectorCoordKind,
-        values: std::slice::Iter<'a, Value>,
-        child_depth: u32,
-        out: Vec<CypherValue>,
-    },
     Node {
         node: &'a Node,
         entries: std::slice::Iter<'a, (String, Value)>,
@@ -185,7 +179,6 @@ impl<'a> Frame<'a> {
         match self {
             Frame::List { child_depth, .. }
             | Frame::Map { child_depth, .. }
-            | Frame::Vector { child_depth, .. }
             | Frame::Node { child_depth, .. }
             | Frame::Rel { child_depth, .. }
             | Frame::Path { child_depth, .. } => *child_depth,
@@ -199,7 +192,6 @@ impl<'a> Frame<'a> {
     fn next_child(&mut self) -> Option<Input<'a>> {
         match self {
             Frame::List { items, .. } => items.next().map(Input::Value),
-            Frame::Vector { values, .. } => values.next().map(Input::Value),
             Frame::Map {
                 entries, pending, ..
             } => {
@@ -241,7 +233,7 @@ impl<'a> Frame<'a> {
     /// the stashed element kind.
     fn place(&mut self, done: CypherValue) {
         match self {
-            Frame::List { out, .. } | Frame::Vector { out, .. } => out.push(done),
+            Frame::List { out, .. } => out.push(done),
             Frame::Map { pending, out, .. }
             | Frame::Node { pending, out, .. }
             | Frame::Rel { pending, out, .. } => {
@@ -271,11 +263,6 @@ impl<'a> Frame<'a> {
         match self {
             Frame::List { out, .. } => CypherValue::List(out),
             Frame::Map { out, .. } => CypherValue::Map(out),
-            Frame::Vector { coord, out, .. } => CypherValue::Vector {
-                coord,
-                dim: out.len(),
-                values: out,
-            },
             Frame::Node { node, out, .. } => CypherValue::Node {
                 id: node.id,
                 labels: (*node.labels).clone(),
@@ -415,14 +402,12 @@ pub(crate) fn value_to_cypher_walk(
                 })?;
                 None
             }
-            Input::Value(Value::Vector { coord, values }) => {
-                admit_or(&mut stack, policy, enclosing, || Frame::Vector {
-                    coord: *coord,
-                    values: values.iter(),
-                    child_depth: enclosing + 1,
-                    out: Vec::with_capacity(values.len()),
-                })?;
-                None
+            // A packed Vector (ADR-0706) crosses as a leaf — an Arc
+            // clone, no child walk: the coordinates are one homogeneous
+            // numeric slice, not child Values, so the frame the
+            // `Vec<Value>` form opened here is gone.
+            Input::Value(Value::Vector { coord, coords }) => {
+                Some(CypherValue::vector(*coord, coords.clone()))
             }
             Input::Value(Value::Node(n)) => {
                 admit_or(&mut stack, policy, enclosing, || Frame::Node {

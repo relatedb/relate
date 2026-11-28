@@ -57,7 +57,7 @@ fn main() -> Result<(), Box<dyn StdError>> {
             .query("MATCH (n:Snapshot) RETURN n.p AS p, n.v AS v, n.meta AS meta")?;
         assert!(matches!(&result.rows[0][0], Value::Point(p) if p.x == 1.5 && p.y == 2.5));
         assert!(
-            matches!(&result.rows[0][1], Value::Vector { values, .. } if **values == vec![Value::Int(1), Value::Int(2)])
+            matches!(&result.rows[0][1], Value::Vector { coords, .. } if *coords == relate_model::VectorCoords::from_int(vec![1, 2]))
         );
         if !legacy {
             assert!(matches!(result.rows[0][2], Value::Map(_)));
@@ -125,7 +125,7 @@ fn temporal_checkpoint_example() -> Result<(), Box<dyn StdError>> {
         .all(|v| matches!(v, Value::Temporal(_))));
     assert!(matches!(&expected[0][4], Value::Point(p) if p.x == 1.5 && p.y == -2.25));
     assert!(
-        matches!(&expected[0][5], Value::Vector { values, .. } if **values == vec![Value::Int(1), Value::Int(2)])
+        matches!(&expected[0][5], Value::Vector { coords, .. } if *coords == relate_model::VectorCoords::from_int(vec![1, 2]))
     );
     db.checkpoint()?;
     drop(conn);

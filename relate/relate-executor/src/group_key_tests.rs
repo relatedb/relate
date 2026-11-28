@@ -197,6 +197,7 @@ mod tests {
 /// injectivity probes.
 #[cfg(test)]
 mod class_tests {
+    use relate_model::VectorCoords;
     use std::collections::BTreeMap;
     use std::sync::Arc;
 
@@ -275,10 +276,7 @@ mod class_tests {
             ("Uuid", Value::Uuid(42), General),
             (
                 "Vector",
-                Value::Vector {
-                    coord: VectorCoordKind::Float64,
-                    values: vec![Value::Float(1.0)].into(),
-                },
+                Value::vector(VectorCoordKind::Float64, VectorCoords::from_f64(vec![1.0])),
                 General,
             ),
         ];

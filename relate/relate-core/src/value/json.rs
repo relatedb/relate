@@ -141,14 +141,15 @@ impl Value {
                     .get("v")
                     .and_then(|x| x.as_array())
                     .ok_or_else(|| malformed("\"vector\" with an array \"v\""))?;
+                // Each entry decodes through the same scalar tagged decode
+                // the `Vec<Value>` walk used, then lands packed per family
+                // (ADR-0706) behind the checked constructor.
                 let values = xs
                     .iter()
                     .map(|x| Value::from_json_tagged_at(x, next))
                     .collect::<crate::Result<Vec<_>>>()?;
-                Value::Vector {
-                    coord,
-                    values: values.into(),
-                }
+                let coords = pack_decoded_values(coord, &values).map_err(crate::Error::storage)?;
+                Value::vector(coord, coords)
             }
             other => return Err(crate::Error::storage(format!("unknown type tag {other:?}"))),
         })
@@ -209,14 +210,19 @@ impl Value {
             Value::Point(p) => json!({
                 "_type": "point", "srid": p.srid, "x": p.x, "y": p.y, "z": p.z
             }),
-            Value::Vector { coord, values } => {
-                let Some(next) = next_depth(depth) else {
-                    return serde_json::Value::Null;
-                };
+            Value::Vector { coord, coords } => {
+                // No depth: the packed coordinates are scalars, nothing
+                // recurses.
                 json!({
                     "_type": "vector",
                     "coordinateType": coord.canonical_name(),
-                    "values": values.iter().map(|v| v.to_json_plain_at(next)).collect::<Vec<_>>()
+                    // The per-`Value` scalars these replaced encoded as
+                    // plain JSON numbers; the packed read (ADR-0706) is
+                    // the same encoding.
+                    "values": coords.iter().map(|c| match c {
+                        Coord::I(n) => json!(n),
+                        Coord::F(f) => json!(f),
+                    }).collect::<Vec<_>>()
                 })
             }
         }
@@ -287,15 +293,28 @@ impl Value {
                             .and_then(|x| x.as_str())
                             .and_then(VectorCoordKind::from_canonical_name)
                         {
-                            let values: Vec<Value> = o
-                                .get("values")
-                                .and_then(|x| x.as_array())
-                                .map(|xs| xs.iter().map(Value::from_json_plain).collect())
-                                .unwrap_or_default();
-                            return Value::Vector {
-                                coord,
-                                values: values.into(),
+                            // A missing or non-array `values` is not a
+                            // vector — fall through to the plain-map path
+                            // (an explicit `[]` stays the legitimate
+                            // empty vector).
+                            let Some(values) = o.get("values").and_then(|x| x.as_array()) else {
+                                return Value::Map(
+                                    o.iter()
+                                        .map(|(k, v)| (k.clone(), Value::from_json_plain(v)))
+                                        .collect::<BTreeMap<_, _>>()
+                                        .into(),
+                                );
                             };
+                            let values: Vec<Value> =
+                                values.iter().map(Value::from_json_plain).collect();
+                            // Best-effort decoder: a shape the packed
+                            // invariant rejects (ADR-0706) falls back to
+                            // this decoder's own unrecognized-tag path —
+                            // the plain map — instead of a panic or a
+                            // malformed Vector.
+                            if let Ok(coords) = pack_decoded_values(coord, &values) {
+                                return Value::vector(coord, coords);
+                            }
                         }
                     }
                     _ => {}
@@ -388,29 +407,17 @@ struct TaggedRef<'a>(&'a Value);
 impl serde::Serialize for TaggedRef<'_> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeMap;
-        let mut m = serializer.serialize_map(Some(2))?;
+        // The arms write two entries except the vector arm's three
+        // ("coord"/"t"/"v"), so no fixed arity is declared.
+        let mut m = serializer.serialize_map(None)?;
         match self.0 {
             Value::Null => m.serialize_entry("t", "null")?,
             Value::Bool(b) => {
                 m.serialize_entry("t", "bool")?;
                 m.serialize_entry("v", b)?;
             }
-            Value::Int(i) => {
-                m.serialize_entry("t", "int")?;
-                m.serialize_entry("v", i)?;
-            }
-            Value::Float(f) => {
-                m.serialize_entry("t", "float")?;
-                if f.is_nan() {
-                    m.serialize_entry("v", "NaN")?;
-                } else if *f == f64::INFINITY {
-                    m.serialize_entry("v", "Infinity")?;
-                } else if *f == f64::NEG_INFINITY {
-                    m.serialize_entry("v", "-Infinity")?;
-                } else {
-                    m.serialize_entry("v", f)?;
-                }
-            }
+            Value::Int(i) => write_tagged_number(&mut m, Coord::I(*i))?,
+            Value::Float(f) => write_tagged_number(&mut m, Coord::F(*f))?,
             Value::String(s) => write_tagged_str(&mut m, s)?,
             Value::Uuid(u) => {
                 m.serialize_entry("t", "uuid")?;
@@ -453,12 +460,12 @@ impl serde::Serialize for TaggedRef<'_> {
                 m.serialize_entry("t", "point")?;
                 m.serialize_entry("v", &TaggedPointRef(p))?;
             }
-            Value::Vector { coord, values } => {
+            Value::Vector { coord, coords } => {
                 // serde_json's Map is a BTreeMap: keys serialize sorted, so
                 // "coord" precedes "t". Match the historical bytes.
                 m.serialize_entry("coord", coord.canonical_name())?;
                 m.serialize_entry("t", "vector")?;
-                m.serialize_entry("v", &TaggedListRef(values))?;
+                m.serialize_entry("v", &TaggedCoordsRef(coords))?;
             }
         }
         m.end()
@@ -474,6 +481,34 @@ impl serde::Serialize for TaggedListRef<'_> {
             seq.serialize_element(&TaggedRef(v))?;
         }
         seq.end()
+    }
+}
+
+/// A packed vector's coordinates as the tagged sequence the
+/// `Vec<Value>` form serialized (ADR-0706): each coordinate is the same
+/// `{"t": "int"/"float", "v": …}` entry `TaggedRef` emitted for the
+/// scalar it replaces (coordinates are finite by construction, so the
+/// NaN/Infinity spellings are unreachable).
+struct TaggedCoordsRef<'a>(&'a VectorCoords);
+impl serde::Serialize for TaggedCoordsRef<'_> {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeSeq;
+        let coords = self.0;
+        let mut seq = s.serialize_seq(Some(coords.len()))?;
+        for c in coords.iter() {
+            seq.serialize_element(&TaggedCoordRef(&c))?;
+        }
+        seq.end()
+    }
+}
+
+struct TaggedCoordRef<'a>(&'a Coord);
+impl serde::Serialize for TaggedCoordRef<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let mut m = serializer.serialize_map(Some(2))?;
+        write_tagged_number(&mut m, *self.0)?;
+        m.end()
     }
 }
 
@@ -523,6 +558,31 @@ impl<'de> serde::Deserialize<'de> for Value {
     }
 }
 
+/// The tagged number vocabulary (`{"t": "int"/"float", "v": …}`) — one
+/// spelling for `TaggedRef`'s scalar arms and the packed-coordinate
+/// encoder (ADR-0706), including the non-finite float spellings.
+fn write_tagged_number<M: serde::ser::SerializeMap>(m: &mut M, c: Coord) -> Result<(), M::Error> {
+    match c {
+        Coord::I(n) => {
+            m.serialize_entry("t", "int")?;
+            m.serialize_entry("v", &n)?;
+        }
+        Coord::F(f) => {
+            m.serialize_entry("t", "float")?;
+            if f.is_nan() {
+                m.serialize_entry("v", "NaN")?;
+            } else if f == f64::INFINITY {
+                m.serialize_entry("v", "Infinity")?;
+            } else if f == f64::NEG_INFINITY {
+                m.serialize_entry("v", "-Infinity")?;
+            } else {
+                m.serialize_entry("v", &f)?;
+            }
+        }
+    }
+    Ok(())
+}
+
 fn map_to_json_plain<'a>(
     m: impl IntoIterator<Item = (&'a String, &'a Value)>,
     depth: u32,
@@ -566,4 +626,49 @@ fn rel_json(r: &Relationship, depth: u32) -> serde_json::Value {
         "type": r.rel_type,
         "properties": map_to_json_plain(r.properties.iter(), next),
     })
+}
+
+/// Decode-side packing (ADR-0706): scalars a tagged/plain JSON decode
+/// produced, validated per `coord` kind and packed into the family
+/// buffer. The storage path fails closed on a crafted document (the
+/// `Vec<Value>` decode this replaces accepted inconsistent coordinates
+/// and let the encoder reject them later); the lenient
+/// `from_json_plain` path treats an `Err` as an unrecognized shape.
+pub fn pack_decoded_values(
+    coord: VectorCoordKind,
+    values: &[Value],
+) -> Result<VectorCoords, String> {
+    // The decode-side classification (fail-closed with this codec's own
+    // error detail), landing in the ONE family-selection policy
+    // (ADR-0706's `VectorCoords::from_coords`) — the family mapping, the
+    // empty vector and the one-family rule have their single spelling
+    // there.
+    let reject = |what: &str| format!("vector {what}");
+    let mut tokens = Vec::with_capacity(values.len());
+    if coord.is_integer() {
+        for v in values {
+            let Value::Int(n) = v else {
+                return Err(reject("coordinate is not an integer"));
+            };
+            if !coord.holds_int(*n) {
+                return Err(reject("coordinate out of kind range"));
+            }
+            tokens.push(Coord::I(*n));
+        }
+    } else {
+        for v in values {
+            match v {
+                Value::Int(n) => tokens.push(Coord::I(*n)),
+                Value::Float(f) if f.is_finite() && coord.is_exact(*f) => {
+                    tokens.push(Coord::F(*f));
+                }
+                Value::Float(_) => {
+                    return Err(reject("coordinate is not finite or loses precision"));
+                }
+                _ => return Err(reject("coordinate is not a number")),
+            }
+        }
+    }
+    VectorCoords::from_coords(coord, tokens.into_iter())
+        .ok_or_else(|| reject("coordinates mix integer and float forms"))
 }

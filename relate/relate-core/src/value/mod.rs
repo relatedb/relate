@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 pub use relate_model::value::PointValue;
 pub use relate_model::VectorCoordKind;
+pub use relate_model::{Coord, VectorCoords};
 
 use relate_model::identifier::quote_identifier_shaped;
 
@@ -18,7 +19,7 @@ mod pretty;
 mod props;
 pub(crate) use depth::{descends, DEPTH_LIMIT_MARKER};
 pub use depth::{next_depth, value_depth_exceeded, MAX_VALUE_DEPTH};
-pub use json::{tagged_str, TaggedStr};
+pub use json::{pack_decoded_values, tagged_str, TaggedStr};
 pub use props::PropertyMap;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -63,9 +64,17 @@ pub enum Value {
     /// hyphenated string (`to_display_string`/`iso`-style bare form) and
     /// constructible from a string or two 64-bit halves.
     Uuid(u128),
+    /// CIP-200 VECTOR runtime value, its coordinates packed per family
+    /// (ADR-0706): one `Arc`-ed slice — `f32` for the reduced float kinds,
+    /// `f64` for FLOAT, `i64` for the integer kinds — 4/8/8 bytes per
+    /// coordinate where `Arc<Vec<Value>>` paid 48. Homogeneous and
+    /// kind-exact by construction: the canonical [`Value::vector`]
+    /// constructor is the only way to produce one. A rewrite swaps the
+    /// `Arc`; the MVCC version chain is the invalidation, so nothing
+    /// scan-side copies or tracks vector coordinates.
     Vector {
         coord: VectorCoordKind,
-        values: Arc<Vec<Value>>,
+        coords: VectorCoords,
     },
     /// A byte array (ADR-0327). Statement-scoped: it enters only as a query
     /// parameter (Bolt PackStream Bytes) and flows through expressions,
@@ -261,6 +270,15 @@ pub fn bytes_logical_bytes(payload: &[u8]) -> u64 {
 }
 
 impl Value {
+    /// The one way a `Vector` is built (ADR-0706) — the core twin of
+    /// `CypherValue::vector`, sharing the one invariant spelling
+    /// ([`VectorCoords::assert_conforms`]). No site constructs the
+    /// variant by hand.
+    pub fn vector(coord: VectorCoordKind, coords: VectorCoords) -> Self {
+        coords.assert_conforms(coord);
+        Value::Vector { coord, coords }
+    }
+
     /// Share one node across every row that clones this value.
     pub fn from_node(node: Node) -> Self {
         Value::Node(Arc::new(node))
@@ -315,13 +333,18 @@ impl Value {
             Value::Int(_) | Value::Float(_) => add_bytes(acc, 8, budget),
             Value::String(s) => add_str_bytes(s, acc, budget),
             Value::Bytes(b) => add_payload_bytes(b, acc, budget),
-            Value::List(xs) | Value::Vector { values: xs, .. } => {
-                memo.open(depth, xs, acc, budget, |memo, acc, next| {
-                    add_bytes(acc, 16, budget)?;
-                    xs.iter()
-                        .try_for_each(|x| x.add_logical_bytes(acc, budget, next, memo))
-                })
-            }
+            Value::List(xs) => memo.open(depth, xs, acc, budget, |memo, acc, next| {
+                add_bytes(acc, 16, budget)?;
+                xs.iter()
+                    .try_for_each(|x| x.add_logical_bytes(acc, budget, next, memo))
+            }),
+            // The packed coordinates are not child Values (ADR-0706):
+            // nothing descends and the charge is a pure function of the
+            // buffer's length, so it goes straight to `add_bytes` — a memo
+            // entry could not change it. The figure keeps the
+            // per-coordinate 8 bytes the `Vec<Value>` walk charged, so
+            // admission semantics are unchanged.
+            Value::Vector { coords, .. } => add_bytes(acc, 16 + 8 * coords.len() as u64, budget),
             Value::Map(m) => memo.open(depth, m, acc, budget, |memo, acc, next| {
                 add_bytes(acc, 16, budget)?;
                 add_property_bytes(m.iter(), acc, budget, next, memo)
@@ -434,16 +457,12 @@ impl Value {
             // Round-trippable form like VECTOR: uuid('...') (CIP-246).
             Value::Uuid(u) => format!("uuid('{}')", uuid_hyphenated(*u)),
             Value::Point(p) => p.to_string(),
-            Value::Vector { coord, values } => guarded_container(
-                depth,
-                |joined| vector_text(&joined, values.len(), *coord),
-                |d| {
-                    values
-                        .iter()
-                        .map(|value| value.to_cypher_literal_at(d))
-                        .collect()
-                },
-            ),
+            Value::Vector { coord, coords } => {
+                // Packed coordinates render through the one vector
+                // rendering (ADR-0706) — identical output, no child walk,
+                // so no depth guard to thread.
+                vector_text(coords, *coord)
+            }
         }
     }
 
@@ -502,11 +521,11 @@ impl Value {
             // Bare hyphenated string (verified on 2026.09.0).
             Value::Uuid(u) => uuid_hyphenated(*u),
             Value::Point(pt) => point_display(pt),
-            Value::Vector { coord, values } => guarded_container(
-                depth,
-                |joined| vector_text(&joined, values.len(), *coord),
-                |d| values.iter().map(|v| v.to_display_string_at(d)).collect(),
-            ),
+            Value::Vector { coord, coords } => {
+                // No depth: like the Path arm above, a packed vector has
+                // no child Values to render — nothing recurses.
+                vector_text(coords, *coord)
+            }
         }
     }
 }
@@ -607,8 +626,21 @@ fn point_display(p: &PointValue) -> String {
 /// `vector([1, 2], 2, INTEGER8)` — the coordinate type is the third
 /// argument, not a `NOT NULL`-suffixed type expression (that is the
 /// TYPE rendering's own path, e.g. `valueType()`).
-fn vector_text(joined: &str, len: usize, coord: VectorCoordKind) -> String {
-    format!("vector([{joined}], {len}, {})", coord.canonical_name())
+/// The one vector rendering (ADR-0706): a packed vector's coordinates in
+/// their scalar text, the family's canonical name, and the derived
+/// dimension — the literal and display walks both call this, so the two
+/// cannot drift.
+fn vector_text(coords: &VectorCoords, coord: VectorCoordKind) -> String {
+    let joined = coords
+        .iter()
+        .map(|c| c.text())
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "vector([{joined}], {}, {})",
+        coords.len(),
+        coord.canonical_name()
+    )
 }
 
 impl Node {

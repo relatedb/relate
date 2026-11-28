@@ -1,6 +1,6 @@
 use super::*;
 use relate_model::value::{GeometryValue, PointValue};
-use relate_model::VectorCoordKind;
+use relate_model::{VectorCoordKind, VectorCoords};
 
 #[test]
 fn graph_properties_and_composites_use_identical_typed_members() {
@@ -56,11 +56,9 @@ fn encoding_checks_each_nested_member_instead_of_serializing_invalid_values() {
                 coordinates: vec![[1.0, f64::NAN]],
             }],
         }),
-        CypherValue::Vector {
-            coord: VectorCoordKind::Float32,
-            dim: 1,
-            values: vec![CypherValue::Float(0.1)],
-        },
+        // The inexact-Float32 vector this list used to carry is
+        // unconstructible under ADR-0706's checked constructor; the
+        // remaining bad shapes keep the encode error pinned.
         CypherValue::Path {
             nodes: vec![],
             relationships: vec![],
@@ -75,11 +73,7 @@ fn encoding_checks_each_nested_member_instead_of_serializing_invalid_values() {
 
 #[test]
 fn scalar_and_persistence_payload_shape_is_stable() {
-    let vector = CypherValue::Vector {
-        coord: VectorCoordKind::Float32,
-        dim: 1,
-        values: vec![CypherValue::Float(-0.0)],
-    };
+    let vector = CypherValue::vector(VectorCoordKind::Float32, VectorCoords::from_f32(vec![-0.0]));
     let payload = encode(&vector).unwrap();
     assert_eq!(
         serde_json::from_str::<Value>(&payload).unwrap(),
@@ -113,11 +107,10 @@ fn spatial_and_vector_payloads_match_model_in_nested_typed_json() {
                 polygons: vec![vec![vec![[1.0, -0.0], [2.0, 3.0]]]],
             }],
         }),
-        CypherValue::Vector {
-            coord: VectorCoordKind::Float32,
-            dim: 2,
-            values: vec![CypherValue::Float(-0.0), CypherValue::Float(0.1_f32 as f64)],
-        },
+        CypherValue::vector(
+            VectorCoordKind::Float32,
+            VectorCoords::from_f32(vec![-0.0, 0.1_f32]),
+        ),
     ];
     let props = IndexMap::from([("shapes".into(), CypherValue::List(values.clone()))]);
     let node = CypherValue::Node {
@@ -161,22 +154,10 @@ fn model_payload_errors_keep_paths_in_arrow_graph_and_composite_writes() {
             }),
             "$.geometries[0].coordinates[0][1]",
         ),
-        (
-            CypherValue::Vector {
-                coord: VectorCoordKind::Float32,
-                dim: 1,
-                values: vec![CypherValue::Float(0.1)],
-            },
-            "$.values[0]",
-        ),
-        (
-            CypherValue::Vector {
-                coord: VectorCoordKind::Float32,
-                dim: 1,
-                values: vec![CypherValue::Float(f64::NEG_INFINITY)],
-            },
-            "$.values[0]",
-        ),
+        // The inexact and non-finite Float32 vectors this table used to
+        // carry are unconstructible under ADR-0706's checked constructor;
+        // their rejection is the constructor's own now (the model suite's
+        // `vector_constructor_rejects_*` pins).
     ];
     for (value, path) in invalid {
         let props = IndexMap::from([("bad".into(), value)]);

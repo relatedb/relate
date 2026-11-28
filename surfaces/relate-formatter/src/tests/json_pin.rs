@@ -6,6 +6,7 @@
 //! pass unedited after the rewrite.
 
 use super::*;
+use relate_model::VectorCoords;
 
 /// Render one value under `mode` (JSON, JSONL or envelope) and parse the `v` field
 /// back out of the first record.
@@ -178,23 +179,14 @@ fn test_json_pin_point_geometry_vector_wire_forms() {
         serde_json::json!({"type": "LineString", "coordinates": [[0.0, 0.0], [1.0, 1.0]]}),
     );
     pin_json_family(
-        CypherValue::Vector {
-            coord: VectorCoordKind::Float32,
-            dim: 3,
-            values: vec![
-                CypherValue::Float(1.0),
-                CypherValue::Float(2.0),
-                CypherValue::Float(3.0),
-            ],
-        },
+        CypherValue::vector(
+            VectorCoordKind::Float32,
+            VectorCoords::from_f32(vec![1.0, 2.0, 3.0]),
+        ),
         serde_json::json!({"type": "FLOAT32", "values": [1.0, 2.0, 3.0], "dim": 3}),
     );
     pin_json_family(
-        CypherValue::Vector {
-            coord: VectorCoordKind::Int8,
-            dim: 2,
-            values: vec![CypherValue::Int(1), CypherValue::Int(-2)],
-        },
+        CypherValue::vector(VectorCoordKind::Int8, VectorCoords::from_int(vec![1, -2])),
         serde_json::json!({"type": "INTEGER8", "values": [1, -2], "dim": 2}),
     );
 }

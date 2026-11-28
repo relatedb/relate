@@ -364,11 +364,10 @@ fn unmarked_structs_are_maps_and_fixed_size_lists_are_lists() {
 
     let (cols, rows) = one_col(
         "x",
-        vec![CypherValue::Vector {
-            coord: VectorCoordKind::Int8,
-            dim: 2,
-            values: vec![CypherValue::Int(1), CypherValue::Int(2)],
-        }],
+        vec![CypherValue::vector(
+            VectorCoordKind::Int8,
+            VectorCoords::from_int(vec![1, 2]),
+        )],
     );
     let source = result_to_record_batch(&cols, &rows).unwrap();
     let unmarked = batch(
@@ -541,11 +540,7 @@ fn invalid_vector_children_error_and_real_nulls_survive() {
         "x",
         vec![
             CypherValue::Null,
-            CypherValue::Vector {
-                coord: VectorCoordKind::Int8,
-                dim: 2,
-                values: vec![CypherValue::Int(1), CypherValue::Int(2)],
-            },
+            CypherValue::vector(VectorCoordKind::Int8, VectorCoords::from_int(vec![1, 2])),
         ],
     );
     let source = result_to_record_batch(&cols, &rows).unwrap();

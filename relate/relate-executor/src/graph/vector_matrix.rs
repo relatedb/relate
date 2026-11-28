@@ -45,7 +45,8 @@ use super::access::visible_version;
 #[cfg(feature = "test-hooks")]
 use super::build_counter::SharedCounter;
 use super::Graph;
-use crate::vector_similarity::{value_coord, value_coords};
+use crate::vector_similarity::value_coords;
+use relate_model::VectorCoordKind;
 
 #[cfg(feature = "test-hooks")]
 static SERVED: SharedCounter = SharedCounter::new();
@@ -252,16 +253,20 @@ fn pack_value(value: &Value, dim: usize) -> Packed {
     if coords.len() != dim {
         return Packed::Skip;
     }
+    // One row-construction rule (ADR-0706): every source narrows through
+    // the uniform reader with the canonical FLOAT32 exactness predicate —
+    // an `f32` family narrows to itself (exact by construction), so no
+    // per-family fast path is needed.
     let mut row = Vec::with_capacity(dim);
     let mut exact = true;
-    for coord in coords.iter() {
-        // `value_coord` is the scan's own coordinate read: a non-number or
-        // non-finite coordinate skips the whole candidate there, so here.
-        let Some(c) = value_coord(coord) else {
+    for i in 0..dim {
+        // `coord_f64` is the scan's own coordinate read: a non-number or
+        // non-finite list entry skips the whole candidate there, so here.
+        let Some(c) = coords.coord_f64(i) else {
             return Packed::Skip;
         };
         let narrowed = c as f32;
-        exact &= f64::from(narrowed) == c;
+        exact &= VectorCoordKind::Float32.is_exact(c);
         row.push(narrowed);
     }
     if exact {

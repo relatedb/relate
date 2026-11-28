@@ -94,15 +94,10 @@ fn duration_roundtrips() {
 
 #[test]
 fn vector_roundtrips() {
-    let v = CypherValue::Vector {
-        coord: VectorCoordKind::Int8,
-        dim: 3,
-        values: vec![
-            CypherValue::Int(1),
-            CypherValue::Int(-2),
-            CypherValue::Int(3),
-        ],
-    };
+    let v = CypherValue::vector(
+        VectorCoordKind::Int8,
+        VectorCoords::from_int(vec![1, -2, 3]),
+    );
     let out = roundtrip(vec![v.clone()]);
     assert_eq!(out[0], v);
 }

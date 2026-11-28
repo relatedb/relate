@@ -217,6 +217,7 @@ pub(crate) fn props_all_match(
 mod tests {
     use super::*;
     use relate_core::{PointValue, Temporal, VectorCoordKind};
+    use relate_model::VectorCoords;
 
     fn bytes() -> Value {
         Value::Bytes(vec![0, 1, 255].into())
@@ -236,10 +237,10 @@ mod tests {
         }))
         .is_ok());
         assert!(check_property_value(&Value::Point(PointValue::cartesian_2d(1.0, 2.0))).is_ok());
-        assert!(check_property_value(&Value::Vector {
-            coord: VectorCoordKind::Int8,
-            values: vec![Value::Int(1)].into(),
-        })
+        assert!(check_property_value(&Value::vector(
+            VectorCoordKind::Int8,
+            VectorCoords::from_int(vec![1]),
+        ))
         .is_ok());
 
         // Homogeneous scalar lists store; a list holding null, a mixed

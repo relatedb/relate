@@ -41,7 +41,7 @@ use chrono::{TimeZone, Utc};
 use relate::{cypher_to_value, Value, MAX_VALUE_DEPTH};
 use relate_core::temporal::{zone_offset_at, zone_offset_at_utc};
 use relate_model::value::{IsoDuration, PointValue, VectorCoordKind};
-use relate_model::{CypherValue, IndexMap};
+use relate_model::{CypherValue, IndexMap, VectorCoords};
 
 use crate::abi::{boundary_error_json, panic_message, read_cstr_bounded, relate_status, report};
 
@@ -636,9 +636,13 @@ pub unsafe extern "C" fn relate_params_put_point(
 
 /// Build a VECTOR entry from checked coordinates.
 fn vector(coord: VectorCoordKind, values: Vec<CypherValue>) -> Result<(Entry, usize), String> {
-    let dim = values.len();
+    // The one construction policy (ADR-0706): checked coordinates pack
+    // per family through the model helper.
+    let coords = VectorCoords::from_cypher_values(coord, &values)
+        .ok_or_else(|| format!("{coord:?} coordinates do not conform to the dtype"))?;
+    let dim = coords.len();
     Ok((
-        Entry::Value(CypherValue::Vector { coord, dim, values }),
+        Entry::Value(CypherValue::vector(coord, coords)),
         dim * VECTOR_COORD_BYTES,
     ))
 }

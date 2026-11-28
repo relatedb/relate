@@ -8,6 +8,7 @@ use indexmap::IndexMap;
 use serde_json::{Map as JsonMap, Value as JsonValue};
 
 use crate::value::{Coord2D, CypherValue, GeometryValue, IsoDuration, PointValue, VectorCoordKind};
+use crate::vector::coords::{Coord, VectorCoords};
 
 /// Invalid persistence value, with a JSON path to the offending member.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -193,40 +194,25 @@ fn encode(val: &CypherValue, path: &str) -> Result<JsonValue, EncodeError> {
             obj
         }
         CypherValue::Geometry(g) => encode_geometry(g, path)?,
-        CypherValue::Vector { coord, dim, values } => {
-            if *dim != values.len() {
-                return Err(encode_error(
-                    &format!("{path}.dim"),
-                    "dimension does not match values length",
-                ));
-            }
-            let mut encoded = Vec::with_capacity(values.len());
-            for (i, value) in values.iter().enumerate() {
-                let at = format!("{path}.values[{i}]");
-                let item = match (coord, value) {
-                    (_, CypherValue::Int(n)) if coord.holds_int(*n) => {
-                        JsonValue::Number((*n).into())
-                    }
-                    (
-                        VectorCoordKind::Float16
-                        | VectorCoordKind::BFloat16
-                        | VectorCoordKind::Float32,
-                        CypherValue::Float(f),
-                    ) if coord.is_exact(*f) => finite_number(*f, &at)?,
-                    (VectorCoordKind::Float64, CypherValue::Float(f)) => finite_number(*f, &at)?,
-                    _ => {
-                        return Err(encode_error(
-                            &at,
-                            format!(
-                                "invalid {} coordinate type or range",
-                                coord.canonical_name()
-                            ),
-                        ))
-                    }
-                };
-                encoded.push(item);
-            }
-            serde_json::json!({"__type": "vector", "coord": coord.canonical_name(), "dim": dim, "values": encoded})
+        CypherValue::Vector { coord, coords } => {
+            // The canonical constructor owns the whole exactness invariant
+            // (ADR-0706): family/kind pairing, widths, precision,
+            // finiteness, and `dim == coords.len()`. A `Vector` that
+            // reaches here is encodable by construction — the per-
+            // coordinate checks and the dim check this arm used to carry
+            // were that invariant's second spelling, now deleted. One
+            // walk over `iter()`'s two coordinate forms.
+            // The error path is one string, built once (not per
+            // coordinate) — a finite coordinate cannot use it.
+            let values_path = format!("{path}.values");
+            let encoded = coords
+                .iter()
+                .map(|c| match c {
+                    Coord::I(n) => Ok(JsonValue::Number(n.into())),
+                    Coord::F(f) => finite_number(f, &values_path),
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            serde_json::json!({"__type": "vector", "coord": coord.canonical_name(), "dim": coords.len(), "values": encoded})
         }
         CypherValue::Node { .. } | CypherValue::Relationship { .. } | CypherValue::Path { .. } => {
             return Err(encode_error(
@@ -588,38 +574,48 @@ fn decode_vector(obj: &JsonMap<String, JsonValue>, path: &str) -> Result<CypherV
     if dim != items.len() {
         return Err(invalid(&dim_path, "dimension does not match values length"));
     }
-    let mut values = Vec::with_capacity(items.len());
-    for (i, item) in items.iter().enumerate() {
-        let at = format!("{values_path}[{i}]");
-        let value = match coord {
-            VectorCoordKind::Int8
-            | VectorCoordKind::Int16
-            | VectorCoordKind::Int32
-            | VectorCoordKind::Int64 => {
-                let n = integer(item, &at)?;
-                if !coord.holds_int(n) {
-                    return Err(invalid(
-                        &at,
-                        format!("{} out of range", coord.canonical_name()),
-                    ));
-                }
-                CypherValue::Int(n)
+    // The decode-side classification (fail-closed with this codec's own
+    // error detail), landing in the ONE family-selection policy
+    // (ADR-0706's `VectorCoords::from_coords`). An integer JSON number
+    // under a float kind decodes into the `Int` family — the very shape
+    // the encoder writes for one, so a checkpoint round-trips; its
+    // equality with the float spelling is the exact numeric rule.
+    let mut tokens = Vec::with_capacity(items.len());
+    if coord.is_integer() {
+        for (i, item) in items.iter().enumerate() {
+            let at = format!("{values_path}[{i}]");
+            let n = integer(item, &at)?;
+            if !coord.holds_int(n) {
+                return Err(invalid(
+                    &at,
+                    format!("{} out of range", coord.canonical_name()),
+                ));
             }
-            VectorCoordKind::Float16 | VectorCoordKind::BFloat16 | VectorCoordKind::Float32 => {
-                let f = float_number(item, &at)?;
-                if !coord.is_exact(f) {
-                    return Err(invalid(
-                        &at,
-                        format!("{} out of range or loses precision", coord.canonical_name()),
-                    ));
+            tokens.push(Coord::I(n));
+        }
+    } else {
+        for (i, item) in items.iter().enumerate() {
+            let at = format!("{values_path}[{i}]");
+            match item {
+                JsonValue::Number(n) if n.is_i64() || n.is_u64() => {
+                    tokens.push(Coord::I(integer(item, &at)?));
                 }
-                CypherValue::Float(f)
+                _ => {
+                    let f = float_number(item, &at)?;
+                    if !coord.is_exact(f) {
+                        return Err(invalid(
+                            &at,
+                            format!("{} out of range or loses precision", coord.canonical_name()),
+                        ));
+                    }
+                    tokens.push(Coord::F(f));
+                }
             }
-            VectorCoordKind::Float64 => CypherValue::Float(float_number(item, &at)?),
-        };
-        values.push(value);
+        }
     }
-    Ok(CypherValue::Vector { coord, dim, values })
+    let coords = VectorCoords::from_coords(coord, tokens.into_iter())
+        .ok_or_else(|| invalid(&values_path, "coordinates mix integer and float families"))?;
+    Ok(CypherValue::vector(coord, coords))
 }
 
 fn float_number(val: &JsonValue, path: &str) -> Result<f64, DecodeError> {

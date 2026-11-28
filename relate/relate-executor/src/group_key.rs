@@ -66,6 +66,7 @@ use chrono::{NaiveDate, NaiveDateTime, NaiveTime, Timelike};
 use relate_core::temporal::ZoneId;
 use relate_core::{Temporal, Value, VectorCoordKind};
 use relate_model::canonical_key::f64_exact_i64;
+use relate_model::Coord;
 
 /// Process-global monotonically increasing nonce source for NaN keys. Every
 /// NaN encountered while a key is built claims a fresh nonce, so two NaNs
@@ -239,7 +240,9 @@ enum Norm {
     Uuid(u128),
     Vector {
         coord: VectorCoordKind,
-        values: Vec<Norm>,
+        /// Every element is a number — the scalar `NormNum`, mirroring
+        /// `Norm::Point.coords` (no wrapper layer that cannot vary).
+        values: Vec<NormNum>,
     },
 }
 
@@ -276,15 +279,23 @@ fn norm(v: &Value) -> Norm {
                 coords,
             }
         }
-        Value::Vector { coord, values } => Norm::Vector {
+        Value::Vector { coord, coords } => Norm::Vector {
             // The coordinate kind tag keeps an INT8 vector distinct from a
             // FLOAT32 vector even when their element values coincide
             // numerically (matching `Value::eq_non_null`'s vector arm, which
             // compares `coord`). Elements are normalized numerically, so
             // `vector([1], ...)` ≡ `vector([1.0], ...)` — the same
-            // elementwise-exact rule `eq_non_null` applies.
+            // elementwise-exact rule `eq_non_null` applies. The packed read
+            // (ADR-0706) maps each coordinate to the number Norm the
+            // per-`Value` walk produced.
             coord: *coord,
-            values: values.iter().map(norm).collect(),
+            values: coords
+                .iter()
+                .map(|c| match c {
+                    Coord::I(n) => NormNum::Int(n),
+                    Coord::F(f) => norm_f64(f),
+                })
+                .collect(),
         },
     }
 }
@@ -467,12 +478,15 @@ fn value_any(value: &Value, leaf: &impl Fn(&Value) -> bool) -> bool {
         || match value {
             Value::List(items) => items.iter().any(|item| value_any(item, leaf)),
             Value::Map(m) => m.values().any(|item| value_any(item, leaf)),
-            Value::Vector { values, .. } => values.iter().any(|item| value_any(item, leaf)),
+            // A packed Vector (ADR-0706) holds no child Values and its
+            // coordinates are finite by construction, so no leaf over
+            // children can match — it walks as a scalar.
             Value::Null
             | Value::Bool(_)
             | Value::Int(_)
             | Value::Float(_)
             | Value::String(_)
+            | Value::Vector { .. }
             | Value::Node(_)
             | Value::Relationship(_)
             | Value::Path(_)
@@ -523,12 +537,24 @@ pub(crate) fn identity_narrower_than_eq(value: &Value) -> bool {
 }
 
 /// Rough heap size of a normalized key tree: an 8-byte enum tag plus payload.
+const TAG: u64 = 8;
+const HDR: u64 = 16; // String/Vec header.
+/// One `NormNum`'s encoded figure (the `Norm::Num` arm's TAG + 16) — the
+/// shared figure for every `Vec<NormNum>` (`Norm::Point.coords`,
+/// `Norm::Vector.values`) and the scalar arm itself.
+const NORM_NUM_BYTES: u64 = TAG + 16;
+
+/// One `Vec<NormNum>` payload's encoded figure — the shared shape for
+/// `Norm::Point.coords` and `Norm::Vector.values` (tag width apart), so a
+/// third arm cannot pick a different spelling.
+fn norm_num_vec_bytes(len: u64, tag: u64) -> u64 {
+    TAG + HDR + tag + NORM_NUM_BYTES * len
+}
+
 fn norm_bytes(n: &Norm) -> u64 {
-    const TAG: u64 = 8;
-    const HDR: u64 = 16; // String/Vec header.
     match n {
         Norm::Null | Norm::Bool(_) => TAG + 1,
-        Norm::Num(_) => TAG + 16,
+        Norm::Num(_) => NORM_NUM_BYTES,
         Norm::Str(s) => TAG + HDR + s.len() as u64,
         Norm::Bytes(b) => TAG + HDR + b.len() as u64,
         Norm::List(items) => TAG + HDR + items.iter().map(norm_bytes).sum::<u64>(),
@@ -543,8 +569,8 @@ fn norm_bytes(n: &Norm) -> u64 {
         Norm::Path(ns, rs) => TAG + 2 * HDR + (ns.len() + rs.len()) as u64 * (TAG + 8),
         Norm::Temporal(_) => TAG + 24,
         Norm::Uuid(_) => TAG + 16,
-        Norm::Point { coords, .. } => TAG + 4 + (TAG + 8) * coords.len() as u64,
-        Norm::Vector { values, .. } => TAG + 1 + HDR + values.iter().map(norm_bytes).sum::<u64>(),
+        Norm::Point { coords, .. } => norm_num_vec_bytes(coords.len() as u64, 4),
+        Norm::Vector { values, .. } => norm_num_vec_bytes(values.len() as u64, 1),
     }
 }
 

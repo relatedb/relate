@@ -99,11 +99,10 @@ fn encode_value(value: &CypherValue, path: &str) -> Result<Value, ArrowError> {
                 "relationships": relationships.iter().enumerate().map(|(i, relationship)| encode_value(relationship, &format!("{path}.relationships[{i}]"))).collect::<Result<Vec<_>, _>>()?,
             })
         }
-        CypherValue::Vector { dim, .. } if i32::try_from(*dim).is_err() => {
-            return Err(invalid(format!(
-                "{path}.dim: vector dimension {dim} exceeds i32"
-            )));
-        }
+        // The `FixedSizeList` i32 dimension ceiling is the Arrow column
+        // path's own rule (`check_vector_child_budget`), not a shape of
+        // the typed-json value — the Vector family takes the same single
+        // model-delegation arm as Point/Geometry/the temporals.
         // The model owns every persistence payload shape; Arrow owns only the
         // typed envelope and graph-member recursion around these values.
         CypherValue::Point(_)

@@ -52,7 +52,13 @@ impl ResultRowsMeter {
 }
 
 fn mark_arc<T: ?Sized>(value: &Arc<T>, seen: &mut IdSet<usize>) -> bool {
-    seen.insert(Arc::as_ptr(value) as *const () as usize)
+    mark_ptr(Arc::as_ptr(value) as *const u8, seen)
+}
+
+/// Mark an allocation by its address — the family-agnostic twin the
+/// packed-vector arm uses through [`VectorCoords::arc_id`].
+fn mark_ptr(addr: *const u8, seen: &mut IdSet<usize>) -> bool {
+    seen.insert(addr as usize)
 }
 
 fn result_value_heap(value: &Value, seen: &mut IdSet<usize>) -> u64 {
@@ -78,7 +84,7 @@ fn result_value_heap(value: &Value, seen: &mut IdSet<usize>) -> u64 {
                 0
             }
         }
-        Value::List(items) | Value::Vector { values: items, .. } => {
+        Value::List(items) => {
             if !mark_arc(items, seen) {
                 return 0;
             }
@@ -87,6 +93,16 @@ fn result_value_heap(value: &Value, seen: &mut IdSet<usize>) -> u64 {
                     .iter()
                     .map(|item| result_value_heap(item, seen))
                     .sum::<u64>()
+        }
+        // The packed coordinates are one immutable numeric slice
+        // (ADR-0706): mark the family buffer once by its address and
+        // charge the family's slice bytes — the width from the one
+        // table, the identity from the one accessor, no child Values.
+        Value::Vector { coords, .. } => {
+            if !mark_ptr(coords.arc_id(), seen) {
+                return 0;
+            }
+            coords.byte_len()
         }
         Value::Map(entries) => {
             if !mark_arc(entries, seen) {
