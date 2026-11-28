@@ -13,7 +13,7 @@ use relate_names::SmallName;
 
 use relate_core::{Error, Result};
 use relate_error::{EngineError, ErrorKind};
-use relate_ir::{expr_vars, SearchFilterPred, SearchOp};
+use relate_ir::{expr_vars, SearchFilterPred, SearchKind, SearchOp};
 use relate_parser::Expr;
 
 use super::expr::{cmp_op, flatten_and, unary_op};
@@ -22,16 +22,20 @@ use crate::ast::tree::{unparen, var_property};
 
 /// Decompose and lower a `SEARCH` clause's inner `WHERE <search condition>`
 /// into its predicate list against the clause's `binding_var` and
-/// the index source's `FOR <expr>`: flattens top-level `AND` (the one
-/// canonical [`flatten_and`]), applies the `NOT <property>` and
-/// flipped-operand rewrites (the short-form-range rewrite, e.g.
-/// `a < x.prop <= b`, needs no extra work here -- the parser's own
-/// chained-comparison desugaring, `Parser::parse_comparison`, already
-/// turns it into an `AND` of two ordinary comparisons before this ever
-/// runs), then enforces the binding-variable-only rule, the per-property
-/// AND-combination limits, the self-reference check, and the ban on `<>`.
+/// the index source's `FOR <expr>`. Which grammar runs is the `kind`'s
+/// (ADR-0714): a `VECTOR` window takes the vector predicate forms —
+/// flattened top-level `AND` (the one canonical [`flatten_and`]), the
+/// `NOT <property>` and flipped-operand rewrites (the short-form-range
+/// rewrite, e.g. `a < x.prop <= b`, needs no extra work here -- the
+/// parser's own chained-comparison desugaring, `Parser::parse_comparison`,
+/// already turns it into an `AND` of two ordinary comparisons before this
+/// ever runs), the binding-variable-only rule, the per-property
+/// AND-combination limits, the self-reference check, and the ban on `<>`;
+/// a `FULLTEXT` window takes the match-filter family only — the
+/// entity-set form and its id-spelled twin, at most once.
 pub(super) fn lower_search_filters(
     binding_var: &SmallName,
+    kind: SearchKind,
     for_expr: &Expr,
     where_expr: Option<&Expr>,
 ) -> Result<Vec<SearchFilterPred>> {
@@ -39,20 +43,106 @@ pub(super) fn lower_search_filters(
         // No inner WHERE: an empty predicate list (empty = no filters).
         return Ok(Vec::new());
     };
-    // Predicate shape: a property predicate's LHS names the clause's binding
-    // variable, or the index source's own entity variable (`FOR m.embedding`
-    // -> `m.rating`) with the binding variable on the RHS. An entity-set
-    // predicate (`<variable> IN <expr>`) must name the binding variable
-    // itself.
-    let for_var = for_entity_var(for_expr);
+    // Each kind's grammar is stated once, at the dispatch (ADR-0714):
+    // the vector window's predicate forms with their combination
+    // rules, beside the fulltext window's match-filter-only grammar with
+    // its at-most-one rule. The term walk is shared below; each grammar
+    // closes over exactly its own context.
+    Ok(match kind {
+        SearchKind::Vector => {
+            let for_var = for_entity_var(for_expr);
+            lower_terms(
+                where_expr,
+                |term| to_predicate(binding_var, for_var, term),
+                validate_and_combination,
+            )?
+        }
+        SearchKind::Fulltext => lower_terms(
+            where_expr,
+            |term| lower_match_filter_term(binding_var, term),
+            validate_match_filter_combination,
+        )?,
+    })
+}
+
+/// The shared term walk, the scaffold stated once: flatten the one
+/// canonical `AND` ([`flatten_and`]), lower each term through the kind's
+/// per-term lowering — a closure over the grammar's own context — then
+/// the kind's combination rule, in that order. [`to_predicate`] with the
+/// vector window's `FOR` entity variable and [`validate_and_combination`]
+/// serve the vector forms; [`lower_match_filter_term`] and
+/// [`validate_match_filter_combination`] the fulltext window's
+/// match-filter grammar (ADR-0714).
+fn lower_terms(
+    where_expr: &Expr,
+    lower_term: impl Fn(&Expr) -> Result<SearchFilterPred>,
+    validate: fn(&[SearchFilterPred]) -> Result<()>,
+) -> Result<Vec<SearchFilterPred>> {
     let mut terms = Vec::new();
     flatten_and(where_expr, &mut terms);
     let mut predicates = Vec::with_capacity(terms.len());
     for term in terms {
-        predicates.push(to_predicate(binding_var, for_var, term)?);
+        predicates.push(lower_term(term)?);
     }
-    validate_and_combination(&predicates)?;
+    validate(&predicates)?;
     Ok(predicates)
+}
+
+/// ADR-0714's fulltext per-term policy: the match filter only — the
+/// entity-set form and its id-spelled twin. The term's `IN` node and LHS
+/// classification are the gate's own output, so the term is classified
+/// once and the lowering reads what the gate computed. Every other term
+/// is the reference server's invalid-predicate rejection, raised before the vector
+/// forms' own classification runs: the match-filter forms keep their
+/// more specific rejections (a wrong variable on a legal form is the
+/// entity-set rule's error, never the invalid-predicate one). This
+/// grammar has no property predicates, so no `FOR` entity variable
+/// feeds it.
+fn lower_match_filter_term(binding_var: &SmallName, term: &Expr) -> Result<SearchFilterPred> {
+    match classify_match_filter(term) {
+        Some((in_expr, lhs)) => lower_in_predicate(binding_var, None, in_expr, lhs),
+        None => Err(invalid_fulltext_predicate_error(term)),
+    }
+}
+
+/// ADR-0714's fulltext gate: the term's `IN` node with its LHS
+/// classification, when the term is one of the two match-filter forms —
+/// the entity-set form ([`InLhs::EntityVar`]) or its id-spelled twin
+/// ([`InLhs::IdCall`]); `None` for every other term. Terms arrive
+/// unparenthesized ([`flatten_and`]'s contract), so the one
+/// classification walk answers for the whole term.
+fn classify_match_filter(term: &Expr) -> Option<(&relate_parser::InExpr, InLhs<'_>)> {
+    match term {
+        Expr::In(in_expr) => match classify_in_lhs(&in_expr.expr) {
+            lhs @ (InLhs::IdCall(..) | InLhs::EntityVar(..)) => Some((in_expr, lhs)),
+            InLhs::Property(..) | InLhs::Other => None,
+        },
+        _ => None,
+    }
+}
+
+/// The entity-set match filter's at-most-one budget, stated once: the
+/// count both windows' combination rules read — the classification lives
+/// in the predicate's own parts projection
+/// ([`SearchFilterPred::is_entity_filter`]). The vector window's
+/// per-property group rules live in [`validate_and_combination`] beside
+/// it; the fulltext window has no property predicates, so the budget is
+/// its whole combination rule.
+fn entity_filter_count(predicates: &[SearchFilterPred]) -> usize {
+    predicates
+        .iter()
+        .filter(|predicate| predicate.is_entity_filter())
+        .count()
+}
+
+/// The fulltext combination rule: the match filter appears at most once
+/// (the budget in the reference server's invalid-predicate family — the sentence
+/// never names the wrong index kind).
+fn validate_match_filter_combination(predicates: &[SearchFilterPred]) -> Result<()> {
+    if entity_filter_count(predicates) > 1 {
+        return Err(invalid_fulltext_family_error("combination"));
+    }
+    Ok(())
 }
 /// The index source's entity variable, when `FOR <expr>` names an entity
 /// property (`FOR m.embedding`); a literal or any other query expression
@@ -129,6 +219,39 @@ fn invalid_predicate_error() -> Error {
     )
 }
 
+/// ADR-0714's fulltext error family, one constructor (the vector
+/// family's `invalid_predicate_error` shape): the reference server's
+/// invalid-predicate frame — `SyntaxError` class — with the rejection's
+/// own detail interpolated. The term form renders the predicate's
+/// spelling so the rejection names what the user wrote; the combination
+/// form names the combination rule.
+fn invalid_fulltext_family_error(detail: &str) -> Error {
+    Error::syntax(
+        EngineError::semantic(
+            ErrorKind::SyntaxError,
+            format!(
+                "invalid predicate for search with filters. The search filter \
+                 predicate {detail} is not supported, see documentation for \
+                 all supported predicates."
+            ),
+        )
+        .to_string(),
+    )
+}
+
+/// The term form: the predicate's own spelling — the one structural
+/// renderer ([`crate::ast::structural_expr_text`]) with this
+/// sentence's placeholder for a shape outside the grammar — in the
+/// family frame. The sentence is advisory — its GQLSTATUS class carries
+/// the contract — so faithfulness to the common shapes is the bar, never
+/// a parse.
+fn invalid_fulltext_predicate_error(term: &Expr) -> Error {
+    invalid_fulltext_family_error(&format!(
+        "'{}'",
+        crate::ast::structural_expr_text(term, "<predicate>")
+    ))
+}
+
 /// The wrong-variable violation (Neo4j's 42I74): the predicate names a variable
 /// other than the binding variable (see [`validate_property_rule`]).
 fn wrong_variable_error() -> Error {
@@ -176,6 +299,14 @@ fn validate_property_rule(
     }
 }
 
+/// The vector window's per-term lowering: one arm per accepted
+/// `VectorFilterExpression` form, the binding-variable rule stated once
+/// per LHS kind before the single predicate construction. Predicate
+/// shape: a property predicate's LHS names the clause's binding variable,
+/// or the index source's own entity variable (`FOR m.embedding` ->
+/// `m.rating`) with the binding variable on the RHS. An entity-set
+/// predicate (`<variable> IN <expr>`) must name the binding variable
+/// itself.
 fn to_predicate(
     binding_var: &SmallName,
     for_var: Option<&SmallName>,
@@ -263,46 +394,56 @@ fn to_predicate(
                 }
             })
         }
-        // The `IN` predicate's LHS, classified once into its three
-        // accepted forms (see [`InLhs`]): `id(<binding variable>)` is the
-        // entity-set match filter's id-spelled twin (ADR-0678; the
-        // right-hand side may be a correlated `COLLECT` subquery); a
-        // bare variable is the entity-set match filter; a variable
-        // property is the property-in-set filter. Only the binding
-        // variable's own id is the candidate's id — any other variable is
-        // the wrong-variable rejection (the entity-set rule's, no
-        // FOR-entity exception either). The `id` name reads through the
-        // registry's own lowercase-then-compare idiom
-        // (`validate/index_hint.rs`'s spelling), not a second ad-hoc
-        // function-name discrimination.
-        Expr::In(i) => match classify_in_lhs(&i.expr) {
-            InLhs::IdCall(call, var) => {
-                let rhs = lower_expr(&i.list)?;
-                validate_property_rule(var, binding_var, None, Some(&rhs))?;
-                Ok(SearchFilterPred::IdInSet {
-                    call: call.clone(),
-                    rhs,
-                })
-            }
-            InLhs::EntityVar(var) => {
-                let rhs = lower_expr(&i.list)?;
-                // The entity-set LHS deliberately gets no FOR-entity
-                // exception: the match filter is over the binding
-                // variable.
-                validate_property_rule(var, binding_var, None, Some(&rhs))?;
-                Ok(SearchFilterPred::EntityInSet { rhs })
-            }
-            InLhs::Property(var, prop) => {
-                let rhs = lower_expr(&i.list)?;
-                validate_property_rule(var, binding_var, for_var, Some(&rhs))?;
-                Ok(SearchFilterPred::InSet {
-                    property: prop.to_string(),
-                    rhs,
-                })
-            }
-            InLhs::Other => Err(invalid_predicate_error()),
-        },
+        // The `IN` predicate lowers from its LHS classification (see
+        // [`InLhs`]) — the one home of the three accepted forms'
+        // construction, shared with the fulltext gate (which carries the
+        // classification it gated on, so a term is classified once).
+        Expr::In(i) => lower_in_predicate(binding_var, for_var, i, classify_in_lhs(&i.expr)),
         _ => Err(invalid_predicate_error()),
+    }
+}
+
+/// The `IN` predicate's lowering from its LHS classification (see
+/// [`InLhs`]): `id(<binding variable>)` is the entity-set match filter's
+/// id-spelled twin (ADR-0678; the right-hand side may be a correlated
+/// `COLLECT` subquery); a bare variable is the entity-set match filter;
+/// a variable property is the property-in-set filter. Only the binding
+/// variable's own id is the candidate's id — any other variable is the
+/// wrong-variable rejection (the entity-set rule's, no FOR-entity
+/// exception either). The `id` name reads through the registry's own
+/// lowercase-then-compare idiom (`validate/index_hint.rs`'s spelling),
+/// not a second ad-hoc function-name discrimination.
+fn lower_in_predicate(
+    binding_var: &SmallName,
+    for_var: Option<&SmallName>,
+    in_expr: &relate_parser::InExpr,
+    lhs: InLhs<'_>,
+) -> Result<SearchFilterPred> {
+    match lhs {
+        InLhs::IdCall(call, var) => {
+            let rhs = lower_expr(&in_expr.list)?;
+            validate_property_rule(var, binding_var, None, Some(&rhs))?;
+            Ok(SearchFilterPred::IdInSet {
+                call: call.clone(),
+                rhs,
+            })
+        }
+        InLhs::EntityVar(var) => {
+            let rhs = lower_expr(&in_expr.list)?;
+            // The entity-set LHS deliberately gets no FOR-entity
+            // exception: the match filter is over the binding variable.
+            validate_property_rule(var, binding_var, None, Some(&rhs))?;
+            Ok(SearchFilterPred::EntityInSet { rhs })
+        }
+        InLhs::Property(var, prop) => {
+            let rhs = lower_expr(&in_expr.list)?;
+            validate_property_rule(var, binding_var, for_var, Some(&rhs))?;
+            Ok(SearchFilterPred::InSet {
+                property: prop.to_string(),
+                rhs,
+            })
+        }
+        InLhs::Other => Err(invalid_predicate_error()),
     }
 }
 
@@ -318,30 +459,30 @@ fn validate_and_combination(predicates: &[SearchFilterPred]) -> Result<()> {
     /// One property group's predicate-kind counts.
     #[derive(Default)]
     struct CombinationCounts {
-        total: u32,
-        lower: u32,
-        upper: u32,
+        total: usize,
+        lower: usize,
+        upper: usize,
     }
-    let mut entity_filters = 0u32;
+    let entity_filters = entity_filter_count(predicates);
     let mut groups: IdentHashMap<&str, CombinationCounts> = IdentHashMap::default();
     for predicate in predicates {
-        match predicate {
-            SearchFilterPred::EntityInSet { .. } | SearchFilterPred::IdInSet { .. } => {
-                entity_filters += 1
-            }
-            SearchFilterPred::Comparison { property, op, .. } => {
-                let entry = groups.entry(property.as_str()).or_default();
-                entry.total += 1;
-                match op {
-                    SearchOp::Gt | SearchOp::Gte => entry.lower += 1,
-                    SearchOp::Lt | SearchOp::Lte => entry.upper += 1,
-                    SearchOp::Eq => {}
-                }
-            }
-            SearchFilterPred::Exists { property }
-            | SearchFilterPred::NotExists { property }
-            | SearchFilterPred::InSet { property, .. } => {
-                groups.entry(property.as_str()).or_default().total += 1;
+        // Only a predicate that reads an indexed property forms a group
+        // — the entity-set match filters carry none (they match on
+        // candidate identity; the parts projection states it), so their
+        // whole combination rule is the budget above.
+        let Some(property) = predicate.property_name() else {
+            continue;
+        };
+        let entry = groups.entry(property).or_default();
+        entry.total += 1;
+        // A comparison's direction counts toward the bounded-range
+        // shape; the existence forms and the property-in-set form are
+        // plain group members.
+        if let SearchFilterPred::Comparison { op, .. } = predicate {
+            match op {
+                SearchOp::Gt | SearchOp::Gte => entry.lower += 1,
+                SearchOp::Lt | SearchOp::Lte => entry.upper += 1,
+                SearchOp::Eq => {}
             }
         }
     }
@@ -357,219 +498,8 @@ fn validate_and_combination(predicates: &[SearchFilterPred]) -> Result<()> {
     Ok(())
 }
 
+/// The search-filter grammar's test bench, split into its sibling file
+/// (the `pathdb_tests` precedent): the file stays the production grammar
+/// module, the bench keeps its own file.
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Lower the filters of the statement's one SEARCH clause directly, so
-    /// the accepted/rejected grammar shapes are pinned without a catalog.
-    fn lower_filters(query: &str) -> Result<Vec<SearchFilterPred>> {
-        let stmt = relate_parser::parse(query).expect("parses");
-        let search = stmt
-            .clauses
-            .iter()
-            .find_map(|clause| match clause {
-                relate_parser::Clause::Match(clause) => clause.search.as_ref(),
-                _ => None,
-            })
-            .expect("expected a SEARCH subclause");
-        let relate_parser::SearchSpec::Index(spec) = &search.spec else {
-            panic!("expected a single index source")
-        };
-        lower_search_filters(
-            &search.binding_var,
-            &spec.for_expr,
-            spec.inner_where.as_ref(),
-        )
-    }
-
-    fn expect_error(query: &str, expected: &str) {
-        let error = lower_filters(query).expect_err("the predicate must be rejected");
-        assert!(
-            error.to_string().contains(expected),
-            "expected {expected:?} in {error}"
-        );
-    }
-
-    #[test]
-    fn property_predicates_may_name_the_for_entity_variable() {
-        // `FOR m.embedding` names the index entity; the binding variable's
-        // side is the candidate property whatever the operand order, so
-        // `m.rating <= movie.rating` filters on `movie.rating >= m.rating`
-        // with the row's `m.rating` as the RHS (live Neo4j 2026.10.1
-        // returns the same rows as the `movie.rating >= m.rating` form).
-        let filters = lower_filters(
-            "MATCH (m:Movie) MATCH (movie:Movie) \
-             SEARCH movie IN (VECTOR INDEX moviePlots FOR m.embedding \
-             WHERE m.rating <= movie.rating LIMIT 2) RETURN movie.title",
-        )
-        .expect("accepted");
-        let [SearchFilterPred::Comparison {
-            property,
-            op: SearchOp::Gte,
-            rhs,
-        }] = filters.as_slice()
-        else {
-            panic!("expected one comparison on the binding variable: {filters:?}")
-        };
-        assert_eq!(property, "rating");
-        assert!(
-            matches!(rhs, relate_ir::Expr::Property { .. }),
-            "the row's `m.rating` is the RHS: {rhs:?}"
-        );
-    }
-
-    #[test]
-    fn existence_predicates_are_accepted() {
-        let filters = lower_filters(
-            "MATCH (movie:Movie) \
-             SEARCH movie IN (VECTOR INDEX moviePlots FOR [1, 2, 3] \
-             WHERE movie.rating IS NOT NULL AND movie.year IS NULL LIMIT 2) \
-             RETURN movie.title",
-        )
-        .expect("accepted");
-        assert!(matches!(
-            filters.as_slice(),
-            [
-                SearchFilterPred::Exists { property: exists },
-                SearchFilterPred::NotExists { property: not_exists },
-            ] if exists == "rating" && not_exists == "year"
-        ));
-    }
-
-    #[test]
-    fn in_predicates_cover_property_and_entity_sets() {
-        let filters = lower_filters(
-            "MATCH (movie:Movie) \
-             SEARCH movie IN (VECTOR INDEX moviePlots FOR [1, 2, 3] \
-             WHERE movie.rating IN [7.6, 7.7] AND movie IN godFathers LIMIT 2) \
-             RETURN movie.title",
-        )
-        .expect("accepted");
-        assert!(matches!(
-            filters.as_slice(),
-            [
-                SearchFilterPred::InSet { property, .. },
-                SearchFilterPred::EntityInSet { .. },
-            ] if property == "rating"
-        ));
-    }
-
-    #[test]
-    fn for_entity_lhs_without_a_binding_variable_rhs_is_rejected() {
-        // The FOR entity variable on the LHS is only the accepted
-        // "independent property as LHS" form when the RHS names the
-        // binding variable; a constant RHS is the wrong-variable error.
-        expect_error(
-            "MATCH (m:Movie) MATCH (movie:Movie) \
-             SEARCH movie IN (VECTOR INDEX moviePlots FOR m.embedding \
-             WHERE m.rating > 7 LIMIT 5) RETURN movie.title",
-            "WrongVariableForVectorSearchFilter",
-        );
-    }
-
-    #[test]
-    fn property_predicate_on_an_unrelated_variable_is_rejected() {
-        // Without a FOR entity variable only the binding variable is
-        // accepted (Neo4j 42I74).
-        expect_error(
-            "MATCH (m:Movie) MATCH (movie:Movie) \
-             SEARCH movie IN (VECTOR INDEX moviePlots FOR [1, 2, 3] \
-             WHERE m.rating > 7 LIMIT 5) RETURN movie.title",
-            "WrongVariableForVectorSearchFilter",
-        );
-    }
-
-    #[test]
-    fn entity_set_predicate_must_name_the_binding_variable() {
-        // Even the FOR entity variable is not an entity-set LHS: the filter
-        // would apply to the wrong symbol (Neo4j 42I74).
-        expect_error(
-            "MATCH ()-[r {name: 'cs'}]->() MATCH ()-[rel]->() \
-             SEARCH rel IN (VECTOR INDEX relIndex FOR r.vector \
-             WHERE r IN [0] LIMIT 10) RETURN rel.id",
-            "WrongVariableForVectorSearchFilter",
-        );
-    }
-
-    #[test]
-    fn rhs_may_not_reference_the_lhs_variable() {
-        expect_error(
-            "MATCH (movie:Movie) \
-             SEARCH movie IN (VECTOR INDEX moviePlots FOR [1, 2, 3] \
-             WHERE movie.year = movie.rating LIMIT 2) RETURN movie.title",
-            "SelfReferencingVectorSearchFilter",
-        );
-    }
-
-    #[test]
-    fn one_property_admits_a_single_predicate_or_one_bounded_range() {
-        lower_filters(
-            "MATCH (movie:Movie) \
-             SEARCH movie IN (VECTOR INDEX moviePlots FOR [1, 2, 3] \
-             WHERE movie.year > 1945 AND movie.year < 2000 LIMIT 2) \
-             RETURN movie.title",
-        )
-        .expect("a bounded range is two compatible predicates");
-        for rejected in [
-            "WHERE movie.year > 1945 AND movie.year > 2000",
-            "WHERE movie.rating = 7.3 AND movie.rating = 7.4",
-            "WHERE movie.rating = 7.3 AND movie.rating > 7",
-            "WHERE movie.rating = 7.3 AND movie.year = 1999 AND movie.rating = 7.4",
-        ] {
-            expect_error(
-                &format!(
-                    "MATCH (movie:Movie) SEARCH movie IN (VECTOR INDEX moviePlots \
-                     FOR [1, 2, 3] {rejected} LIMIT 2) RETURN movie.title"
-                ),
-                "InvalidSearchFilterPredicate",
-            );
-        }
-    }
-
-    #[test]
-    fn more_than_one_entity_set_predicate_is_rejected() {
-        expect_error(
-            "MATCH (movie:Movie) \
-             SEARCH movie IN (VECTOR INDEX moviePlots FOR [1, 2, 3] \
-             WHERE movie IN a AND movie IN b LIMIT 2) RETURN movie.title",
-            "InvalidSearchFilterPredicate",
-        );
-    }
-
-    /// ADR-0678: `id(<binding variable>) IN <expr>` is the entity-set
-    /// match filter's id-spelled twin; any other variable inside the
-    /// `id()` is the wrong-variable rejection, and the two membership
-    /// spellings share the at-most-one entity-filter budget.
-    #[test]
-    fn id_membership_predicates_name_the_binding_variable() {
-        let filters = lower_filters(
-            "MATCH ()-[r {name: 'cs'}]->() MATCH ()-[rel]->() \
-             SEARCH rel IN (VECTOR INDEX relIndex FOR r.vector \
-             WHERE id(rel) IN [10, 40] LIMIT 10) RETURN rel.id",
-        )
-        .expect("accepted");
-        assert!(
-            matches!(filters.as_slice(), [SearchFilterPred::IdInSet { .. }]),
-            "{filters:?}"
-        );
-        expect_error(
-            "MATCH ()-[r {name: 'cs'}]->() MATCH ()-[rel]->() \
-             SEARCH rel IN (VECTOR INDEX relIndex FOR r.vector \
-             WHERE id(r) IN [10] LIMIT 10) RETURN rel.id",
-            "WrongVariableForVectorSearchFilter",
-        );
-        expect_error(
-            "MATCH (movie:Movie) \
-             SEARCH movie IN (VECTOR INDEX moviePlots FOR [1, 2, 3] \
-             WHERE id(movie.rating) IN [1] LIMIT 2) RETURN movie.title",
-            "InvalidSearchFilterPredicate",
-        );
-        expect_error(
-            "MATCH (movie:Movie) \
-             SEARCH movie IN (VECTOR INDEX moviePlots FOR [1, 2, 3] \
-             WHERE movie IN a AND id(movie) IN b LIMIT 2) RETURN movie.title",
-            "InvalidSearchFilterPredicate",
-        );
-    }
-}
+mod search_filter_tests;

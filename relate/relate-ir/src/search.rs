@@ -107,6 +107,17 @@ impl SearchFilterPred {
         self.parts().call
     }
 
+    /// Whether this predicate is one of the two entity-set match filters
+    /// — [`SearchFilterPred::EntityInSet`] (the bare-variable form) or
+    /// [`SearchFilterPred::IdInSet`] (its id-spelled twin): a filter on
+    /// the candidates' identity, not on an indexed property. The
+    /// classification the windows' entity-filter counting reads, stated
+    /// in the one [`Self::parts`] projection the per-variant accessors
+    /// share.
+    pub fn is_entity_filter(&self) -> bool {
+        self.parts().entity_filter
+    }
+
     /// The one exhaustive projection over the predicate vocabulary —
     /// the single `match self` every per-variant accessor reads, so a
     /// new variant is one edit here plus a decision, never a third
@@ -117,39 +128,50 @@ impl SearchFilterPred {
                 property: Some(property),
                 rhs: Some(rhs),
                 call: None,
+                entity_filter: false,
             },
             SearchFilterPred::Exists { property } | SearchFilterPred::NotExists { property } => {
                 FilterPredParts {
                     property: Some(property),
                     rhs: None,
                     call: None,
+                    entity_filter: false,
                 }
             }
             SearchFilterPred::InSet { property, rhs } => FilterPredParts {
                 property: Some(property),
                 rhs: Some(rhs),
                 call: None,
+                entity_filter: false,
             },
             SearchFilterPred::EntityInSet { rhs } => FilterPredParts {
                 property: None,
                 rhs: Some(rhs),
                 call: None,
+                entity_filter: true,
             },
             SearchFilterPred::IdInSet { call, rhs } => FilterPredParts {
                 property: None,
                 rhs: Some(rhs),
                 call: Some(call),
+                entity_filter: true,
             },
         }
     }
 }
 
-/// The three per-variant facts of one [`SearchFilterPred`], as the one
-/// [`SearchFilterPred::parts`] projection yields them.
+/// The four per-variant facts of one [`SearchFilterPred`], as the one
+/// [`SearchFilterPred::parts`] projection yields them: the indexed
+/// property it reads, the value expression it evaluates, the function
+/// call site it consumed, and whether it is one of the two entity-set
+/// match filters.
 struct FilterPredParts<'a> {
     property: Option<&'a str>,
     rhs: Option<&'a Expr>,
     call: Option<&'a SmallName>,
+    /// Whether the predicate is one of the two entity-set match filters
+    /// — the classification [`SearchFilterPred::is_entity_filter`] reads.
+    entity_filter: bool,
 }
 
 /// The five `<simple comp op>`s the search-filter grammar admits (the
@@ -315,4 +337,13 @@ impl SearchSpec {
 enum SearchSlot<'a> {
     Expr(&'a Expr),
     Pred(&'a SearchFilterPred),
+}
+
+impl From<relate_parser::SearchKind> for SearchKind {
+    fn from(kind: relate_parser::SearchKind) -> Self {
+        match kind {
+            relate_parser::SearchKind::Vector => SearchKind::Vector,
+            relate_parser::SearchKind::Fulltext => SearchKind::Fulltext,
+        }
+    }
 }

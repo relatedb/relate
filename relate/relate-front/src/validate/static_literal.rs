@@ -1,12 +1,15 @@
 //! The literal-type and constant vocabulary the static validation rules
 //! share: the statically-known kind and value of a literal expression (the
-//! core [`LiteralValueKind`] table), the arithmetic-operator set, and the
-//! constant fold. The one lower home both [`super::static_types`] (the
-//! operator gate) and [`super::static_arithmetic`] (the quantifier/
-//! `reduce()` arithmetic rules) build on, so neither module imports the
-//! other's vocabulary.
+//! core [`LiteralValueKind`] table), the arithmetic and concat/regex
+//! operator sets, the boolean-position policy ([`boolean_operand_check`]
+//! and its answer's shared sentence binding, [`list_returning_builtin_error`]
+//! — each position binds its own literal-rule sentence), and the constant
+//! fold. The one lower home both [`super::static_types`] (the operator
+//! gate) and [`super::static_arithmetic`] (the quantifier/`reduce()`
+//! arithmetic rules) build on, so neither module imports the other's
+//! vocabulary.
 
-use relate_core::{LiteralValueKind, Value};
+use relate_core::{builtin_returns_list, LiteralValueKind, Value};
 use relate_error::{EngineError, ErrorKind};
 use relate_parser::{Expr, LiteralValue};
 
@@ -219,6 +222,72 @@ pub(super) const STRING_OR_LIST_OR_NULL: &[LiteralValueKind] = &[
     LiteralValueKind::Null,
 ];
 
+/// The types a boolean operand admits: BOOLEAN, plus NULL (three-valued
+/// logic). One list, consulted by the boolean-position policy below.
+pub(super) const BOOLEAN_OPERAND_TYPES: &[LiteralValueKind] =
+    &[LiteralValueKind::Boolean, LiteralValueKind::Null];
+
+use super::functions::function_preview_feature;
+
+/// The boolean-position policy's answer for one operand, stated as the
+/// type it is — one flat vocabulary, no nesting: a rule violation (each
+/// carrying what its rejection sentence needs), an explicitly deferred
+/// name, or no violation.
+pub(super) enum BooleanOperandCheck {
+    /// The operand may hold a boolean.
+    Admitted,
+    /// ADR-0566's literal rule: a statically-known non-boolean, non-null
+    /// literal, with the offending kind for the sentence.
+    NonBooleanLiteral(LiteralValueKind),
+    /// ADR-0715's builtin rule: a direct builtin call whose
+    /// catalog-declared return type is a list.
+    ListReturningBuiltin,
+    /// A preview-gated name (ADR-0497 §4): not this policy's call. The
+    /// admission gate — later in the boundary's validation sequence —
+    /// owns the name, answering UnknownFunction while its feature is
+    /// off, so every boolean position defers rather than answer for a
+    /// name the catalogue must not list.
+    DeferredToAdmission,
+}
+
+/// ADR-0715's rejection: the reference server's coercion sentence for a
+/// list-returning builtin call in a boolean position, `TypeError` class
+/// — the one sentence binding every boolean position reads for the list
+/// rule (positions that pin their own sentence keep it for the literal
+/// rule).
+pub(super) fn list_returning_builtin_error() -> EngineError {
+    EngineError::semantic(
+        ErrorKind::TypeError,
+        "invalid coercion. Cannot coerce LIST to BOOLEAN.",
+    )
+}
+
+/// The boolean-position policy, detection stated once: which rule (if
+/// either) the operand violates, in check order — the literal rule, then
+/// the builtin rule — with gated names explicitly deferred to the
+/// admission gate. Every boolean position reads this one classifier and
+/// binds its own sentence and class to the violation: `static_types`'
+/// operator arms and predicate roots, and `static_calls`' `allReduce()`
+/// predicate. It lives here — the shared vocabulary home both siblings
+/// build on — so neither validator imports the other's policy.
+pub(super) fn boolean_operand_check(operand: &Expr) -> BooleanOperandCheck {
+    if let Some(kind) = static_type_outside(operand, BOOLEAN_OPERAND_TYPES) {
+        return BooleanOperandCheck::NonBooleanLiteral(kind);
+    }
+    if let Expr::FunctionCall(call) = unparen(operand) {
+        // One lowered spelling serves both name facts (the gated table
+        // compares case-insensitively, the list table demands lower-case).
+        let name = call.name.with_str(str::to_ascii_lowercase);
+        if function_preview_feature(&name).is_some() {
+            return BooleanOperandCheck::DeferredToAdmission;
+        }
+        if builtin_returns_list(&name) {
+            return BooleanOperandCheck::ListReturningBuiltin;
+        }
+    }
+    BooleanOperandCheck::Admitted
+}
+
 /// The one spelling of "this argument must be an integer": reject a
 /// statically-known *literal* (or plan-cache placeholder) whose type is
 /// outside `allowed` ([`INTEGER_ONLY`] or [`INTEGER_OR_NULL`] — a literal
@@ -250,6 +319,18 @@ const ARITHMETIC_OPS: [&str; 6] = ["+", "-", "*", "/", "%", "^"];
 /// Whether `op` is one of the [`ARITHMETIC_OPS`].
 pub(super) fn is_arithmetic_op(op: &str) -> bool {
     ARITHMETIC_OPS.contains(&op)
+}
+
+/// The list/string concatenation operator (`||`): the static-layer
+/// operator lexicon beside [`is_arithmetic_op`], so an operator spelling
+/// lives beside the checks that read it — never inline at a use site.
+pub(super) fn is_concat_operator(op: &str) -> bool {
+    op == "||"
+}
+
+/// The regex match operator (`=~`): the [`is_concat_operator`] contract.
+pub(super) fn is_regex_operator(op: &str) -> bool {
+    op == "=~"
 }
 
 /// The numeric promotion of a binary arithmetic over two *numeric* kinds —

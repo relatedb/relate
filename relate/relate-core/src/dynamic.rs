@@ -10,6 +10,7 @@
 //! (`relate-executor/src/eval/labels.rs`) validates per-row operands.
 //! Neither layer restates a message or a type rule.
 
+use crate::output_safety::quote_message;
 use std::fmt;
 
 use crate::error_kinds::ErrorKind;
@@ -131,9 +132,9 @@ impl fmt::Display for DynamicAccessError {
             ),
             Self::InvalidName { token, input } => write!(
                 f,
-                "invalid name. A {} name cannot be empty or contain any null-bytes: '{}'.",
+                "invalid name. A {} name cannot be empty or contain any null-bytes: {}.",
                 token.as_str(),
-                escape_for_message(input)
+                quote_message(input)
             ),
         }
     }
@@ -197,12 +198,6 @@ fn validated_name(token: DynamicNameToken, name: &str) -> Result<String, Dynamic
     } else {
         Ok(name.to_string())
     }
-}
-
-/// The input as it can sit inside a single-quoted detail message: a NUL byte
-/// renders as `\0` instead of breaking the line.
-fn escape_for_message(input: &str) -> String {
-    input.chars().flat_map(char::escape_default).collect()
 }
 
 #[cfg(test)]

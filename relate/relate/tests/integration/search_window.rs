@@ -256,9 +256,11 @@ fn fulltext_skip_and_limit_page_over_survivors() {
     );
 }
 
-/// The inner WHERE serves FULLTEXT sources and both membership spellings:
-/// the entity-set form and its id twin, a correlated `COLLECT` subquery on
-/// the right-hand side included.
+/// The inner WHERE serves FULLTEXT sources with the match-filter family
+/// only (ADR-0714): the entity-set form and its id twin, a correlated
+/// `COLLECT` subquery on the right-hand side included. The property-
+/// predicate rejection and the outer WHERE's reachability are pinned in
+/// their own one-policy-per-fn tests (cip_value_operators.rs).
 #[test]
 fn fulltext_inner_where_entity_membership_filters() {
     let mut c = connection();
@@ -269,19 +271,20 @@ fn fulltext_inner_where_entity_membership_filters() {
                 (:Person {name: 'Bob', bio: 'brave scholar'})",
     )
     .unwrap();
-    // A full-text source's DDL declares no additional-properties set, so
-    // its inner WHERE reads the entity's own properties (the vector
-    // source's WITH-set contract does not apply).
     let names = first_column_strings(
         &c.query(
             "MATCH (p:Person) \
-             SEARCH p IN (FULLTEXT INDEX personBios FOR 'brave' \
-             WHERE p.name = 'Bob' LIMIT 10) \
+             SEARCH p IN (FULLTEXT INDEX personBios FOR 'brave' LIMIT 10) \
+             WHERE p.name = 'Bob' \
              RETURN p.name AS name",
         )
         .unwrap(),
     );
-    assert_eq!(names, vec!["Bob".to_string()], "a property predicate");
+    assert_eq!(
+        names,
+        vec!["Bob".to_string()],
+        "the outer WHERE's property predicate"
+    );
 
     let names = first_column_strings(
         &c.query(

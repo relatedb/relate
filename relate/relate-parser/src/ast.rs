@@ -358,6 +358,22 @@ pub enum Clause {
 }
 
 impl Clause {
+    /// The clause's predicate-position `WHERE` root — the `WHERE` that
+    /// filters the clause's own rows and so is a boolean position: the
+    /// `WHERE` of a `MATCH`, a `WITH` or a `CALL … YIELD … WHERE`. The
+    /// `SHOW` forms' `WHERE` is a catalogue filter, not a row predicate,
+    /// and no other clause carries one. This is the one table of which
+    /// clauses carry a predicate root: walkers and validators read it
+    /// instead of re-matching the vocabulary.
+    pub fn predicate_where(&self) -> Option<&Expr> {
+        match self {
+            Clause::Match(m) => m.where_expr.as_ref(),
+            Clause::With(w) => w.where_expr.as_ref(),
+            Clause::CallProcedure(c) => c.where_expr.as_ref(),
+            _ => None,
+        }
+    }
+
     /// The Cypher clause keyword(s) for this clause — e.g. `"MATCH"`,
     /// `"SHOW INDEXES"`, `"LOAD CSV"`. Exhaustive over the enum, so a new
     /// clause cannot ship without a renderable name; the planner's

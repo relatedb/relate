@@ -114,7 +114,11 @@ fn validate_statement(
         crate::validate::validate_variable_types(stmt),
         crate::validate::validate_aggregation_semantics(stmt),
         crate::validate::validate_expression_constraints(stmt),
-        // ADR-0497 §4: the function-name admission gate.
+        // ADR-0497 §4: the function-name admission gate — deliberately
+        // after `validate_aggregation_semantics`, whose nesting rule reads
+        // gated aggregate aliases as aggregates (the planner's registry
+        // pin), and after the battery, whose boolean-position policy
+        // defers gated names to this gate (ADR-0715).
         crate::validate::validate_function_admission(stmt, options.preview),
         // LABS-709: dynamic key/label operands whose value is statically
         // known from a binding (a `WITH`-projected variable) or from a bound

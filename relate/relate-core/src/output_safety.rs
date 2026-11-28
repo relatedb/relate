@@ -16,6 +16,42 @@ pub fn is_unsafe_output_char(c: char) -> bool {
     c.is_control() || is_format_char(c)
 }
 
+/// The one output-safety escape: characters the classification
+/// ([`is_unsafe_output_char`]) marks — controls, bidi and zero-width
+/// format marks — render through `char::escape_default` (`\n`,
+/// `\u{1b}`, …); every other character passes through unchanged, so the
+/// text stays recognizable. The storage layer's untrusted-name rendering
+/// and the quoted message terms share this one loop.
+pub fn escape_unsafe_output(input: &str) -> String {
+    let mut escaped = String::with_capacity(input.len());
+    for c in input.chars() {
+        if is_unsafe_output_char(c) {
+            escaped.extend(c.escape_default());
+        } else {
+            escaped.push(c);
+        }
+    }
+    escaped
+}
+
+/// The input as a single-quoted message term: the frame's own two
+/// escapes (`'` and `\`) applied first, then [`escape_unsafe_output`]'s
+/// one escape over the whole body — the frame's escapes produce only
+/// printable characters, so the one escape leaves them intact — wrapped
+/// in the frame. Printable text passes through unchanged, so the term
+/// still spells what the user wrote.
+pub fn quote_message(input: &str) -> String {
+    let mut body = String::with_capacity(input.len());
+    for c in input.chars() {
+        match c {
+            '\'' => body.push_str("\\'"),
+            '\\' => body.push_str("\\\\"),
+            c => body.push(c),
+        }
+    }
+    format!("'{}'", escape_unsafe_output(&body))
+}
+
 /// `true` for Unicode general category `Cf` (format) characters. Rust's
 /// `char::is_control` covers only `Cc`, so the bidi controls, zero-width marks,
 /// and other invisible formatters need their own check.
@@ -48,7 +84,24 @@ fn is_format_char(c: char) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::is_unsafe_output_char;
+    use super::{escape_unsafe_output, is_unsafe_output_char, quote_message};
+
+    #[test]
+    fn the_escape_and_the_quoted_frame_split_their_concerns() {
+        // The bare escape: unsafe chars visibly escaped, everything else
+        // — the frame's two characters included — passes through.
+        assert_eq!(escape_unsafe_output("a\nb"), "a\\nb");
+        assert_eq!(escape_unsafe_output("a\u{202e}b"), "a\\u{202e}b");
+        assert_eq!(escape_unsafe_output("it's a\\b"), "it's a\\b");
+        assert_eq!(escape_unsafe_output("café"), "café");
+        // The quoted term: that escape plus the frame's two, wrapped.
+        assert_eq!(quote_message("it's"), "'it\\'s'");
+        assert_eq!(quote_message("a\\b"), "'a\\\\b'");
+        assert_eq!(quote_message("a\nb"), "'a\\nb'");
+        // Printable text — non-ASCII included — passes through: a quoted
+        // term spells what the user wrote.
+        assert_eq!(quote_message("café"), "'café'");
+    }
 
     #[test]
     fn covers_cc_and_cf() {
