@@ -17,13 +17,8 @@ fn the_gate_declines_every_unsupported_shape() {
         "OPTIONAL MATCH (a:Alpha)-[:R]->(b:Beta)-[:S]->(g:Gamma) RETURN a.k AS ak LIMIT 99",
         // A var-length hop keeps the recursive walker.
         "MATCH (a:Alpha)-[:R*2]->(b:Beta)-[:S]->(g:Gamma) RETURN a.k AS ak LIMIT 99",
-        // A two-entry property map is two predicates on one variable.
-        "MATCH (a:Alpha {k: 1, s: 'ash'})-[:R]->(b:Beta)-[:S]->(g:Gamma) \
-         RETURN a.k AS ak LIMIT 99",
-        // A predicate outside the closed vocabulary.
+        // A predicate outside the bytecode vocabulary (function call).
         "MATCH (a:Alpha)-[:R]->(b:Beta)-[:S]->(g:Gamma) WHERE size(g.name) > 1 \
-         RETURN a.k AS ak LIMIT 99",
-        "MATCH (a:Alpha)-[:R]->(b:Beta)-[:S]->(g:Gamma) WHERE a.k > 1 AND a.s IS NULL \
          RETURN a.k AS ak LIMIT 99",
         // A predicate naming an outer variable (the driving row binds).
         "UNWIND [1, 2] AS min MATCH (a:Alpha)-[:R]->(b:Beta)-[:S]->(g:Gamma) \
@@ -135,4 +130,29 @@ fn the_matcher_declines_one_node_sides_and_anonymous_pairs() {
         "MATCH ()-[:A]->(), ()-[:B]->() RETURN 1 AS one LIMIT 99",
         ExpectedEngagement::Declined,
     );
+}
+
+/// ADR-0720 + ADR-0666: multi-entry property maps, multi-predicate conjunctions,
+/// and boolean `OR`/`NOT`/3-valued `NULL` expressions over one node variable
+/// compile into `Prog::Bytecode`, engage the contracted kernels, and produce
+/// answers identical to the general per-row walker.
+#[test]
+fn bytecode_multi_predicate_and_boolean_ops_match_walker() {
+    let g = families();
+    for cypher in [
+        "MATCH (a:Alpha {k: 1, s: 'ash'})-[:R]->(b:Beta)-[:S]->(g:Gamma) \
+         RETURN a.k AS ak LIMIT 99",
+        "MATCH (a:Alpha)-[:R]->(b:Beta)-[:S]->(g:Gamma) WHERE a.k > 1 AND a.s IS NULL \
+         RETURN a.k AS ak LIMIT 99",
+        "MATCH (a:Alpha)-[:R]->(b:Beta)-[:S]->(g:Gamma) WHERE a.k >= 1 AND a.k <= 3 \
+         RETURN a.k AS ak LIMIT 99",
+        "MATCH (a:Alpha)-[:R]->(b:Beta)-[:S]->(g:Gamma) WHERE a.k = 1 OR a.s = 'birch' \
+         RETURN a.k AS ak LIMIT 99",
+        "MATCH (a:Alpha)-[:R]->(b:Beta)-[:S]->(g:Gamma) WHERE NOT (a.k = 1) \
+         RETURN a.k AS ak LIMIT 99",
+        "MATCH (a:Alpha)-[:R]->(b:Beta)-[:S]->(g:Gamma) WHERE NOT (a.s = 'missing') \
+         RETURN a.k AS ak LIMIT 99",
+    ] {
+        differential(&g, cypher, ExpectedEngagement::Engaged);
+    }
 }
