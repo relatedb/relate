@@ -92,6 +92,7 @@ fn entry(template: &str, generation: u64, raw: &str) -> PlanCacheEntry {
         raw: RawStatement {
             text: raw.into(),
             values: Arc::new(Vec::new()),
+            spellings: Arc::new(Vec::new()),
         },
         hold: None,
     }
@@ -303,6 +304,10 @@ fn note_raw_remembers_the_latest_text_and_values() {
         "t",
         "RETURN 41 AS one",
         &[("__AUTO_INT_0__".into(), Value::Int(41))],
+        &vec![relate_parser::AuthoredSpelling {
+            placeholder: "__AUTO_INT_0__".to_string(),
+            authored: "41".to_string(),
+        }],
     );
     let hit = cache
         .lookup_raw("RETURN 41 AS one")
@@ -310,6 +315,15 @@ fn note_raw_remembers_the_latest_text_and_values() {
     assert_eq!(
         hit.values.as_ref(),
         &[("__AUTO_INT_0__".into(), Value::Int(41))]
+    );
+    // The recorded spellings ride with the raw hit (ADR-0718): the
+    // naming path's substitution input, remembered once.
+    assert_eq!(
+        hit.spellings.as_ref(),
+        &[relate_parser::AuthoredSpelling {
+            placeholder: "__AUTO_INT_0__".to_string(),
+            authored: "41".to_string(),
+        }]
     );
 }
 

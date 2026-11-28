@@ -317,25 +317,6 @@ fn column_label(
     call_label_or_source(parsed, source_text, display.as_deref())
 }
 
-/// The authored column label for an unaliased parsed item —
-/// [`column_label`]'s parser-level twin, for the facade's authored-name
-/// restore (ADR-0663), which parses without lowering: the same core
-/// (see [`call_label_or_source`]), the display spelling read from the
-/// parsed call's name through the one alias table.
-pub(crate) fn authored_column_label(
-    parsed: &cl::Expr,
-    source_text: &Option<String>,
-) -> Option<String> {
-    let display = match parsed {
-        cl::Expr::FunctionCall(call) => call
-            .name
-            .with_str(crate::agg::lowered_alias_name)
-            .map(str::to_string),
-        _ => None,
-    };
-    call_label_or_source(parsed, source_text, display.as_deref())
-}
-
 /// The column-label policy's one core, shared by the lowering's
 /// [`column_label`] and its authored twin above: the verbatim source
 /// text, except for a function call whose column name follows its

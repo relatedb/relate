@@ -329,7 +329,7 @@ impl Connection {
             effective,
             memory,
             cache_template,
-            preview,
+            spellings,
         } = admission;
         let params = effective.as_ref().unwrap_or(budget_params);
         // LABS-1120: the admission's timing facts ride as the one carrier
@@ -386,11 +386,12 @@ impl Connection {
             profile_metrics,
         };
         // ADR-0682: a streamed statement announces its columns before the
-        // result header exists, so the authored spellings (ADR-0663) ride
-        // the connection's stream to its consumer, which re-spells the
-        // announcement; the engine sees only its sink.
+        // result header exists, so the authored spellings (ADR-0663,
+        // substituted per ADR-0718) ride the connection's stream to its
+        // consumer, which re-spells the announcement; the engine sees
+        // only its sink.
         let stream = stream.map(|stream| {
-            stream.rename_columns(super::columns::authored_renames(logical, cypher, preview));
+            stream.rename_columns(super::columns::authored_renames(logical, &spellings));
             stream.sink()
         });
         // ADR-0687 decision 6: a cache-served statement's execution grades
@@ -436,18 +437,13 @@ impl Connection {
             reservation.settle(&self.inner.resolved.budget, &mut outcome);
         }
         if let Ok(executed) = outcome.result.as_mut() {
-            // The admission's own preview copy (read once under the
-            // publication guard, ADR-0378): the restore's re-parse runs
-            // under the same options the statement's admission parsed
-            // with, so the two can never disagree on the grammar. The
-            // header both `Executed` variants carry (`Failed` included —
-            // its columns are user-visible too), read through the one
-            // accessor.
+            // The header both `Executed` variants carry (`Failed`
+            // included — its columns are user-visible too), read through
+            // the one accessor.
             super::columns::restore_authored_column_names(
                 logical,
-                cypher,
                 &mut executed.header_mut().columns,
-                preview,
+                &spellings,
             );
         }
         // ADR-0687 decision 6: the grade is the plan's work, folded only

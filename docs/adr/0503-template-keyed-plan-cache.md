@@ -295,6 +295,12 @@ observe.
 
 ## Later references
 
+- Extended by [[adr/0718-authored-spellings-ride-the-normalization]]: the
+  normalizer's outputs now include the per-placeholder authored
+  spellings, and the raw-string fast path's record (text + values) grows
+  the spellings beside them — the same text-extracts-the-same-data
+  invariant, charged by the entry's logical-byte accounting.
+
 - Refined by [[adr/0651-plan-cache-hit-verification-without-front-reparse]]:
   the cache-hit admission no longer re-runs the front end per hit. The
   verification the re-parse provided is covered by the insert gate's
