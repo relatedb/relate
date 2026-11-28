@@ -3,7 +3,8 @@
 //! [`put_group`]) and one emission helper per riding metric group —
 //! read kinds and phase times, the walk start, the kernel rung, the batch
 //! chain, the frontier family, the expression memo and the `IN
-//! TRANSACTIONS` batch facts.
+//! TRANSACTIONS` batch facts — plus the estimate's pair of keys
+//! ([`put_estimate`], ADR-0708), which rides every node, not only PROFILE.
 //!
 //! Split out of `serialize.rs`, which keeps the node/args assembly
 //! (`to_value`, `neo4j_args`, `base_args`, `node_map`) and the plan-wire
@@ -15,7 +16,7 @@ use std::collections::BTreeMap;
 use relate_model::wire;
 use relate_model::wire::plan_keys;
 
-use super::ClauseMetrics;
+use super::{ClauseMetrics, PlanEstimate};
 use crate::Value;
 
 /// One metric arg, through the wire's one width policy (`metric_i64`):
@@ -38,6 +39,18 @@ pub(super) fn put_optional_metric(
 ) {
     if let Some(value) = value {
         put_metric(args, key, value);
+    }
+}
+
+/// The estimate's emission (ADR-0708): `EstimatedRows` and
+/// `EstimateProvenance` from the one fact, both or neither.
+pub(super) fn put_estimate(args: &mut BTreeMap<String, Value>, estimate: Option<PlanEstimate>) {
+    if let Some(estimate) = estimate {
+        put_metric(args, plan_keys::ESTIMATED_ROWS, u128::from(estimate.rows));
+        args.insert(
+            plan_keys::ESTIMATE_PROVENANCE.to_string(),
+            Value::String(estimate.provenance.as_str().into()),
+        );
     }
 }
 

@@ -154,7 +154,8 @@ RUN SUCCESS, so clients that read only the pull summary (cypher-shell)
 render it. The summary is a dict in the Neo4j structured-plan field
 shape: `operatorType` (string), `args` (map: `Id` the pre-order operator
 number, `Details` the one-line details string, `EstimatedRows` when the
-estimate phase filled it — a float, Neo4j's form — and on PROFILE trees the
+estimate phase filled it — a float, Neo4j's form — with `EstimateProvenance`
+(`measured`, `sampled`, `statistic` or `defaulted`, ADR-0708) beside it, and on PROFILE trees the
 metrics set `Rows` + `TimeNs` + `DbHits` + `MemoryBytes` +
 `ExpressionBuiltBytes`, always together, and — only on an operator whose
 expression memos (ADR-0640) were probed (ADR-0654) — the memo group

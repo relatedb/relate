@@ -43,6 +43,9 @@ pub struct PlanNodeWire<'a> {
     pub id: i64,
     pub details: &'a str,
     pub estimated_rows: Option<i64>,
+    /// The ladder level behind `estimated_rows` (ADR-0708); present
+    /// exactly when the estimate is.
+    pub estimate_provenance: Option<crate::wire::EstimateProvenance>,
     /// PROFILE metrics (ADR-0344 phase 2 + metric fields): rows
     /// produced, elapsed time, store accesses, and row-materialization
     /// bytes — present only on PROFILE trees: the producer always emits
@@ -145,6 +148,27 @@ pub fn plan_node_wire(value: &CypherValue) -> PlanNodeWire<'_> {
         ),
     };
     let estimated_rows = optional_int(args, plan_keys::ESTIMATED_ROWS);
+    let estimate_provenance = match (estimated_rows, args.get(plan_keys::ESTIMATE_PROVENANCE)) {
+        (None, None) => None,
+        (Some(rows), None) => panic!(
+            "plan wire node carries {} only with {} (ADR-0708), got {rows} alone",
+            plan_keys::ESTIMATED_ROWS,
+            plan_keys::ESTIMATE_PROVENANCE
+        ),
+        (Some(_), Some(CypherValue::Str(name))) => Some(
+            crate::wire::EstimateProvenance::from_name(name.as_str()).unwrap_or_else(|| {
+                panic!(
+                    "plan wire node carries a known {} (ADR-0708), got {name:?}",
+                    plan_keys::ESTIMATE_PROVENANCE
+                )
+            }),
+        ),
+        (estimate, other) => panic!(
+            "plan wire node carries {} only with {} as a string (ADR-0708), got {other:?} beside {estimate:?}",
+            plan_keys::ESTIMATE_PROVENANCE,
+            plan_keys::ESTIMATED_ROWS
+        ),
+    };
     // Virtual plan operators: the fused fact gates the metric groups — a
     // fused child carries only the step's own measured pair, so the
     // ride-along groups (the phase times, the read kinds) stay the fused
@@ -533,6 +557,7 @@ pub fn plan_node_wire(value: &CypherValue) -> PlanNodeWire<'_> {
         id,
         details,
         estimated_rows,
+        estimate_provenance,
         metrics,
         args,
         identifiers,

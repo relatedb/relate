@@ -116,13 +116,16 @@ type PlanDocument struct {
 
 // PlanNode is one operator of a plan document.
 type PlanNode struct {
-	Operator      string         `json:"operator"`
-	Details       string         `json:"details"`
-	Identifiers   []string       `json:"identifiers"`
-	EstimatedRows *int64         `json:"estimated_rows"`
-	Actual        *PlanActual    `json:"actual"`
-	Children      []PlanNode     `json:"children"`
-	Warnings      []Notification `json:"warnings"`
+	Operator      string   `json:"operator"`
+	Details       string   `json:"details"`
+	Identifiers   []string `json:"identifiers"`
+	EstimatedRows *int64   `json:"estimated_rows"`
+	// EstimateProvenance is the planner ladder level behind EstimatedRows
+	// ("measured", "sampled", "statistic", "defaulted"); nil exactly when EstimatedRows is.
+	EstimateProvenance *string        `json:"estimate_provenance"`
+	Actual             *PlanActual    `json:"actual"`
+	Children           []PlanNode     `json:"children"`
+	Warnings           []Notification `json:"warnings"`
 }
 
 // PlanActual is one operator's PROFILE metrics; nil on an EXPLAIN tree.

@@ -82,7 +82,7 @@ fn profile_warns_an_estimation_miss_on_a_ten_x_estimate_overshoot() {
     let tree = plan(&result);
     let affected = find_node(tree, "NodeByLabelScan").expect("the filtered scan");
     assert_eq!(
-        affected.estimated_rows,
+        affected.estimated_rows(),
         Some(25),
         "the estimate is the label count: {affected:?}",
     );

@@ -514,7 +514,7 @@ mod tests {
                 );
                 assert!(!eager[0].remedy().is_empty());
                 assert!(
-                    aggregation.estimated_rows.is_some(),
+                    aggregation.estimated_rows().is_some(),
                     "the stub stats supplied the child estimate"
                 );
             }
@@ -529,7 +529,10 @@ mod tests {
     #[test]
     fn eager_notification_is_not_driven_by_the_rendered_operator_name() {
         let scan = PlanNode::new("AllNodesScan", String::new(), Vec::new(), Vec::new())
-            .with_estimated_rows(Some(EAGER_INPUT_NOTIFICATION_ROWS));
+            .with_estimate(
+                EAGER_INPUT_NOTIFICATION_ROWS,
+                relate_model::wire::EstimateProvenance::Measured,
+            );
         let root = PlanNode::new("EagerAggregation", String::new(), Vec::new(), vec![scan]);
         assert!(
             tree_notifications(&tree(root))

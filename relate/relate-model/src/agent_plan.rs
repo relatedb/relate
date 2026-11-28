@@ -142,6 +142,10 @@ fn node_json(
     );
     out.insert("estimated_rows".to_string(), json!(node.estimated_rows));
     out.insert(
+        "estimate_provenance".to_string(),
+        json!(node.estimate_provenance.map(|p| p.as_str())),
+    );
+    out.insert(
         "actual".to_string(),
         match &node.metrics {
             Some(metrics) => {

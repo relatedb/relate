@@ -514,10 +514,9 @@ mod tests {
         assert_eq!(seek.line, "RANGE INDEX m:Model(id)");
         // The counted estimate keeps the fused path: the keyed lookup
         // narrates without pricing, so the label count stays the hint.
-        assert_eq!(
-            super::super::subject::match_estimate(&map_patterns, &stats, seek.rows),
-            Some(4)
-        );
+        let estimate = super::super::estimate::match_estimate(&map_patterns, None, &stats)
+            .expect("the label count prices the keyed lookup's start");
+        assert_eq!(estimate.rows, 4);
         // An unindexed pair keeps the fused narration — the plan never
         // claims a seek the funnel would decline.
         let unindexed = seeking(&[("Model", 4)], &[], &[], BTreeMap::new());

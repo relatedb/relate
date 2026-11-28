@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use relate_model::wire;
 use relate_model::wire::plan_keys;
 
-use super::metric_args::{put_metric, put_metrics, put_optional_metric};
+use super::metric_args::{put_estimate, put_metric, put_metrics, put_optional_metric};
 use super::{PlanNode, PlanWarning};
 use crate::Value;
 
@@ -52,7 +52,7 @@ impl PlanNode {
         // Neo4j's `EstimatedRows` is a float; the engine's own form keeps
         // the integer — the mirror converts it so float-parsing tooling
         // (cypher-shell's summary) reads it.
-        if let Some(estimate) = self.estimated_rows {
+        if let Some(estimate) = self.estimated_rows() {
             args.insert(
                 plan_keys::ESTIMATED_ROWS.to_string(),
                 Value::Float(estimate as f64),
@@ -170,11 +170,7 @@ impl PlanNode {
         // (`put_metric`'s `metric_i64`: saturate at the i64 boundary,
         // never an unchecked cast).
         put_metric(&mut args, plan_keys::ID, self.id as u128);
-        put_optional_metric(
-            &mut args,
-            plan_keys::ESTIMATED_ROWS,
-            self.estimated_rows.map(u128::from),
-        );
+        put_estimate(&mut args, self.estimate);
         put_optional_metric(
             &mut args,
             plan_keys::PEAK_LOGICAL_BYTES,
@@ -444,20 +440,59 @@ mod tests {
         }
     }
 
+    /// ADR-0708: the provenance key rides with the estimate, decodes
+    /// through the wire accessor, and is absent without an estimate; the
+    /// name table matches the typed vocabulary.
+    #[test]
+    fn to_value_emits_the_estimate_provenance_with_the_estimate() {
+        use relate_model::wire::{plan_node_wire, EstimateProvenance};
+        let estimated = PlanNode::new("AllNodesScan", "(n)".to_string(), Vec::new(), Vec::new())
+            .with_estimate(7, EstimateProvenance::Defaulted);
+        let wire = estimated.to_value();
+        let cypher = relate_core::value_to_cypher(&wire);
+        let node = plan_node_wire(&cypher);
+        assert_eq!(node.estimated_rows, Some(7));
+        assert_eq!(
+            node.estimate_provenance,
+            Some(EstimateProvenance::Defaulted)
+        );
+        let bare = PlanNode::new("AllNodesScan", "(n)".to_string(), Vec::new(), Vec::new());
+        let bare_cypher = relate_core::value_to_cypher(&bare.to_value());
+        assert_eq!(plan_node_wire(&bare_cypher).estimate_provenance, None);
+        // The spellings are pinned literally, through an exhaustive match: a
+        // renamed wire name, or a new variant without a pinned name, fails here.
+        for provenance in [
+            EstimateProvenance::Measured,
+            EstimateProvenance::Sampled,
+            EstimateProvenance::Statistic,
+            EstimateProvenance::Defaulted,
+        ] {
+            let pinned = match provenance {
+                EstimateProvenance::Measured => "measured",
+                EstimateProvenance::Sampled => "sampled",
+                EstimateProvenance::Statistic => "statistic",
+                EstimateProvenance::Defaulted => "defaulted",
+            };
+            assert_eq!(provenance.as_str(), pinned);
+            assert_eq!(EstimateProvenance::from_name(pinned), Some(provenance));
+            assert!(EstimateProvenance::NAMES.contains(&pinned));
+        }
+    }
+
     /// The Neo4j-facing entry is root-shaped (ADR-0357): the root carries
     /// the Neo4j-facing args while its children keep the engine's own form —
     /// `EstimatedRows` an integer on the child, a float only on the root.
     #[test]
     fn to_neo4j_value_decorates_the_root_and_keeps_children_undecorated() {
         let mut child = PlanNode::new("AllNodesScan", "(n)".to_string(), Vec::new(), Vec::new());
-        child.estimated_rows = Some(7);
+        child.estimate = Some(crate::PlanEstimate::measured(7));
         let mut root = PlanNode::new(
             "ProduceResults",
             "1 item(s)".to_string(),
             Vec::new(),
             vec![child],
         );
-        root.estimated_rows = Some(3);
+        root.estimate = Some(crate::PlanEstimate::measured(3));
 
         let Value::Map(root_map) = root.to_neo4j_value("Query: RETURN 1\nPlan:") else {
             panic!("a root decorates to a map");

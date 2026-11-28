@@ -59,7 +59,9 @@ spends its time), and
 `notifications` — the engine-native query-notification list (ADR-0363;
 empty on a plain run, populated by `EXPLAIN`/`PROFILE`) — and `plan`, the
 structured `relate.plan/v1` document (LABS-370, ADR-0381; `None` on a
-plain run): the operator tree with per-node estimates, PROFILE metrics
+plain run): the operator tree with per-node estimates (`estimated_rows`, and
+`estimate_provenance` — `measured`, `sampled`, `statistic` or `defaulted`, the planner
+ladder level behind it, `None` exactly when there is no estimate), PROFILE metrics
 (including the read-kind mix, the seek/walk phase times, the cumulative
 `total_time_ms`, the arm's `loops`, the walk's start, `batched` —
 whether the operator ran the batch scan/filter/project chain, and

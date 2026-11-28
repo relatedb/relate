@@ -227,7 +227,7 @@ alive:
   place.
 - `Result.Plan` — the statement's structured plan (LABS-418, ADR-0381) as typed
   values: `*PlanDocument` (`Schema`, `Profiled`, `Statement`, `Root`), `PlanNode`
-  (`Operator`, `Details`, `Identifiers`, `EstimatedRows`, `Actual`, `Children`,
+  (`Operator`, `Details`, `Identifiers`, `EstimatedRows`, `EstimateProvenance`, `Actual`, `Children`,
   `Warnings`), `PlanActual` (the PROFILE metrics) and `PlanStart`; `nil` on a plain
   run. Each node's `Warnings` carry the operator's remedy-bearing notifications
   (ADR-0363), joined by operator id.

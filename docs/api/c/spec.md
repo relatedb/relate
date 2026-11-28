@@ -489,6 +489,7 @@ plan.
     "details": "name",
     "identifiers": ["name"],
     "estimated_rows": null,
+    "estimate_provenance": null,
     "actual": {
       "rows": 3, "time_ms": 0.004, "total_time_ms": 0.046, "db_hits": 3,
       "memory_bytes": 66, "expression_built_bytes": 0,
@@ -508,7 +509,7 @@ plan.
   `false` on `EXPLAIN` (`actual` is `null`).
 - `statement` — the planned statement as echoed, or `null`.
 - Each node: `operator`, `details`, `identifiers`, `estimated_rows`
-  (or `null`), `actual` (or `null`), `children`, and `warnings` — the
+  (or `null`), `estimate_provenance` (`measured`, `sampled`, `statistic` or `defaulted`: the planner ladder level behind the estimate; `null` exactly when `estimated_rows` is, ADR-0708), `actual` (or `null`), `children`, and `warnings` — the
   remedy-bearing notifications raised for that operator, matched by
   operator id, each `{code, gql_status, severity, category, title,
   description, remedy}`; `[]` when the operator raised none. `body_of` is the `CallSubquery` parent operator's id on the root of a batched `CALL { … } IN TRANSACTIONS` body subtree (REL8-2047), `null` on every node of the statement's own pipeline. `fused_into` is the fused parent operator's id on a display-only fused child (an index-seek MATCH's seek and hop steps), `null` on a real operator; `fused_metrics` is `{seek_ms, node_reads}` on a PROFILE seek step, else `null`. `actual` carries `rows`, `time_ms` (a float), `total_time_ms` (a

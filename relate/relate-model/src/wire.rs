@@ -754,7 +754,8 @@ pub mod plan_keys;
 pub use plan_fused::{FusedChildWire, PlanFusedMetricsWire};
 pub use plan_memo::{MemoKindWire, MemoKindsWire, PlanMemoWire};
 pub use plan_metrics_wire::{
-    KernelRungWire, PlanInTxWire, PlanMetricsWire, PlanPhasesWire, PlanProfiledFacts, PlanReadsWire,
+    EstimateProvenance, KernelRungWire, PlanInTxWire, PlanMetricsWire, PlanPhasesWire,
+    PlanProfiledFacts, PlanReadsWire,
 };
 pub use plan_wire::{
     metric_i64, metric_u64, plan_node_wire, plan_subtree_totals, profiled_facts, time_ns_ms,

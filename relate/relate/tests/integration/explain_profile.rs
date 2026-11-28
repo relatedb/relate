@@ -13,6 +13,7 @@ use crate::common;
 use relate::{QueryType, Value};
 
 use common::{connection, find_node, find_nodes, plan, scalar_one};
+use relate_model::wire::plan_keys;
 
 #[test]
 fn explain_match_returns_the_plan() {
@@ -563,14 +564,19 @@ fn explain_expand_subject_carries_the_pattern_text_with_bounds() {
             .contains("(:Person)-[:KNOWS*1..2]->(:Person)"),
         "{tree:?}"
     );
-    // Labeled endpoints narrow past the type count: no node carries an
-    // estimate (the estimate column's gate reads exactly this fact).
-    assert!(expand.estimated_rows.is_none(), "{tree:?}");
-    assert!(tree.estimated_rows.is_none(), "{tree:?}");
+    // The estimate is the planner ladder's start element (ADR-0708): the
+    // `:Person` label's rows, measured. The root prices nothing.
+    assert_eq!(expand.estimated_rows(), Some(3), "{tree:?}");
+    assert_eq!(
+        expand.estimate.map(|e| e.provenance),
+        Some(relate_model::wire::EstimateProvenance::Measured),
+        "{tree:?}"
+    );
+    assert!(tree.estimated_rows().is_none(), "{tree:?}");
 }
 
 #[test]
-fn explain_bare_relationship_expand_carries_the_type_count_estimate() {
+fn explain_bare_relationship_expand_has_no_ladder_estimate() {
     let mut conn = connection();
     conn.query(
         "CREATE (:Person {name: 'Alice'}), (:Person {name: 'Bob'}),
@@ -586,19 +592,18 @@ fn explain_bare_relationship_expand_carries_the_type_count_estimate() {
         .query("EXPLAIN MATCH ()-[k:KNOWS]->() RETURN k")
         .unwrap();
     let tree = plan(&result);
-    // A single typed relationship between unfiltered endpoints: the type's
-    // row count is the estimate.
+    // A bare start element has no count on the planner's ladder (it only
+    // ranks it), so EXPLAIN shows no estimate and no provenance rather
+    // than a second rule's number (ADR-0708).
     let expand = find_node(tree, "Expand").expect("the traversal");
     assert!(expand.details.contains("()-[k:KNOWS]->()"), "{tree:?}");
-    assert_eq!(expand.estimated_rows, Some(1), "{tree:?}");
-    // The wire form carries the estimate beside the id and details.
-    let Value::Map(map) = expand.to_value() else {
-        panic!("to_value is a map");
-    };
-    let Value::Map(args) = map.get("args").expect("args") else {
-        panic!("args is a map");
-    };
-    assert_eq!(args.get("EstimatedRows"), Some(&Value::Int(1)));
+    assert!(expand.estimate.is_none(), "{tree:?}");
+    // The wire form carries neither key.
+    assert_eq!(common::wire_arg(expand, plan_keys::ESTIMATED_ROWS), None);
+    assert_eq!(
+        common::wire_arg(expand, plan_keys::ESTIMATE_PROVENANCE),
+        None
+    );
 }
 
 #[test]
@@ -612,7 +617,7 @@ fn explain_scan_estimate_is_the_label_count() {
     let tree = plan(&result);
     let scan = &tree.children[0];
     assert_eq!(scan.operator, "NodeByLabelScan");
-    assert_eq!(scan.estimated_rows, Some(2), "{tree:?}");
+    assert_eq!(scan.estimated_rows(), Some(2), "{tree:?}");
 }
 
 #[test]
@@ -686,7 +691,7 @@ fn explain_indexed_point_read_narrates_node_index_seek() {
             .contains("RANGE INDEX n:Person(name) WHERE name = 'Alice'"),
         "{tree:?}"
     );
-    assert_eq!(seek.estimated_rows, Some(1), "{tree:?}");
+    assert_eq!(seek.estimated_rows(), Some(1), "{tree:?}");
     assert_seek_replaces_fused_scan(tree, seek);
 }
 
@@ -713,7 +718,11 @@ fn explain_range_start_narrates_node_index_seek_by_range() {
             .contains("RANGE INDEX n:User(age) WHERE age > 5"),
         "{tree:?}"
     );
-    assert_eq!(seek.estimated_rows, Some(5), "the posting window: {tree:?}");
+    assert_eq!(
+        seek.estimated_rows(),
+        Some(5),
+        "the posting window: {tree:?}"
+    );
     assert_seek_replaces_fused_scan(tree, seek);
 
     // A multi-element pattern keeps its pattern text after the seek
@@ -732,7 +741,7 @@ fn explain_range_start_narrates_node_index_seek_by_range() {
         "{tree:?}"
     );
     assert_eq!(
-        seek.estimated_rows,
+        seek.estimated_rows(),
         Some(3),
         "the window over ages 8..10: {tree:?}"
     );
@@ -821,9 +830,9 @@ fn fused_breakdown_steps_carry_estimates_and_dense_pre_order_ids() {
             &parent.children[1],
             &parent.children[2],
         );
-        assert_eq!(seek.estimated_rows, Some(1), "{prefix}: {tree:?}");
-        assert!(hop0.estimated_rows.is_some(), "{prefix}: {tree:?}");
-        assert!(hop1.estimated_rows.is_some(), "{prefix}: {tree:?}");
+        assert_eq!(seek.estimated_rows(), Some(1), "{prefix}: {tree:?}");
+        assert!(hop0.estimated_rows().is_some(), "{prefix}: {tree:?}");
+        assert!(hop1.estimated_rows().is_some(), "{prefix}: {tree:?}");
         assert_eq!(parent.id, 1, "{prefix}: {tree:?}");
         assert_eq!((seek.id, hop0.id, hop1.id), (2, 3, 4), "{prefix}: {tree:?}");
     }
@@ -899,21 +908,24 @@ fn fused_breakdown_wire_form_links_each_child_to_its_parent() {
 }
 
 #[test]
-fn explain_scan_estimate_declines_when_filtered_without_stats() {
+fn explain_scan_estimate_is_the_default_selectivity_when_filtered_without_stats() {
     let mut conn = connection();
     conn.query("CREATE (:Person {name: 'Alice'}), (:Person {name: 'Bob'})")
         .unwrap();
-    // No index serves the equality predicate: the fused scan-then-filter
-    // operator honestly scans the whole label before filtering, so the
-    // estimate IS the label count — the est-vs-actual ⚠ it fires on the
-    // point lookup is the missing-index diagnosis (the LABS-328 class),
-    // not a false positive.
+    // No index serves the equality predicate: the ladder prices it with the
+    // default selectivity table (ADR-0694), and EXPLAIN says so — a
+    // `defaulted` estimate, never mistaken for a measurement (ADR-0708).
     let result = conn
         .query("EXPLAIN MATCH (n:Person {name: 'Alice'}) RETURN n.name")
         .unwrap();
     let tree = plan(&result);
     let scan = &tree.children[0];
-    assert_eq!(scan.estimated_rows, Some(2), "{tree:?}");
+    assert_eq!(scan.estimated_rows(), Some(1), "{tree:?}");
+    assert_eq!(
+        scan.estimate.map(|e| e.provenance),
+        Some(relate_model::wire::EstimateProvenance::Defaulted),
+        "{tree:?}"
+    );
 }
 
 /// REL8-1946's round-3 blocker pin: the PROFILE render path names its own

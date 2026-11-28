@@ -11,6 +11,9 @@ public class PlanNode {
     public List<String> identifiers;
     @JsonProperty("estimated_rows")
     public Long estimatedRows;
+    /** The planner ladder level behind {@code estimatedRows}: measured, sampled, statistic or defaulted. */
+    @JsonProperty("estimate_provenance")
+    public String estimateProvenance;
     public PlanActual actual;
     public List<PlanNode> children;
     public List<Notification> warnings;

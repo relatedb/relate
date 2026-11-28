@@ -429,13 +429,13 @@ fn table_mode_renders_profile_metric_columns() {
 /// swapped walk would panic on the decorated float estimate.
 #[test]
 fn the_wire_and_tree_roles_are_distinct() {
-    let mut node = relate::PlanNode::new(
+    let node = relate::PlanNode::new(
         "ProduceResults",
         "1 item(s)".to_string(),
         Vec::new(),
         Vec::new(),
     );
-    node.estimated_rows = Some(3);
+    let node = node.with_estimate(3, relate_model::wire::EstimateProvenance::Measured);
     let wire = relate::plan_value_to_cypher(&node.to_neo4j_value("Query: RETURN 1\nPlan:"))
         .expect("the fixture's plan sits far under the budget");
     let tree = PlanFixture::of(&node);

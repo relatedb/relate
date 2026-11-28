@@ -66,6 +66,61 @@ impl KernelRungWire {
     }
 }
 
+/// Which planner ladder level produced a node's `EstimatedRows`
+/// (ADR-0708): one variant per planner `Estimate` variant, so the
+/// reader can tell a measurement from a default. [`Self::as_str`] is the
+/// vocabulary's one spelling; [`Self::NAMES`] is derived
+/// from it. Not the key statistics' own trust label.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EstimateProvenance {
+    /// A count the store measured: a bound variable, an index equality
+    /// or window, label rows.
+    Measured,
+    /// A sampled `CONTAINS` seed.
+    Sampled,
+    /// Label rows scaled by the key statistics' selectivity (REL8-2249) —
+    /// a statistic, never a default.
+    Statistic,
+    /// The default-selectivity table (ADR-0694) — a default, never a
+    /// measurement.
+    Defaulted,
+}
+
+impl EstimateProvenance {
+    /// Every name, vocabulary order.
+    const VARIANTS: [Self; 4] = [
+        Self::Measured,
+        Self::Sampled,
+        Self::Statistic,
+        Self::Defaulted,
+    ];
+    pub const NAMES: [&'static str; 4] = [
+        Self::VARIANTS[0].as_str(),
+        Self::VARIANTS[1].as_str(),
+        Self::VARIANTS[2].as_str(),
+        Self::VARIANTS[3].as_str(),
+    ];
+
+    /// The wire name (`const` so [`Self::NAMES`] and this match cannot
+    /// drift apart: the pinned test compares them).
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            EstimateProvenance::Measured => "measured",
+            EstimateProvenance::Sampled => "sampled",
+            EstimateProvenance::Statistic => "statistic",
+            EstimateProvenance::Defaulted => "defaulted",
+        }
+    }
+
+    /// The variant a wire name denotes — `None` for a name outside the
+    /// vocabulary (the decoder fails loudly on it).
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::VARIANTS
+            .into_iter()
+            .find(|provenance| provenance.as_str() == name)
+    }
+}
+
 /// The PROFILE metric set (ADR-0344 phase 2 + metric fields) as named
 /// fields: which number is rows, nanoseconds, store accesses, or
 /// row-materialization bytes is stated by the names, not by a position
