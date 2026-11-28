@@ -151,13 +151,31 @@ pub(super) fn run(
             // circuits the same way — side B never expands for this hub.
             continue;
         }
+        // When both sides must meet at a shared terminal and side A is wide
+        // (e.g. a hub's 2-hop neighborhood in a triangle/cycle), sort side A
+        // in place by terminal id so each side-B arrival binary-searches only
+        // its matching slice instead of linearly scanning all of side A.
+        const SHARED_TERMINAL_SORT_THRESHOLD: usize = 32;
+        let sorted_by_terminal =
+            star.shared_terminal && side_a.len() > SHARED_TERMINAL_SORT_THRESHOLD;
+        if sorted_by_terminal {
+            side_a.sort_unstable_by_key(SideRow::terminal);
+        }
         let mut found = false;
         expand_side(ctx, &star.sides[1], &side_types[1], hub, &tallies, |b| {
             // The pairing rule, per B row: a side B row combines with the
             // side A rows whose terminal it lands on (every row, for the
             // open star) and whose rels it does not reuse — the cross-side
             // relationship-uniqueness rule, per pair.
-            for a in &side_a {
+            let candidates: &[SideRow] = if sorted_by_terminal {
+                let target = b.terminal();
+                let lo = side_a.partition_point(|a| a.terminal() < target);
+                let hi = lo + side_a[lo..].partition_point(|a| a.terminal() == target);
+                &side_a[lo..hi]
+            } else {
+                &side_a
+            };
+            for a in candidates {
                 // The pairing loop is the run's quadratic phase; sample the
                 // token per pair so a cancelled statement stops here, not
                 // after the whole hub has paired.

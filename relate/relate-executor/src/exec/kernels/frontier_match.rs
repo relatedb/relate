@@ -392,9 +392,9 @@ pub(crate) fn compile_frontier<'a>(
         // An unbounded spine engages on shape alone: no gate to run.
         && nfa.max_hops.is_some()
         && !frontier_engages(
+            graph,
+            rows,
             stats,
-            u128::try_from(graph.next_node_id())
-                .expect("node ids are allocator-issued upward from zero"),
             conjuncts,
             start_node,
             target_node,

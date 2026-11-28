@@ -27,8 +27,12 @@
 //! only at its rel-count cap). Statistics that cannot price the hops (no
 //! histogram) keep the DFS.
 
+use relate_core::{NodeId, Value};
 use relate_ir::{Direction, Expr, NodePattern, PatternElement, RelPattern};
 use relate_planner::{endpoint_estimate, seed_rows, DegreeMoments, PatternStats};
+
+use crate::graph::Graph;
+use crate::row::Row;
 
 /// The DFS's measured cost per enumerated trail, in nanoseconds.
 const WALKER_NS_PER_TRAIL: f64 = 1490.0;
@@ -68,9 +72,15 @@ impl CostEstimate {
 /// the store's node-id span, the ceiling on any endpoint count (an
 /// unlabeled target's estimate is the ladder's rank sentinel, an ordering
 /// fact no path count can reach).
+/// Maximum seed count for which the cost gate probes actual O(1) adjacency
+/// lengths on the resolved seeds instead of relying on the label's global
+/// mean degree (which underestimates hub seeds by orders of magnitude).
+const ACTUAL_SEED_DEGREE_CAP: usize = 16;
+
 pub(super) fn frontier_engages(
+    graph: &Graph,
+    rows: &[Row],
     stats: &dyn PatternStats,
-    population: u128,
     conjuncts: &[Expr],
     start: &NodePattern,
     target: &NodePattern,
@@ -80,18 +90,116 @@ pub(super) fn frontier_engages(
         // The expansion passed the estimate's hop ceiling.
         return true;
     };
+    let population =
+        u128::try_from(graph.next_node_id()).expect("node ids are allocator-issued upward from 0");
     let unbound = |_: &str| false;
     let seeds = seed_rows(endpoint_estimate(start, &unbound, conjuncts.iter(), stats));
     let endpoints =
         seed_rows(endpoint_estimate(target, &unbound, conjuncts.iter(), stats)).min(population);
-    estimate(stats, population, seeds, endpoints, start, &hops)
-        .is_some_and(CostEstimate::frontier_wins)
+    let actual_first_hop = (seeds <= ACTUAL_SEED_DEGREE_CAP as u128)
+        .then(|| probe_actual_first_hop_edges(graph, rows, start, &hops))
+        .flatten();
+    estimate_with_first_hop(
+        stats,
+        population,
+        seeds,
+        endpoints,
+        start,
+        &hops,
+        actual_first_hop,
+    )
+    .is_some_and(CostEstimate::frontier_wins)
+}
+
+/// Probe the exact first-hop edge count for a small set of resolved seeds
+/// (either pre-bound in `rows` or resolved via an indexed literal equality on
+/// `start.properties`). Returns `None` if seeds are not cheaply resolvable or
+/// exceed [`ACTUAL_SEED_DEGREE_CAP`], letting the caller fall back to the
+/// label's global mean degree.
+fn probe_actual_first_hop_edges(
+    graph: &Graph,
+    rows: &[Row],
+    start: &NodePattern,
+    hops: &Expansion<'_>,
+) -> Option<f64> {
+    let &first_idx = hops.sequence.first()?;
+    let first = hops.distinct[first_idx];
+    let seed_ids: Vec<NodeId> = if rows.len() <= ACTUAL_SEED_DEGREE_CAP {
+        let bound: Vec<NodeId> = start
+            .variable
+            .as_ref()
+            .map(|var| {
+                rows.iter()
+                    .filter_map(|row| match row.get_name(var) {
+                        Some(Value::Node(n)) => Some(n.id),
+                        _ => None,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        if !bound.is_empty() {
+            bound
+        } else if rows.len() == 1 {
+            probe_indexed_literal_seeds(graph, start)?
+        } else {
+            return None;
+        }
+    } else {
+        return None;
+    };
+    if seed_ids.is_empty() || seed_ids.len() > ACTUAL_SEED_DEGREE_CAP {
+        return None;
+    }
+    let type_names: Vec<String> = first
+        .types
+        .iter()
+        .map(|(name, _)| name.to_string())
+        .collect();
+    let rel_types = graph.rel_types(&type_names);
+    let total_edges: usize = seed_ids
+        .iter()
+        .map(|&id| graph.typed_adj_len(id, first.direction, &rel_types))
+        .sum();
+    Some(total_edges as f64)
+}
+
+fn probe_indexed_literal_seeds(graph: &Graph, start: &NodePattern) -> Option<Vec<NodeId>> {
+    let Expr::Map(pairs) = start.properties.as_ref()? else {
+        return None;
+    };
+    if start.labels.is_empty() {
+        return None;
+    }
+    let labels: Vec<String> = start.label_names().map(|n| n.to_string()).collect();
+    let ts = graph.commit_ts();
+    for (key, expr) in pairs {
+        let val = literal_to_value(expr)?;
+        if let Some(ids) =
+            graph.lookup_equality_upto(&labels, key, &[val], ts, ACTUAL_SEED_DEGREE_CAP + 1)
+        {
+            if ids.len() <= ACTUAL_SEED_DEGREE_CAP {
+                return Some(ids);
+            }
+        }
+    }
+    None
+}
+
+fn literal_to_value(expr: &Expr) -> Option<Value> {
+    match expr {
+        Expr::Int(v) => Some(Value::Int(*v)),
+        Expr::Float(v) => Some(Value::Float(*v)),
+        Expr::String(s) => Some(Value::String(s.as_str().into())),
+        Expr::Bool(b) => Some(Value::Bool(*b)),
+        _ => None,
+    }
 }
 
 /// The cost estimate of `hops` (every quantifier expanded to its maximum
 /// count) from `seeds` start rows, `None` when the statistics keep no
 /// degree histogram, or (for an incoming or undirected first hop) no pair
 /// counts, to price them with.
+#[cfg(test)]
 pub(super) fn estimate(
     stats: &dyn PatternStats,
     population: u128,
@@ -99,6 +207,18 @@ pub(super) fn estimate(
     endpoints: u128,
     start: &NodePattern,
     hops: &Expansion<'_>,
+) -> Option<CostEstimate> {
+    estimate_with_first_hop(stats, population, seeds, endpoints, start, hops, None)
+}
+
+fn estimate_with_first_hop(
+    stats: &dyn PatternStats,
+    population: u128,
+    seeds: u128,
+    endpoints: u128,
+    start: &NodePattern,
+    hops: &Expansion<'_>,
+    first_hop_override: Option<f64>,
 ) -> Option<CostEstimate> {
     let (&first, rest) = hops.sequence.split_first()?;
     let first = hops.distinct[first];
@@ -108,9 +228,14 @@ pub(super) fn estimate(
         .filter_map(|label| stats.label_rows(label))
         .min()
         .map_or(population, u128::from);
-    let first_degrees = first_hop_degree_sum(stats, start, first)?;
     let seeds = seeds as f64;
-    let mut level = seeds * mean_degree(first_degrees, start_population);
+    let mut level = match first_hop_override {
+        Some(actual) => actual,
+        None => {
+            let first_degrees = first_hop_degree_sum(stats, start, first)?;
+            seeds * mean_degree(first_degrees, start_population)
+        }
+    };
     let mut trails = level;
     // A quantifier repeats the same rels up to 1024 times, and each
     // degree-moments consult scans the histograms: price each distinct
@@ -132,9 +257,20 @@ pub(super) fn estimate(
         trails += level;
     }
     let adjacency = stats.degree_moments(&[], &first.types)?.sum as f64 * sides(first);
+    let max_pairs = seeds * endpoints as f64;
+    let pairs = if max_pairs <= 0.0 || trails <= 0.0 {
+        0.0
+    } else {
+        // Balls-into-bins occupancy: expected distinct (seed, endpoint) pairs
+        // when `trails` arrivals land across `max_pairs` possible pairs.
+        // Matches `trails` when trails << max_pairs (trees/forests) and
+        // captures collision saturation as trails approaches max_pairs.
+        let ratio = trails / max_pairs;
+        (max_pairs * -(-ratio).exp_m1()).min(trails)
+    };
     Some(CostEstimate {
         trails,
-        pairs: trails.min(seeds * endpoints as f64),
+        pairs,
         probes: trails.min(seeds * adjacency),
     })
 }

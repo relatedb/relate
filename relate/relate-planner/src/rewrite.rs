@@ -406,29 +406,35 @@ fn static_label_disjunction(expr: &LabelExpr) -> Option<Vec<SmallName>> {
 
 /// The folds' node-targeting walk, the one spelling of the scaffolding
 /// every fold shares (the label conjunction, the label disjunction, the
-/// property map): compact-view-only — a GPM pattern's `nodes`/`rels` may
-/// be cleared or duplicated beside the `elements` the GPM engine walks,
-/// so a fold landing in `nodes` could desync from them; such patterns
-/// are skipped and the conjunct stays in the WHERE clause. The walk
-/// yields every node carrying the variable (a cyclic pattern spells one
-/// variable on several entries); the fold that lands decides, and what
-/// each fold builds from the node stays at the fold (the conjunction
-/// fold keeps the plan-resolved tokens, the disjunction fold composes
-/// label expressions) — the walk is the shared policy, never the
-/// payload.
-fn fold_target_nodes<'a>(
-    patterns: &'a mut [PathPattern],
+/// property map): admits every pattern whose `nodes`/`rels` and `elements`
+/// are in 1-to-1 alternating correspondence (plain patterns and fixed-length
+/// patterns carrying inline `WHERE` predicates), and mirrors any accepted
+/// mutation into `elements[2 * i]` so the GPM walker sees the folded labels
+/// and properties too. Quantified or path-level GPM patterns (where `nodes`
+/// may be cleared or non-alternating) are skipped and their conjuncts stay
+/// in the `WHERE` clause.
+fn try_fold_node(
+    patterns: &mut [PathPattern],
     var: &SmallName,
-) -> impl Iterator<Item = &'a mut NodePattern> {
-    // The variable is cloned into the filter so the returned iterator
-    // borrows nothing but the patterns (an `impl Iterator` return cannot
-    // carry the argument reference's lifetime).
-    let var = var.clone();
-    patterns
+    mut fold: impl FnMut(&mut NodePattern) -> bool,
+) -> bool {
+    for p in patterns
         .iter_mut()
-        .filter(|p| !p.needs_gpm())
-        .flat_map(|p| p.nodes.iter_mut())
-        .filter(move |n| n.variable.as_ref() == Some(&var))
+        .filter(|p| p.has_compact_alternating_elements())
+    {
+        let sync_elements = p.elements.len() == p.nodes.len() + p.rels.len();
+        for (i, n) in p.nodes.iter_mut().enumerate() {
+            if n.variable.as_ref() == Some(var) && fold(n) {
+                if sync_elements {
+                    if let Some(relate_ir::PatternElement::Node(elem)) = p.elements.get_mut(2 * i) {
+                        *elem = n.clone();
+                    }
+                }
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// Fold a static label disjunction on an introduced, unbound variable
@@ -444,7 +450,7 @@ fn add_label_disjunction(
     var: &SmallName,
     disjuncts: &[SmallName],
 ) -> bool {
-    for n in fold_target_nodes(patterns, var) {
+    try_fold_node(patterns, var, |n| {
         // Same faithfulness guard as `add_labels`: a non-static existing
         // label expression is left alone (this candidate declines, a
         // later one may still take the fold). The base stays names —
@@ -455,7 +461,7 @@ fn add_label_disjunction(
             None => n.label_names().cloned().collect(),
             Some(expr) => match static_labels(expr) {
                 Some(labels) => labels,
-                None => continue,
+                None => return false,
             },
         };
         // One disjunct the node already carries as a conjunction
@@ -472,9 +478,8 @@ fn add_label_disjunction(
         } else {
             LabelExpr::And(base.into_iter().map(LabelExpr::Label).chain([or]).collect())
         });
-        return true;
-    }
-    false
+        true
+    })
 }
 
 /// The flat label set of a static conjunction (`A`, `A&B`, `(A&B)&C`), or
@@ -522,7 +527,7 @@ fn eq_prop(expr: &Expr) -> Option<(SmallName, NamedToken, Expr)> {
 }
 
 fn add_labels(patterns: &mut [PathPattern], var: &SmallName, labels: &[SmallName]) -> bool {
-    for n in fold_target_nodes(patterns, var) {
+    try_fold_node(patterns, var, |n| {
         // The rebuild below replaces `label_expr` with the pattern's
         // own static label set plus the folded conjunct, so it is only
         // faithful when that set holds every label the pattern needs: a
@@ -540,7 +545,7 @@ fn add_labels(patterns: &mut [PathPattern], var: &SmallName, labels: &[SmallName
                         (label, token)
                     })
                     .collect(),
-                None => continue,
+                None => return false,
             },
         };
         // A label folded in from the WHERE has no token yet: resolution
@@ -555,28 +560,43 @@ fn add_labels(patterns: &mut [PathPattern], var: &SmallName, labels: &[SmallName
         n.label_expr = Some(LabelExpr::And(
             n.label_names().cloned().map(LabelExpr::Label).collect(),
         ));
-        return true;
-    }
-    false
+        true
+    })
 }
 
 fn add_prop(patterns: &mut [PathPattern], var: &SmallName, key: NamedToken, val: Expr) -> bool {
-    // Same compact-view-only scope as the label folds
-    // ([`fold_target_nodes`]'s doc) — spelled here rather than shared,
-    // because this fold targets relationships too (a variable may name
-    // one), and a relationship's match inside its pattern comes after
-    // that pattern's nodes.
-    for p in patterns.iter_mut().filter(|p| !p.needs_gpm()) {
-        for n in &mut p.nodes {
+    // Same alternating-view scope as the label folds (`try_fold_node`),
+    // mirroring accepted mutations into `elements` so the GPM walker sees
+    // folded properties on inline-WHERE patterns.
+    for p in patterns
+        .iter_mut()
+        .filter(|p| p.has_compact_alternating_elements())
+    {
+        let sync_elements = p.elements.len() == p.nodes.len() + p.rels.len();
+        for (i, n) in p.nodes.iter_mut().enumerate() {
             if n.variable.as_ref() == Some(var) {
                 // Map-bridge feed: IR map keys are value-domain
                 // (runtime `Value::Map`), rendered once here.
-                return merge_prop_map(&mut n.properties, &mut n.prop_keys, key, val);
+                let folded = merge_prop_map(&mut n.properties, &mut n.prop_keys, key, val);
+                if folded && sync_elements {
+                    if let Some(relate_ir::PatternElement::Node(elem)) = p.elements.get_mut(2 * i) {
+                        *elem = n.clone();
+                    }
+                }
+                return folded;
             }
         }
-        for r in &mut p.rels {
+        for (i, r) in p.rels.iter_mut().enumerate() {
             if r.variable.as_ref() == Some(var) {
-                return merge_prop_map(&mut r.properties, &mut r.prop_keys, key, val);
+                let folded = merge_prop_map(&mut r.properties, &mut r.prop_keys, key, val);
+                if folded && sync_elements {
+                    if let Some(relate_ir::PatternElement::Relationship(elem)) =
+                        p.elements.get_mut(2 * i + 1)
+                    {
+                        *elem = r.clone();
+                    }
+                }
+                return folded;
             }
         }
     }

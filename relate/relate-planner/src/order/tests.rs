@@ -696,3 +696,61 @@ fn cheaper_independent_part_runs_first() {
     );
     assert_eq!(first_label(&patterns[0]), "Tiny");
 }
+
+#[test]
+fn inline_where_on_start_still_folds_and_reverses_to_selective_end() {
+    let stats = Stub {
+        labels: &[("User", 1_000_000)],
+        equals: &[("User", "id", "5867", 1)],
+        rels: &[("KNOWS", 10_000_000)],
+        ..Stub::EMPTY
+    };
+    let patterns = patterns_of(
+        "MATCH (a:User WHERE a.age > 20)-[:KNOWS]->(b:User) WHERE b.id = '5867' RETURN count(*)",
+        &stats,
+    );
+    let p = &patterns[0];
+    // Reversed so `b` (with folded `{id: '5867'}`) is first in both `nodes` and `elements`.
+    assert_eq!(
+        p.nodes[0].variable.as_ref().map(|v| v.to_string()),
+        Some("b".to_string())
+    );
+    assert!(
+        p.nodes[0].properties.is_some(),
+        "b.id = '5867' must fold into b.properties"
+    );
+    match p.elements.first() {
+        Some(relate_ir::PatternElement::Node(first_elem)) => {
+            assert_eq!(
+                first_elem.variable.as_ref().map(|v| v.to_string()),
+                Some("b".to_string())
+            );
+            assert!(
+                first_elem.properties.is_some(),
+                "elements[0] must mirror folded properties for the GPM walker"
+            );
+        }
+        other => panic!("expected Node as elements[0], got {other:?}"),
+    }
+}
+
+#[test]
+fn inline_where_referencing_peer_keeps_written_order() {
+    let stats = Stub {
+        labels: &[("User", 1_000_000)],
+        equals: &[("User", "id", "5867", 1)],
+        rels: &[("KNOWS", 10_000_000)],
+        ..Stub::EMPTY
+    };
+    let patterns = patterns_of(
+        "MATCH (a:User)-[:KNOWS]->(b:User WHERE b.age > a.age) WHERE b.id = '5867' RETURN count(*)",
+        &stats,
+    );
+    assert_eq!(
+        patterns[0].nodes[0]
+            .variable
+            .as_ref()
+            .map(|v| v.to_string()),
+        Some("a".to_string())
+    );
+}

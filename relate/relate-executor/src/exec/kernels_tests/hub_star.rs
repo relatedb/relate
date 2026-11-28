@@ -154,3 +154,39 @@ fn hub_star_footprint_is_independent_of_path_count() {
         "peak {at_4n} at 4N vs {at_n} at N"
     );
 }
+
+/// Wide shared-terminal triangle (>32 side-A rows, exercising the sorted
+/// terminal lookup path) must agree identically with the general walker,
+/// including duplicate terminals reached through different mid nodes and
+/// cross-side relationship uniqueness.
+#[test]
+fn hub_star_wide_shared_terminal_matches_walker() {
+    let g = Builder::new().done();
+    // Hub `a` has 12 mid nodes; each mid node connects to 5 terminals
+    // (60 side-A rows > SHARED_TERMINAL_SORT_THRESHOLD=32), with multiple
+    // mid nodes hitting the same terminal, and `a` also connects directly
+    // to a subset of those terminals.
+    let mut create = String::from("CREATE (a:User {id: 1})");
+    for t in 0..8 {
+        create.push_str(&format!(", (t{t}:User {{id: {}}})", 100 + t));
+    }
+    for m in 0..12 {
+        create.push_str(&format!(", (m{m}:User {{id: {}}})", 10 + m));
+        create.push_str(&format!(", (a)-[:KNOWS]->(m{m})"));
+        for k in 0..5 {
+            let t = (m + k) % 8;
+            create.push_str(&format!(", (m{m})-[:KNOWS]->(t{t})"));
+        }
+    }
+    for t in 0..6 {
+        create.push_str(&format!(", (a)-[:KNOWS]->(t{t})"));
+    }
+    exec_autocommit(&g, &create).unwrap();
+    let res = differential(
+        &g,
+        "MATCH (a:User {id: 1})-[:KNOWS]->(b:User)-[:KNOWS]->(c:User), (a)-[:KNOWS]->(c) \
+         RETURN count(*) AS triangles",
+        ExpectedEngagement::Engaged,
+    );
+    assert!(!res.rows.is_empty());
+}

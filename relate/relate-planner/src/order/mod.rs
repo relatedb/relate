@@ -19,14 +19,16 @@ pub use estimate::{
 };
 use estimate::{endpoint_bound, label_hits, RANK_BARE};
 
-/// Named paths, named variable-length relationships, and GPM paths stay
-/// in written order (TCK Match9). A GPM path's `nodes`/`rels` may be a
-/// cleared or duplicated view of the `elements` the GPM engine walks, so
-/// an orientation flip could desync the two views — it declines to
-/// reorder and only the cost ladder's bare rank prices it.
+/// Named paths, named variable-length relationships, and non-alternating
+/// GPM paths (quantified patterns, path modes/selectors, path-level WHERE)
+/// stay in written order (TCK Match9). Fixed-length patterns that only set
+/// `needs_gpm()` due to inline node/relationship `WHERE` predicates keep
+/// `nodes`/`rels` and `elements` in 1-to-1 correspondence and are eligible
+/// for reversal (`reversal_safe` guards cross-variable inline predicates,
+/// and `reverse_path` flips both views).
 fn orientation_locked(path: &PathPattern) -> bool {
     path.has_path_name()
-        || path.needs_gpm()
+        || !path.has_compact_alternating_elements()
         || path.nodes.len() < 2
         || path
             .rels
@@ -56,23 +58,40 @@ fn reversal_safe(path: &PathPattern, bound: Bound<'_>) -> bool {
     };
     let mut refs = HashSet::new();
     for node in &path.nodes {
+        let mut node_refs = HashSet::new();
         if let Some(e) = &node.properties {
-            relate_ir::expr_vars(e, &mut refs);
+            relate_ir::expr_vars(e, &mut node_refs);
         }
         if let Some(e) = &node.where_clause {
-            relate_ir::expr_vars(e, &mut refs);
+            relate_ir::expr_vars(e, &mut node_refs);
         }
         if let Some(le) = &node.label_expr {
-            relate_ir::label_expr_vars(le, &mut refs);
+            relate_ir::label_expr_vars(le, &mut node_refs);
         }
+        // An inline predicate on `node` naturally names `node`'s own variable,
+        // which is bound when `node` is visited in either direction; only
+        // references to *other* pattern variables depend on walk order.
+        if let Some(self_var) = &node.variable {
+            self_var.with_str(|s| {
+                node_refs.remove(s);
+            });
+        }
+        refs.extend(node_refs);
     }
     for rel in &path.rels {
+        let mut rel_refs = HashSet::new();
         if let Some(e) = &rel.properties {
-            relate_ir::expr_vars(e, &mut refs);
+            relate_ir::expr_vars(e, &mut rel_refs);
         }
         if let Some(e) = &rel.where_clause {
-            relate_ir::expr_vars(e, &mut refs);
+            relate_ir::expr_vars(e, &mut rel_refs);
         }
+        if let Some(self_var) = &rel.variable {
+            self_var.with_str(|s| {
+                rel_refs.remove(s);
+            });
+        }
+        refs.extend(rel_refs);
     }
     !refs.iter().any(|var| own(var) && !bound(var.as_str()))
 }

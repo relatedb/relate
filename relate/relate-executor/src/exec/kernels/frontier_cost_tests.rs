@@ -426,3 +426,43 @@ fn the_auto_gate_prices_a_sink_label_from_its_in_degree() {
         assert_eq!(rows_under(&mut dense, engine, &cypher), walk, "{engine:?}");
     }
 }
+
+/// A hub seed in a large sparse-mean graph: the global label mean degree is
+/// low (so mean-degree pricing would decline), but probing the hub seed's
+/// actual O(1) adjacency length plus occupancy-based pair saturation engages
+/// the frontier automatically — and every routing agrees on the answer.
+#[test]
+fn hub_seed_engages_frontier_via_actual_degree_and_occupancy() {
+    let mut g = Graph::default();
+    // Create 1 hub + 30 spokes + 200 isolated background nodes (pulling the
+    // label mean degree down to ~2). Connect the hub to all 30 spokes and
+    // connect spokes into a dense clique-like ring so 2-hop trails explode
+    // while distinct endpoints stay <= 31.
+    let mut create = String::from("CREATE (h:User {id: 1})");
+    for i in 0..30 {
+        create.push_str(&format!(", (s{i}:User {{id: {}}})", 10 + i));
+        create.push_str(&format!(", (h)-[:KNOWS]->(s{i})"));
+    }
+    for i in 0..30 {
+        for step in 1..=10 {
+            let j = (i + step) % 30;
+            create.push_str(&format!(", (s{i})-[:KNOWS]->(s{j})"));
+        }
+    }
+    for i in 0..200 {
+        create.push_str(&format!(", (:User {{id: {}}})", 1000 + i));
+    }
+    crate::exec::test_support::exec_autocommit(&g, &create).unwrap();
+    crate::exec::test_support::exec_autocommit(&g, "CREATE INDEX user_id FOR (u:User) ON (u.id)")
+        .unwrap();
+
+    let cypher = "MATCH (u:User {id: 1})-[:KNOWS*1..2]-(f:User) RETURN count(DISTINCT f) AS c";
+    assert_eq!(
+        served(&profiled(&g, cypher)).kernel,
+        Some(KernelRung::FrontierNfa),
+        "hub seed must engage FrontierNfa under Auto"
+    );
+    let walk = rows_under(&mut g, PatternEngine::Walk, cypher);
+    assert_eq!(rows_under(&mut g, PatternEngine::Auto, cypher), walk);
+    assert_eq!(rows_under(&mut g, PatternEngine::Nfa, cypher), walk);
+}

@@ -111,6 +111,26 @@ impl PathPattern {
         self.path_names().next().is_some()
     }
 
+    /// Whether `nodes`/`rels` and `elements` are in 1-to-1 alternating
+    /// correspondence (no quantified elements, no path mode, selector, or
+    /// path-level `WHERE`). True for plain patterns and for fixed-length
+    /// patterns whose only GPM feature is inline node/relationship `WHERE`
+    /// predicates — allowing `WHERE` folding and orientation reversal while
+    /// keeping `nodes`/`rels` and `elements` in sync.
+    pub fn has_compact_alternating_elements(&self) -> bool {
+        !self.nodes.is_empty()
+            && (self.elements.is_empty()
+                || self.elements.len() == self.nodes.len() + self.rels.len())
+            && self.mode.is_none()
+            && self.selector.is_none()
+            && self.where_clause.is_none()
+            && self.elements.iter().all(|element| match element {
+                PatternElement::Node(_) => true,
+                PatternElement::Relationship(rel) => !rel.quantified,
+                PatternElement::Quantified(_) => false,
+            })
+    }
+
     /// Whether this path must be matched by the GPM engine rather than the
     /// compact node/rel walker: either the compact `nodes`/`rels`
     /// representation was cleared at lowering (non-alternating or quantified
