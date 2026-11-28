@@ -24,6 +24,7 @@ use crate::row::{row_bound, Row};
 
 mod aggregate;
 mod arithmetic;
+pub(crate) mod bytecode;
 mod collection;
 mod comprehension;
 mod expr;

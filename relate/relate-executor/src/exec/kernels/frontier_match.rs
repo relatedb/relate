@@ -70,7 +70,7 @@ use super::super::pattern_policies::{gpm_group_vocabulary, inlined_all_reduces};
 use super::frontier_cost::frontier_engages;
 use super::matcher::compile_node;
 use super::nfa::{self, FrontierNfa, Pool};
-use super::program::{decode_conjunct, NodeTarget, Prog};
+use super::program::{single_var_of, NodeTarget};
 
 /// The answer shapes the frontier serves (ADR-0478 Decision 2): the
 /// consumers whose answers are functions of the (node, state) pair, not
@@ -330,7 +330,7 @@ pub(crate) fn compile_frontier<'a>(
     // one per variable (the property-map fold's own bound).
     // Text render: the compiled boundary programs are keyed by the
     // variable's String spelling (sorted iteration stays text order).
-    let mut progs: BTreeMap<String, Prog> = BTreeMap::new();
+    let mut grouped: BTreeMap<String, Vec<&Expr>> = BTreeMap::new();
     let mut consumer = consumer;
     for conjunct in conjuncts {
         if is_boundary_pair_neq(conjunct, start_node, target_node) {
@@ -342,7 +342,7 @@ pub(crate) fn compile_frontier<'a>(
             *pair = BoundaryPair::Distinct;
             continue;
         }
-        let Some((var, prog)) = decode_conjunct(conjunct) else {
+        let Some(var) = single_var_of(conjunct) else {
             return Err(FrontierDecline::Conjunct);
         };
         let Some(name) = boundary_vars(start_node, target_node)
@@ -352,14 +352,10 @@ pub(crate) fn compile_frontier<'a>(
         else {
             return Err(FrontierDecline::Conjunct);
         };
-        if progs.insert(name.to_string(), prog).is_some() {
-            // Two predicates on one boundary variable: the closed
-            // vocabulary's one-program bound.
-            return Err(FrontierDecline::Conjunct);
-        }
+        grouped.entry(name.to_string()).or_default().push(conjunct);
     }
-    let start = boundary_target(start_node, &progs).ok_or(FrontierDecline::Conjunct)?;
-    let target = boundary_target(target_node, &progs).ok_or(FrontierDecline::Conjunct)?;
+    let start = boundary_target(start_node, &grouped).ok_or(FrontierDecline::Conjunct)?;
+    let target = boundary_target(target_node, &grouped).ok_or(FrontierDecline::Conjunct)?;
     // The diagnostic switch (ADR-0519), resolved once here for the two
     // facts it decides: the NFA compiler's rung (the forced rung compiles
     // the gap classes) and the cost gate below.
@@ -605,17 +601,18 @@ pub(crate) fn names_boundary_only(
 /// keeps the shape, answers identical).
 fn boundary_target<'a>(
     node: &'a NodePattern,
-    progs: &BTreeMap<String, Prog>,
+    grouped: &BTreeMap<String, Vec<&Expr>>,
 ) -> Option<NodeTarget<'a>> {
     if node.where_clause.is_some() || !node.has_static_labels() {
         return None;
     }
-    compile_node(
-        node,
-        node.variable
-            .as_ref()
-            .and_then(|var| progs.get(&var.to_string()).cloned()),
-    )
+    let exprs = node
+        .variable
+        .as_ref()
+        .and_then(|var| grouped.get(&var.to_string()))
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    compile_node(node, exprs)
 }
 
 /// The top-level element names are unique: every node element's variable

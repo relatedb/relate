@@ -26,6 +26,7 @@ use relate_ir::{var_prop_named, BinaryOp, Expr, NodePattern, UnaryOp};
 use relate_names::{NamedToken, SmallName, Token};
 
 use crate::ctx::ExecCtx;
+use crate::eval::bytecode::{NodeBytecode, PreparedBytecode};
 use crate::eval::{binary_pure, eval, expr_vars, orient};
 use crate::overlay::ExecGraph;
 use crate::row::Row;
@@ -50,6 +51,10 @@ pub(crate) enum Prog {
     /// `<var>.<key> IS [NOT] NULL` — answered from the property read
     /// alone; nothing can error.
     Null { key: NamedToken, is_null: bool },
+    /// Multi-predicate, multi-entry property map, or boolean `OR`/`NOT`
+    /// expression over the node's own properties, compiled to flat stack
+    /// bytecode (ADR-0720).
+    Bytecode(NodeBytecode),
 }
 
 /// One pattern node plus its compiled program: what a kernel stage admits
@@ -204,6 +209,13 @@ pub(crate) struct PropNull<'a> {
     is_null: bool,
 }
 
+/// Labels plus a compiled flat bytecode predicate (ADR-0720).
+#[derive(Clone, Copy)]
+pub(crate) struct PropBytecode<'a> {
+    pattern: &'a NodePattern,
+    code: &'a NodeBytecode,
+}
+
 impl<'a> NodePred for LabelsOnly<'a> {
     type Prepared = InternedLabels<'a>;
 
@@ -312,6 +324,39 @@ impl PreparedNull<'_> {
     }
 }
 
+/// The prepared flat bytecode predicate: interned labels plus the once-evaluated
+/// constants and reusable evaluation stack.
+pub(crate) struct BytecodePrepared<'a> {
+    labels: InternedLabels<'a>,
+    code: &'a NodeBytecode,
+    state: PreparedBytecode,
+}
+
+impl BytecodePrepared<'_> {
+    fn admits(&mut self, ctx: ExecCtx<'_>, node: NodeId) -> Result<bool> {
+        if !self.labels.admits(ctx.graph, node) {
+            return Ok(false);
+        }
+        self.code.admits(&mut self.state, ctx, node)
+    }
+}
+
+impl<'a> NodePred for PropBytecode<'a> {
+    type Prepared = BytecodePrepared<'a>;
+
+    fn prepare(&self, ctx: ExecCtx<'_>) -> Result<Self::Prepared> {
+        Ok(BytecodePrepared {
+            labels: InternedLabels::resolve(ctx, self.pattern),
+            code: self.code,
+            state: self.code.prepare(ctx)?,
+        })
+    }
+
+    fn check(&self, prepared: &mut Self::Prepared, ctx: ExecCtx<'_>, node: NodeId) -> Result<bool> {
+        prepared.admits(ctx, node)
+    }
+}
+
 /// The monomorphic admission of one [`NodeTarget`] — the one runtime
 /// dispatch per stage: the caller passes it to its kernel loop, after
 /// which every per-candidate check inside the loop is
@@ -323,26 +368,29 @@ pub(crate) enum Admission<'a> {
     Bare(LabelsOnly<'a>),
     Cmp(PropCmp<'a>),
     Null(PropNull<'a>),
+    Bytecode(PropBytecode<'a>),
 }
 
 /// The [`Admission`] wrapper's prepared form — the small enum that folds
-/// the three kinds' prepared forms into one, so a kernel loop holds one
+/// the four kinds' prepared forms into one, so a kernel loop holds one
 /// `Option<AdmissionPrepared>` beside one `Admission` and never
 /// re-dispatches per candidate.
 pub(crate) enum AdmissionPrepared<'a> {
     Bare(InternedLabels<'a>),
     Cmp(CmpPrepared<'a>),
     Null(PreparedNull<'a>),
+    Bytecode(BytecodePrepared<'a>),
 }
 
 impl AdmissionPrepared<'_> {
     /// The prepared form's check — the variant's own, over its prepared
     /// facts.
-    fn admits(&self, ctx: ExecCtx<'_>, node: NodeId) -> Result<bool> {
+    fn admits(&mut self, ctx: ExecCtx<'_>, node: NodeId) -> Result<bool> {
         match self {
             AdmissionPrepared::Bare(labels) => Ok(labels.admits(ctx.graph, node)),
             AdmissionPrepared::Cmp(prepared) => prepared.admits(ctx, node),
             AdmissionPrepared::Null(prepared) => prepared.admits(ctx, node),
+            AdmissionPrepared::Bytecode(prepared) => prepared.admits(ctx, node),
         }
     }
 }
@@ -355,6 +403,7 @@ impl<'a> NodePred for Admission<'a> {
             Admission::Bare(pred) => AdmissionPrepared::Bare(pred.prepare(ctx)?),
             Admission::Cmp(pred) => AdmissionPrepared::Cmp(pred.prepare(ctx)?),
             Admission::Null(pred) => AdmissionPrepared::Null(pred.prepare(ctx)?),
+            Admission::Bytecode(pred) => AdmissionPrepared::Bytecode(pred.prepare(ctx)?),
         })
     }
 
@@ -380,7 +429,20 @@ impl<'a> Admission<'a> {
                 key,
                 is_null: *is_null,
             }),
+            Prog::Bytecode(code) => Admission::Bytecode(PropBytecode { pattern, code }),
         }
+    }
+}
+
+/// The single variable referenced by `expr` when `expr` references exactly one
+/// variable (used to route single-node predicates to [`NodeBytecode`]).
+pub(crate) fn single_var_of(expr: &Expr) -> Option<String> {
+    let mut vars = std::collections::HashSet::new();
+    expr_vars(expr, &mut vars);
+    if vars.len() == 1 {
+        vars.into_iter().next()
+    } else {
+        None
     }
 }
 

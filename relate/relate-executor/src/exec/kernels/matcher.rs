@@ -44,9 +44,10 @@ use relate_ir::{
 use relate_names::SmallName;
 use relate_planner::seed_on_rel_start;
 
+use crate::eval::bytecode::NodeBytecode;
 use crate::row::Row;
 
-use super::program::{bound_is_row_invariant, decode_conjunct, NodeTarget, Prog};
+use super::program::{bound_is_row_invariant, decode_conjunct, single_var_of, NodeTarget, Prog};
 
 /// The most hops a chain kernel unrolls (ADR-0473's bounded set — a longer
 /// chain keeps the recursive walker, whose trail machinery is the right
@@ -333,33 +334,22 @@ fn fixed_copies(rel: &RelPattern) -> Option<u32> {
     (k != 0 && rel.max_hops == Some(k) && rel.variable.is_none() && rel_plain(rel)).then_some(k)
 }
 
-/// The pattern's compiled node programs: every conjunct decodes onto one
-/// of the patterns' node variables, at most one program per variable. The
-/// map is keyed by variable name; an anonymous node has no entry and no
-/// program beyond its labels.
-fn node_programs(patterns: &[PathPattern], conjuncts: &[Expr]) -> Option<BTreeMap<String, Prog>> {
+/// Group every `WHERE` conjunct by the single pattern node variable it
+/// references (ADR-0720). A conjunct naming zero variables, multiple
+/// variables, or a variable outside the patterns' node variables declines
+/// (`None`), keeping the per-row walker.
+fn node_exprs<'c>(
+    patterns: &[PathPattern],
+    conjuncts: &'c [Expr],
+) -> Option<BTreeMap<String, Vec<&'c Expr>>> {
     let node_vars = node_var_set(patterns);
-    let mut progs = BTreeMap::new();
+    let mut grouped: BTreeMap<String, Vec<&'c Expr>> = BTreeMap::new();
     for conjunct in conjuncts {
-        let (var, prog) = decode_conjunct(conjunct)?;
-        // A conjunct naming anything but one of these patterns' node
-        // variables (an outer variable, a rel variable, an unbound name)
-        // keeps the per-row path: its evaluation semantics are the
-        // residual's, not a compiled program's.
-        // The map's keys borrow the patterns (they outlive the compile),
-        // so the membership check takes the decoded name and the insert
-        // takes the pattern's own spelling of it.
-        // Text render: the compiled program table is keyed by the
-        // variable's String spelling (sorted iteration stays text order).
+        let var = single_var_of(conjunct)?;
         let name = node_vars.get(var.as_str())?.to_string();
-        if progs.contains_key(&name) {
-            // Two predicates on one variable: outside the closed
-            // vocabulary (ADR-0473's one-program bound).
-            return None;
-        }
-        progs.insert(name, prog);
+        grouped.entry(name).or_default().push(conjunct);
     }
-    Some(progs)
+    Some(grouped)
 }
 
 /// The set of node variable names across `patterns`.
@@ -375,49 +365,60 @@ fn node_var_set(patterns: &[PathPattern]) -> HashSet<String> {
     vars
 }
 
-/// One node's compiled admission: the pattern's property map folded into
-/// the vocabulary — a single row-invariant entry is exactly an equality
-/// program (the planner folds `WHERE var.key = value` into this shape),
-/// an empty map is nothing, and anything richer (two entries, a
-/// row-dependent value) declines — plus the node's own `WHERE` conjunct
-/// program, when the fold left one (the non-foldable predicates). Two
-/// programs on one variable is outside the closed vocabulary's
-/// one-predicate bound, so it declines.
+/// One node's compiled admission (ADR-0473 + ADR-0720): zero or one simple
+/// predicate compiles to `Prog::Bare` / `Prog::Cmp` / `Prog::Null` for zero
+/// overhead; multi-predicate conjunctions, multi-entry property maps, or
+/// boolean `OR`/`NOT` expressions compile to `Prog::Bytecode(NodeBytecode)`.
 ///
-/// `pub(crate)`: the frontier matcher arm (exec/kernels/frontier_match.rs)
+/// `pub(crate)`: the frontier matcher arm (`exec/kernels/frontier_match.rs`)
 /// folds the boundary nodes' admission through this same compile — one
-/// canonical spelling of the closed vocabulary's node fold for both
-/// kernels.
-pub(crate) fn compile_node(
-    pattern: &NodePattern,
-    conjunct: Option<Prog>,
-) -> Option<NodeTarget<'_>> {
-    let map_prog = match &pattern.properties {
-        None => None,
-        Some(Expr::Map(entries)) => match entries.as_slice() {
-            [] => None,
-            [(key, value)] => {
+/// canonical spelling of node admission for every kernel family.
+pub(crate) fn compile_node<'a>(
+    pattern: &'a NodePattern,
+    conjuncts: &[&Expr],
+) -> Option<NodeTarget<'a>> {
+    let map_entries: Vec<(relate_names::NamedToken, &Expr)> = match &pattern.properties {
+        None => Vec::new(),
+        Some(Expr::Map(entries)) => {
+            let mut out = Vec::with_capacity(entries.len());
+            for (key, value) in entries {
                 if !bound_is_row_invariant(value) {
                     return None;
                 }
-                Some(Prog::Cmp {
-                    key: pattern_prop_key(&pattern.prop_keys, key),
-                    op: relate_ir::BinaryOp::Eq,
-                    bound: value.clone(),
-                })
+                out.push((pattern_prop_key(&pattern.prop_keys, key), value));
             }
-            // A two-entry map is two predicates on one variable.
-            _ => return None,
-        },
-        // A property map is always the lowered `Map` form; anything else
-        // is a shape the walker's `map_from_expr` serves and this layer
-        // does not re-derive.
+            out
+        }
+        // A non-map property expression stays with the walker's `map_from_expr`.
         Some(_) => return None,
     };
-    let prog = match (map_prog, conjunct) {
-        (None, None) => Prog::Bare,
-        (Some(prog), None) | (None, Some(prog)) => prog,
-        (Some(_), Some(_)) => return None,
+    let prog = match (map_entries.as_slice(), conjuncts) {
+        ([], []) => Prog::Bare,
+        ([(key, value)], []) => Prog::Cmp {
+            key: key.clone(),
+            op: relate_ir::BinaryOp::Eq,
+            bound: (*value).clone(),
+        },
+        ([], [only]) => {
+            if let Some((_, prog)) = decode_conjunct(only) {
+                prog
+            } else {
+                let var = pattern.variable.as_ref()?.to_string();
+                Prog::Bytecode(NodeBytecode::compile_expr(&var, only)?)
+            }
+        }
+        _ => {
+            let var = pattern
+                .variable
+                .as_ref()
+                .map(|v| v.to_string())
+                .unwrap_or_default();
+            Prog::Bytecode(NodeBytecode::compile_entries_and_exprs(
+                &var,
+                map_entries,
+                conjuncts.iter().copied(),
+            )?)
+        }
     };
     Some(NodeTarget { pattern, prog })
 }
@@ -462,15 +463,15 @@ fn compile_chain<'a>(path: &'a PathPattern, conjuncts: &[Expr]) -> Option<Chain<
     if !rel_vars_unique(std::slice::from_ref(path)) {
         return None;
     }
-    let progs = node_programs(std::slice::from_ref(path), conjuncts)?;
+    let grouped = node_exprs(std::slice::from_ref(path), conjuncts)?;
     let target = |index: usize| {
-        compile_node(
-            &path.nodes[index],
-            path.nodes[index]
-                .variable
-                .as_ref()
-                .and_then(|var| progs.get(&var.to_string()).cloned()),
-        )
+        let exprs = path.nodes[index]
+            .variable
+            .as_ref()
+            .and_then(|var| grouped.get(&var.to_string()))
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
+        compile_node(&path.nodes[index], exprs)
     };
     let start = target(0)?;
     let hops = path
@@ -587,15 +588,15 @@ fn compile_hub_star<'a>(patterns: &'a [PathPattern], conjuncts: &[Expr]) -> Opti
         _ => return None,
     };
     let shared_terminal = shared.len() == 2;
-    let progs = node_programs(patterns, conjuncts)?;
+    let grouped = node_exprs(patterns, conjuncts)?;
     let node_target = |pi: usize, ni: usize| {
-        compile_node(
-            &patterns[pi].nodes[ni],
-            patterns[pi].nodes[ni]
-                .variable
-                .as_ref()
-                .and_then(|var| progs.get(&var.to_string()).cloned()),
-        )
+        let exprs = patterns[pi].nodes[ni]
+            .variable
+            .as_ref()
+            .and_then(|var| grouped.get(&var.to_string()))
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
+        compile_node(&patterns[pi].nodes[ni], exprs)
     };
     // The hub's own WHERE conjunct (and its folded map — one program per
     // variable, whichever the planner left) attaches to BOTH slots: the

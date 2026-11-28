@@ -108,6 +108,20 @@ fn matched_plan_shapes() {
     // shape the cost gate engages (a bare start is unmeasurable).
     matched("MATCH ()-[:x]->()-[:y]->() RETURN 1", "chain");
     matched("MATCH (:X)-[:x]->(:Y)-[:y]->(:Z) RETURN 1", "chain");
+    // Multi-entry property maps, multi-predicate conjunctions, and OR/NOT on
+    // one variable compile via `Prog::Bytecode` (ADR-0720).
+    matched(
+        "MATCH (a:Person {ID: 7, k: 1})-[:x]->(b)-[:y]->(c) RETURN a",
+        "chain",
+    );
+    matched(
+        "MATCH (a)-[:x]->(b)-[:y]->(c) WHERE b.k > 1 AND b.j < 2 RETURN a",
+        "chain",
+    );
+    matched(
+        "MATCH (a)-[:x]->(b)-[:y]->(c) WHERE b.k = 1 OR NOT b.j IS NULL RETURN a",
+        "chain",
+    );
 }
 
 // Acceptance 1: the unmatched plan shapes — every structural proof's
@@ -125,8 +139,6 @@ fn unmatched_plan_shapes() {
     declined("MATCH (a)((n)-[:x]->(m)){1,2}(b) RETURN a");
     // A named path keeps the walker's path binding.
     declined("MATCH p = (a)-[:x]->(b)-[:y]->(c) RETURN p");
-    // A two-entry property map is two predicates on one variable.
-    declined("MATCH (a:Person {ID: 7, k: 1})-[:x]->(b)-[:y]->(c) RETURN a");
     // A rel property map keeps `rel_edge_ok`.
     declined("MATCH (a)-[:x {k: 1}]->(b)-[:y]->(c) RETURN a");
     // A repeated node variable is the walker's reconciliation.
@@ -135,11 +147,8 @@ fn unmatched_plan_shapes() {
     declined("MATCH (a)-[r:x]->(b)-[r:y]->(c) RETURN a");
     // A dynamic label expression keeps the walker's label evaluation.
     declined("MATCH (a:Person|Place)-[:x]->(b)-[:y]->(c) RETURN a");
-    // Predicates outside the closed vocabulary: a function over the
-    // row, two predicates on one variable, a predicate on a variable
-    // the patterns do not bind.
+    // Predicates outside the bytecode vocabulary: a function over the row.
     declined("MATCH (a)-[:x]->(b)-[:y]->(c) WHERE size(b.k) > 1 RETURN a");
-    declined("MATCH (a)-[:x]->(b)-[:y]->(c) WHERE b.k > 1 AND b.j < 2 RETURN a");
     // Hub-star declines: three patterns; no shared variable; a 3-hop
     // side; a rel variable shared across the pair. (A 2-hop side with
     // a mid node IS the family — the matched-shape suite covers it.)

@@ -24,7 +24,7 @@ use crate::row::Row;
 pub(in crate::exec) use acc::StreamAgg;
 pub(crate) use one_hop::try_fold_one_hop_aggs;
 pub(crate) use path::try_fold_path_aggs;
-pub(in crate::exec) use plan::is_pred_op;
+pub(crate) use plan::is_pred_op;
 
 /// Shared fold scaffolding: the derived group key beside the key values
 /// it was built from, so a repeat of the same key values reuses both.

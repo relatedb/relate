@@ -597,19 +597,25 @@ fn declines_the_context_gates() {
         FrontierDecline::MultiplePatterns,
     );
     // A conjunct outside the closed predicate vocabulary: a function over
-    // the row, two predicates on one boundary variable, and a predicate
-    // naming an interior context node.
+    // the row, and a predicate naming an interior context node.
+    // (Multi-predicate conjunctions on one boundary variable now engage via
+    // `Prog::Bytecode`, ADR-0720.)
     declines_with(
         "MATCH (x:Person)-[:KNOWS]-(m)-[:KNOWS*1..]-(y:Person) \
          WHERE size(m.k) > 1 RETURN DISTINCT y",
         &graph,
         FrontierDecline::Conjunct,
     );
-    declines_with(
+    decide(
         "MATCH (x:Person)-[:KNOWS*1..]-(y:Person) WHERE y.k > 1 AND y.j < 2 \
          RETURN DISTINCT y",
         &graph,
-        FrontierDecline::Conjunct,
+        false,
+        &Row::new(),
+        |decision| {
+            let contract = decision.unwrap_or_else(|e| panic!("multi-pred engages: {e:?}"));
+            assert_eq!(contract.consumer, DISTINCT);
+        },
     );
     declines_with(
         "MATCH (x:Person)-[:KNOWS*1..]-(y:Person) WHERE size(x.k) > 1 \

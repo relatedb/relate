@@ -238,7 +238,7 @@ fn node_slot(expr: &Expr, occ: &[Occ], patterns: &[PathPattern]) -> Option<usize
 /// (`predicate_spec.rs`, whose compiled gates evaluate the same
 /// operators through the shared `binary`) — one table, every consumer,
 /// never a second list at any site.
-pub(in crate::exec) fn is_pred_op(op: BinaryOp) -> bool {
+pub(crate) fn is_pred_op(op: BinaryOp) -> bool {
     matches!(
         op,
         BinaryOp::Eq
