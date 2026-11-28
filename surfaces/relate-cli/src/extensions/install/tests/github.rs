@@ -4,107 +4,17 @@
 //! remove + reinstall property, the commit pin's release scan, and the
 //! pin comparison the flow decides on.
 //!
-//! Helpers (`World`, `refusal`, `manifest_text`, the host platform) are the
-//! install tests module's — one kit, not a copy.
+//! Fixtures (`World`, `install_github`, `tag_api`, the artifact builders,
+//! the commit consts) are `tests/fixtures.rs`'s, beside the suites.
 
+use super::fixtures::*;
 use super::*;
 use crate::extensions::install::sources::compare_pin;
-// --- the GitHub pin tier (ADR-0449) ---
-
 use crate::extensions::provenance::Pin;
-use crate::extensions::source::{GithubPin, GithubSpec};
+use crate::extensions::source::{Approval, GithubPin, GithubSpec};
 use relate_test_support::loopback::{
     spawn_capture_server, spawn_scripted_responses_capturing, spawn_single_response_bytes_capturing,
 };
-
-/// The two commits the fixture releases resolve to.
-const COMMIT_A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-const COMMIT_B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
-
-/// The fixture release tag and the host platform's package asset name.
-const GITHUB_TAG: &str = "v1.2.3";
-
-fn github_asset() -> String {
-    format!("greet-1.2.3-{}-{}.tar.gz", host().os, host().arch)
-}
-
-/// The greet package artifact (manifest + executable) the GitHub release
-/// serves. `payload` varies the executable's bytes, so a test can move
-/// the asset's digest without touching the manifest.
-fn github_artifact_with(payload: &[u8]) -> Vec<u8> {
-    let manifest = manifest_text("greet", "1.2.3");
-    crate::extensions::testtar::tarball(&[
-        ("extension.json", 0o644, manifest.as_bytes()),
-        ("run.sh", 0o755, payload),
-    ])
-}
-
-fn github_artifact() -> Vec<u8> {
-    github_artifact_with(b"#!/bin/sh\n")
-}
-
-/// A commit lookup document.
-fn commit_doc(sha: &str) -> String {
-    format!(r#"{{"sha":"{sha}","commit":{{"message":"release"}}}}"#)
-}
-
-/// A release document carrying the host platform's greet asset with
-/// `digest` (the `sha256:` value GitHub records).
-fn release_doc(tag: &str, digest: &str) -> String {
-    format!(
-        r#"{{"tag_name":"{tag}","name":"{tag}","assets":[{{"id":7,"name":"{}","size":4096,"digest":"sha256:{digest}"}}]}}"#,
-        github_asset()
-    )
-}
-
-/// A `--github` spec pinning `owner/repo` at `tag`.
-fn spec(tag: &str) -> GithubSpec {
-    GithubSpec {
-        repo: "owner/repo".to_string(),
-        pin: GithubPin::Tag(tag.to_string()),
-    }
-}
-
-fn base(port: u16) -> String {
-    format!("http://127.0.0.1:{port}")
-}
-
-/// One `extension install <name> --github …` through the real flow, with
-/// the loopback API and download bases injected (the `load`/`load_with`
-/// shape the channel's post-gate steps already use).
-fn install_github(
-    world: &World,
-    name: &str,
-    spec: GithubSpec,
-    re_approve: bool,
-    approve: Option<&str>,
-    api_base: &str,
-    download_base: &str,
-) -> Result<(), InstallError> {
-    let route = GithubRoute::at(api_base, download_base);
-    install_into(
-        &world.extensions_dir(),
-        &world.trust_file(),
-        &|_| Ok(route.clone()),
-        &InstallArgs {
-            name: name.to_string(),
-            source: InstallSource::Github(spec),
-            force: false,
-            re_approve,
-            approve: approve.map(str::to_string),
-        },
-        &world.registry(),
-    )
-}
-
-/// The API fixture for one resolution: the commit lookup and the release
-/// lookup, in the order `resolve_tag` fetches them.
-fn tag_api(commit: &str, digest: &str) -> (relate_test_support::loopback::CapturingFixture, u16) {
-    spawn_scripted_responses_capturing(
-        "200 OK",
-        vec![commit_doc(commit), release_doc(GITHUB_TAG, digest)],
-    )
-}
 
 #[test]
 fn a_github_install_resolves_the_pin_records_it_and_lands() {
@@ -119,7 +29,6 @@ fn a_github_install_resolves_the_pin_records_it_and_lands() {
         &world,
         "greet",
         spec(GITHUB_TAG),
-        false,
         None,
         &base(api_port),
         &base(download_port),
@@ -200,7 +109,6 @@ fn a_same_pin_reinstall_succeeds() {
             &world,
             "greet",
             spec(GITHUB_TAG),
-            false,
             None,
             &base(api_port),
             &base(download_port),
@@ -224,7 +132,6 @@ fn a_moved_tag_refuses_before_the_asset_fetch_naming_both_pins() {
         &world,
         "greet",
         spec(GITHUB_TAG),
-        false,
         None,
         &base(api_port),
         &base(download_port),
@@ -243,7 +150,6 @@ fn a_moved_tag_refuses_before_the_asset_fetch_naming_both_pins() {
         &world,
         "greet",
         spec(GITHUB_TAG),
-        false,
         None,
         &base(api_port),
         &base(download_port),
@@ -290,7 +196,6 @@ fn re_approving_a_moved_tag_updates_the_pin_after_verification() {
         &world,
         "greet",
         spec(GITHUB_TAG),
-        false,
         None,
         &base(api_port),
         &base(download_port),
@@ -306,8 +211,7 @@ fn re_approving_a_moved_tag_updates_the_pin_after_verification() {
         &world,
         "greet",
         spec(GITHUB_TAG),
-        true,
-        None,
+        Some(Approval::ReApprove),
         &base(api_port),
         &base(download_port),
     )
@@ -336,7 +240,6 @@ fn approve_accepts_only_the_commit_the_pin_resolves_to() {
         &world,
         "greet",
         spec(GITHUB_TAG),
-        false,
         None,
         &base(api_port),
         &base(download_port),
@@ -353,8 +256,7 @@ fn approve_accepts_only_the_commit_the_pin_resolves_to() {
         &world,
         "greet",
         spec(GITHUB_TAG),
-        false,
-        Some(COMMIT_A),
+        Some(Approval::Approve(COMMIT_A.to_string())),
         &base(api_port),
         &base(download_port),
     ));
@@ -376,8 +278,7 @@ fn approve_accepts_only_the_commit_the_pin_resolves_to() {
         &world,
         "greet",
         spec(GITHUB_TAG),
-        false,
-        Some(COMMIT_B),
+        Some(Approval::Approve(COMMIT_B.to_string())),
         &base(api_port),
         &base(download_port),
     )
@@ -396,7 +297,6 @@ fn changed_asset_bytes_at_the_same_commit_need_reapproval() {
         &world,
         "greet",
         spec(GITHUB_TAG),
-        false,
         None,
         &base(api_port),
         &base(download_port),
@@ -412,7 +312,6 @@ fn changed_asset_bytes_at_the_same_commit_need_reapproval() {
         &world,
         "greet",
         spec(GITHUB_TAG),
-        false,
         None,
         &base(api_port),
         &base(download_port),
@@ -436,8 +335,7 @@ fn changed_asset_bytes_at_the_same_commit_need_reapproval() {
         &world,
         "greet",
         spec(GITHUB_TAG),
-        true,
-        None,
+        Some(Approval::ReApprove),
         &base(api_port),
         &base(download_port),
     )
@@ -460,7 +358,6 @@ fn asset_bytes_that_do_not_match_the_resolved_digest_never_land() {
         &world,
         "greet",
         spec(GITHUB_TAG),
-        false,
         None,
         &base(api_port),
         &base(download_port),
@@ -482,78 +379,6 @@ fn asset_bytes_that_do_not_match_the_resolved_digest_never_land() {
     assert!(!world.extensions_dir().join("greet").exists());
 }
 
-/// The pin commits with the package (ADR-0449 §3-§4): the trust store is
-/// written only once the package has landed. A landing failure — here the
-/// staged directory sits inside the installed target, so the replace's
-/// aside park takes it away before the landing rename — must leave the
-/// recorded pins byte-identical to before the attempt, and the previous
-/// install restored.
-#[test]
-fn a_landing_failure_leaves_the_recorded_pins_byte_identical() {
-    let artifact = github_artifact();
-    let digest = crate::release_channel::sha256_hex(&artifact);
-    let world = World::new();
-    let (_heads, api_port) = tag_api(COMMIT_A, &digest);
-    let (_heads, download_port) = spawn_single_response_bytes_capturing("200 OK", artifact.clone());
-    install_github(
-        &world,
-        "greet",
-        spec(GITHUB_TAG),
-        false,
-        None,
-        &base(api_port),
-        &base(download_port),
-    )
-    .unwrap();
-    let before = std::fs::read(world.trust_file()).unwrap();
-
-    // The second attempt re-approves a moved pin — a store write before the
-    // landing would be visible as changed bytes — and stages into a
-    // directory INSIDE the installed target: the aside park moves the whole
-    // target away, so the staged dir is missing when the landing renames
-    // it. The source step (resolution, download, checksum, unpack, marker)
-    // all succeed; only the landing fails, after the park.
-    let moved = github_artifact_with(b"#!/bin/sh\n# rebuilt\n");
-    let moved_digest = crate::release_channel::sha256_hex(&moved);
-    let (_heads, api_port) = tag_api(COMMIT_B, &moved_digest);
-    let (_heads, download_port) = spawn_single_response_bytes_capturing("200 OK", moved);
-    let staged = world.extensions_dir().join("greet").join("stage");
-    std::fs::create_dir_all(&staged).unwrap();
-    let route = GithubRoute::at(&base(api_port), &base(download_port));
-    let mut trust = TrustStore::load(&world.trust_file()).unwrap();
-    let err = stage_and_land(
-        &world.extensions_dir(),
-        &|_| Ok(route.clone()),
-        &InstallArgs {
-            name: "greet".to_string(),
-            source: InstallSource::Github(spec(GITHUB_TAG)),
-            force: false,
-            re_approve: true,
-            approve: None,
-        },
-        &mut trust,
-        &staged,
-    )
-    .expect_err("the landing fails: the aside park took the staged dir with it");
-    assert_eq!(err.exit_code(), 1, "{}", err.stderr_message());
-    assert!(
-        err.stderr_message().contains("landing the package"),
-        "{}",
-        err.stderr_message()
-    );
-
-    // The recorded pins are exactly the bytes from before the attempt, the
-    // recorded pin still names the landed package, and that package is
-    // back in place.
-    assert_eq!(std::fs::read(world.trust_file()).unwrap(), before);
-    assert_eq!(world.recorded_pin("greet").unwrap().commit, COMMIT_A);
-    assert!(world
-        .extensions_dir()
-        .join("greet")
-        .join("run.sh")
-        .is_file());
-}
-
 #[test]
 fn removing_the_package_does_not_forget_the_pin() {
     let artifact = github_artifact();
@@ -565,7 +390,6 @@ fn removing_the_package_does_not_forget_the_pin() {
         &world,
         "greet",
         spec(GITHUB_TAG),
-        false,
         None,
         &base(api_port),
         &base(download_port),
@@ -585,7 +409,6 @@ fn removing_the_package_does_not_forget_the_pin() {
         &world,
         "greet",
         spec(GITHUB_TAG),
-        false,
         None,
         &base(api_port),
         &base(download_port),
@@ -597,32 +420,6 @@ fn removing_the_package_does_not_forget_the_pin() {
         err.stderr_message()
     );
     assert!(!world.extensions_dir().join("greet").exists());
-}
-
-#[test]
-fn a_malformed_trust_store_refuses_before_any_fetch() {
-    let world = World::new();
-    std::fs::create_dir_all(world.trust_file().parent().unwrap()).unwrap();
-    std::fs::write(world.trust_file(), "{ not a store").unwrap();
-    // An unreachable API base: reaching the network would fail with a
-    // download error, so the trust-store text proves the store was read
-    // first.
-    let err = refusal(install_github(
-        &world,
-        "greet",
-        spec(GITHUB_TAG),
-        false,
-        None,
-        "http://127.0.0.1:1",
-        "http://127.0.0.1:1",
-    ));
-    assert_eq!(err.exit_code(), 1, "{}", err.stderr_message());
-    assert!(
-        err.stderr_message()
-            .contains("invalid extension trust store"),
-        "{}",
-        err.stderr_message()
-    );
 }
 
 #[test]
@@ -648,7 +445,6 @@ fn a_commit_pin_resolves_the_release_that_targets_it() {
             repo: "owner/repo".to_string(),
             pin: GithubPin::Commit(COMMIT_A.to_string()),
         },
-        false,
         None,
         &base(api_port),
         &base(download_port),
@@ -703,7 +499,6 @@ fn a_commit_targeted_by_two_releases_refuses_naming_both() {
             repo: "owner/repo".to_string(),
             pin: GithubPin::Commit(COMMIT_A.to_string()),
         },
-        false,
         None,
         &base(api_port),
         &base(download_port),
@@ -724,19 +519,31 @@ fn compare_pin_is_the_trust_decision() {
         asset_sha256: "a".repeat(64),
     };
     let same = recorded.clone();
-    assert!(compare_pin("greet", None, &same, false, None).is_ok());
-    assert!(compare_pin("greet", Some(&recorded), &same, false, None).is_ok());
+    assert!(compare_pin("greet", None, &same, None).is_ok());
+    assert!(compare_pin("greet", Some(&recorded), &same, None).is_ok());
 
     let moved = Pin {
         commit: COMMIT_B.to_string(),
         asset_sha256: "b".repeat(64),
         ..recorded.clone()
     };
-    let err = compare_pin("greet", Some(&recorded), &moved, false, None).unwrap_err();
+    let err = compare_pin("greet", Some(&recorded), &moved, None).unwrap_err();
     assert!(err.stderr_message().contains(COMMIT_A) && err.stderr_message().contains(COMMIT_B));
-    assert!(compare_pin("greet", Some(&recorded), &moved, true, None).is_ok());
-    assert!(compare_pin("greet", Some(&recorded), &moved, false, Some(COMMIT_B)).is_ok());
-    assert!(compare_pin("greet", Some(&recorded), &moved, false, Some(COMMIT_A)).is_err());
+    assert!(compare_pin("greet", Some(&recorded), &moved, Some(&Approval::ReApprove)).is_ok());
+    assert!(compare_pin(
+        "greet",
+        Some(&recorded),
+        &moved,
+        Some(&Approval::Approve(COMMIT_B.to_string()))
+    )
+    .is_ok());
+    assert!(compare_pin(
+        "greet",
+        Some(&recorded),
+        &moved,
+        Some(&Approval::Approve(COMMIT_A.to_string()))
+    )
+    .is_err());
 
     // Another repository is a moved pin too — the trust records where the
     // bytes came from, not only which commit.
@@ -744,7 +551,7 @@ fn compare_pin_is_the_trust_decision() {
         repo: "other/repo".to_string(),
         ..same.clone()
     };
-    assert!(compare_pin("greet", Some(&recorded), &elsewhere, false, None).is_err());
+    assert!(compare_pin("greet", Some(&recorded), &elsewhere, None).is_err());
 }
 
 #[test]

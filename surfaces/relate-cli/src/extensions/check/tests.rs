@@ -529,14 +529,12 @@ mod pin_report {
     }
 
     /// The trust store under `root` with `entry` recorded for `name` — the
-    /// real store file, written through its own writer.
-    fn trust_store(root: &Path, name: &str, entry: Option<Pin>) -> PathBuf {
+    /// real store file, written through its own writer (`record` persists
+    /// the entry: the install's own commit step).
+    fn trust_store(root: &Path, name: &str, entry: Pin) -> PathBuf {
         let path = trust_path(root);
         let mut store = TrustStore::load(&path).unwrap();
-        if let Some(entry) = entry {
-            store.insert(name.to_string(), entry);
-        }
-        store.write().unwrap();
+        store.record(name.to_string(), entry).unwrap();
         path
     }
 
@@ -547,7 +545,7 @@ mod pin_report {
     #[test]
     fn an_approved_pin_reports_approved() {
         let tmp = package(Some(&github_marker(COMMIT_A)), "exit 0\n");
-        let trust = trust_store(tmp.path(), "greet", Some(pin("v1.2.3", COMMIT_A)));
+        let trust = trust_store(tmp.path(), "greet", pin("v1.2.3", COMMIT_A));
         assert_eq!(
             line_for(&tmp, Some(&trust)),
             format!("pin: approved (owner/repo@v1.2.3 commit {COMMIT_A})")
@@ -557,7 +555,7 @@ mod pin_report {
     #[test]
     fn a_drifted_pin_reports_drifted_with_the_remedy() {
         let tmp = package(Some(&github_marker(COMMIT_A)), "exit 0\n");
-        let trust = trust_store(tmp.path(), "greet", Some(pin("v1.0.0", COMMIT_B)));
+        let trust = trust_store(tmp.path(), "greet", pin("v1.0.0", COMMIT_B));
         assert_eq!(
             line_for(&tmp, Some(&trust)),
             format!(
@@ -573,7 +571,7 @@ mod pin_report {
     #[test]
     fn a_github_package_with_no_store_entry_reports_drifted() {
         let tmp = package(Some(&github_marker(COMMIT_A)), "exit 0\n");
-        let trust = trust_store(tmp.path(), "other", Some(pin("v1.2.3", COMMIT_A)));
+        let trust = trust_store(tmp.path(), "other", pin("v1.2.3", COMMIT_A));
         assert_eq!(
             line_for(&tmp, Some(&trust)),
             format!(
@@ -657,7 +655,7 @@ mod pin_report {
             Some(&github_marker(COMMIT_A)),
             &crate::extensions::testkit::mcp_child_body("greet", "exit 0"),
         );
-        let trust = trust_store(tmp.path(), "greet", Some(pin("v1.0.0", COMMIT_B)));
+        let trust = trust_store(tmp.path(), "greet", pin("v1.0.0", COMMIT_B));
         let report = check_with(&tmp.path().join("pkg"), TEST_DEADLINE, Some(&trust));
         assert_eq!(report.failure, None, "{:?}", report.lines);
         assert_eq!(report.exit_code(), 0);

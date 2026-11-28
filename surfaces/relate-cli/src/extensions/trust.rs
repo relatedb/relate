@@ -45,6 +45,14 @@ pub(crate) enum TrustError {
         /// The read failure.
         source: std::io::Error,
     },
+    /// The store could not be written — the write side's one failure,
+    /// naming the file the store already knows.
+    Unwritable {
+        /// The store's path, as the refusal names it.
+        path: PathBuf,
+        /// The write failure.
+        source: std::io::Error,
+    },
     /// The store's content does not decode.
     Invalid {
         /// The store's path, as the refusal names it.
@@ -68,6 +76,13 @@ impl std::fmt::Display for TrustError {
                 write!(
                     f,
                     "invalid extension trust store {}: {source}",
+                    path.display()
+                )
+            }
+            Self::Unwritable { path, source } => {
+                write!(
+                    f,
+                    "cannot write the extension trust store {}: {source}",
                     path.display()
                 )
             }
@@ -115,20 +130,57 @@ impl TrustStore {
         })
     }
 
-    /// The store's own file path.
-    pub(crate) fn path(&self) -> &Path {
-        &self.path
-    }
-
     /// The recorded pin for `name`, when one has been approved.
     pub(crate) fn get(&self, name: &str) -> Option<&Pin> {
         self.pins.get(name)
     }
 
     /// Record an approved pin for `name` (the first install's approval, or
-    /// a re-approval).
-    pub(crate) fn insert(&mut self, name: String, pin: Pin) {
-        self.pins.insert(name, pin);
+    /// a re-approval), persisting the store, and hand back the entry the
+    /// insert replaced (`None` when the name had no pin) so a caller that
+    /// must undo the commit can hand it to [`rollback`]. A write failure
+    /// leaves the in-memory store exactly as it was — the object and the
+    /// file stay in agreement, so a caller that gives up never holds a pin
+    /// the file does not.
+    pub(crate) fn record(&mut self, name: String, pin: Pin) -> Result<Option<Pin>, TrustError> {
+        let prior = self.pins.insert(name.clone(), pin);
+        if let Err(e) = self.write() {
+            self.restore(&name, prior);
+            return Err(self.unwritable(e));
+        }
+        Ok(prior)
+    }
+
+    /// Undo a [`record`]: put `prior` back (or drop the entry when the
+    /// record created it) and persist — the one compensation step the
+    /// install runs when the package's landing fails (ADR-0449: the
+    /// recorded pin and the package land together or not at all).
+    pub(crate) fn rollback(&mut self, name: &str, prior: Option<Pin>) -> Result<(), TrustError> {
+        self.restore(name, prior);
+        self.write().map_err(|e| self.unwritable(e))
+    }
+
+    /// The write side's one failure, named with the store's own path —
+    /// callers never re-supply the file they handed the store.
+    fn unwritable(&self, source: std::io::Error) -> TrustError {
+        TrustError::Unwritable {
+            path: self.path.clone(),
+            source,
+        }
+    }
+
+    /// The one compensation step both [`record`]'s write-failure path and
+    /// [`rollback`] run: put `prior` back, or drop the entry the record
+    /// created. In memory only — the caller decides whether to persist.
+    fn restore(&mut self, name: &str, prior: Option<Pin>) {
+        match prior {
+            Some(entry) => {
+                self.pins.insert(name.to_string(), entry);
+            }
+            None => {
+                self.pins.remove(name);
+            }
+        }
     }
 
     /// Forget `name`'s pin, returning what was there. The one operation
@@ -191,8 +243,9 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let path = trust_path(tmp.path());
         let mut store = TrustStore::load(&path).unwrap();
-        store.insert("greet".to_string(), pin("v1", &"1".repeat(40)));
-        store.write().unwrap();
+        store
+            .record("greet".to_string(), pin("v1", &"1".repeat(40)))
+            .unwrap();
         let mut loaded = TrustStore::load(&path).unwrap();
         assert_eq!(loaded.get("greet"), Some(&pin("v1", &"1".repeat(40))));
         assert!(loaded.remove("greet").is_some());
@@ -210,8 +263,9 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let path = trust_path(tmp.path());
         let mut store = TrustStore::load(&path).unwrap();
-        store.insert("greet".to_string(), pin("v1", &"1".repeat(40)));
-        store.write().unwrap();
+        store
+            .record("greet".to_string(), pin("v1", &"1".repeat(40)))
+            .unwrap();
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),
             format!(

@@ -31,7 +31,9 @@ use crate::parse_error::ParseError;
 use crate::extension_init::InitSpec;
 use crate::extensions::provenance::{Provenance, MARKER_FILE};
 use crate::extensions::registry::ActionRegistry;
-use crate::extensions::source::{is_full_commit_sha, GithubSpec, InstallArgs, InstallSource};
+use crate::extensions::source::{
+    is_full_commit_sha, Approval, GithubSpec, InstallArgs, InstallSource,
+};
 use crate::extensions::trust::{trust_path, TrustStore};
 
 /// The action word the telemetry event carries (ADR-0431 §3: the `skill`
@@ -52,7 +54,8 @@ pub(crate) enum ExtensionAction {
     /// and no store (ADR-0137).
     Init(InitSpec),
     /// `extension install <name> [--github REPO@TAG|@SHA] [--url URL]
-    /// [--from DIR] [--version V] [--force] [--re-approve | --approve SHA]`
+    /// [--from DIR|URL] [--version V] [--force] [--re-approve |
+    /// --approve SHA]`
     /// (ADR-0431 §3, ADR-0449). Parsed in every build; the install itself
     /// rides the `extension-install` feature and answers with the
     /// not-included error in a build without it (ADR-0137).
@@ -107,7 +110,7 @@ impl ExtensionAction {
 
 /// Parse the argument tail after the `extension` verb: `init <name>
 /// [--lang sh|py|ts|rust]`, `install <name> [--github REPO@TAG|@SHA]
-/// [--url URL] [--from DIR] [--version V] [--force] [--re-approve |
+/// [--url URL] [--from DIR|URL] [--version V] [--force] [--re-approve |
 /// --approve SHA]`, `list [--available | --trust]`, `remove <name>
 /// [--forget-pin]`, `check <dir>` (ADR-0431 §3, ADR-0449 — the
 /// resource-action shape: exactly one positional (the name) on `init`,
@@ -131,22 +134,27 @@ pub(crate) fn parse_extension_args(rest: &[String]) -> Result<ExtensionAction, P
 
 /// The `install` grammar: one positional (the package name) and the
 /// source flags — `--github`, `--url` and `--from` are mutually exclusive
-/// (a usage error naming the pair), `--version` is a usage error beside
-/// any of them (the source the flag names already determines the
-/// version, ADR-0431 §3), and the re-approval flags require `--github`
-/// (ADR-0449). Parsed identically in every build (ADR-0137): the
-/// typed [`InstallSource`](crate::extensions::install::InstallSource)
-/// is derived from the checked flags at run time, in the build that
-/// carries the capability — never re-matched from a nullable pair.
+/// (a usage error naming the pair, refused the moment the second flag
+/// arrives), `--version` is a usage error beside any of them (the source
+/// the flag names already determines the version, ADR-0431 §3), and the
+/// re-approval flags require `--github` (ADR-0449). Parsed identically
+/// in every build (ADR-0137): the typed
+/// [`InstallSource`](crate::extensions::install::InstallSource) is built
+/// at each source flag's site and parked in the one slot — never a
+/// nullable triple the grammar re-derives afterwards.
 fn parse_install(rest: &[String]) -> Result<ExtensionAction, ParseError> {
     use crate::parse_error::{flag_once, set_once};
     let mut name: Option<String> = None;
-    let mut url: Option<String> = None;
-    let mut from: Option<String> = None;
+    // The one source slot: the typed variant alone — the flag that named
+    // it is read back from the variant ([`InstallSource::install_flag`]),
+    // so the fact lives once. Exactly one source flag ever holds,
+    // refused at the second flag's site ([`set_source`]).
+    let mut source: Option<InstallSource> = None;
     let mut version: Option<String> = None;
-    let mut github: Option<GithubSpec> = None;
-    let mut re_approve = false;
-    let mut approve: Option<String> = None;
+    // The re-approval choice: one slot, so the impossible "both flags"
+    // state needs no exclusion branch ([`Approval`]); empty is the
+    // absence of either flag.
+    let mut approval: Option<Approval> = None;
     let mut force = false;
     let mut args = rest.iter();
     while let Some(arg) = args.next() {
@@ -157,15 +165,25 @@ fn parse_install(rest: &[String]) -> Result<ExtensionAction, ParseError> {
                     "--url",
                     "a value (the package tarball URL)",
                 )?;
-                set_once("extension install", &mut url, "--url", value.clone())?;
+                set_source(&mut source, InstallSource::Url(value.clone()))?;
             }
             "--from" => {
                 let value = crate::parse_error::flag_value(
                     &mut args,
                     "--from",
-                    "a value (a package directory)",
+                    "a value (a package directory, or the manifest's URL)",
                 )?;
-                set_once("extension install", &mut from, "--from", value.clone())?;
+                // A value whose scheme is http(s) is the remote form
+                // (ADR-0431 §5) — the crate's one scheme test
+                // (`plaintext::is_http_scheme`) picks the variant at the
+                // grammar boundary, so the flow never re-sniffs the
+                // string.
+                let variant = if crate::plaintext::is_http_scheme(value) {
+                    InstallSource::FromUrl(value.clone())
+                } else {
+                    InstallSource::From(value.clone())
+                };
+                set_source(&mut source, variant)?;
             }
             "--version" => {
                 let value = crate::parse_error::flag_value(
@@ -188,13 +206,9 @@ fn parse_install(rest: &[String]) -> Result<ExtensionAction, ParseError> {
                 )?;
                 let spec = GithubSpec::parse(value)
                     .map_err(|message| ParseError::from(format!("extension install: {message}")))?;
-                if github.replace(spec).is_some() {
-                    return Err("extension install --github may be given only once".into());
-                }
+                set_source(&mut source, InstallSource::Github(spec))?;
             }
-            "--re-approve" => {
-                flag_once("extension install", "--re-approve", &mut re_approve)?;
-            }
+            "--re-approve" => set_approval(&mut approval, Approval::ReApprove)?,
             "--approve" => {
                 let value = crate::parse_error::flag_value(
                     &mut args,
@@ -206,12 +220,7 @@ fn parse_install(rest: &[String]) -> Result<ExtensionAction, ParseError> {
                         "extension install --approve requires a full 40-hex commit sha".into(),
                     );
                 }
-                set_once(
-                    "extension install",
-                    &mut approve,
-                    "--approve",
-                    value.to_ascii_lowercase(),
-                )?;
+                set_approval(&mut approval, Approval::Approve(value.to_ascii_lowercase()))?;
             }
             "--force" => {
                 flag_once("extension install", "--force", &mut force)?;
@@ -225,41 +234,18 @@ fn parse_install(rest: &[String]) -> Result<ExtensionAction, ParseError> {
             }
         }
     }
-    // The source flags are mutually exclusive: they both name the
-    // install source (ADR-0431 §3, ADR-0449).
-    if url.is_some() && from.is_some() {
-        return Err(
-            "extension install: --url and --from are mutually exclusive (they both name \
-             the install source)"
-                .into(),
-        );
-    }
-    if github.is_some() && (url.is_some() || from.is_some()) {
-        return Err(
-            "extension install: --github is mutually exclusive with --url and --from \
-             (each names the install source)"
-                .into(),
-        );
-    }
     // A re-approval is a `--github` pin operation; it means nothing for
     // the other sources, which have no recorded pin.
-    if (re_approve || approve.is_some()) && github.is_none() {
+    if approval.is_some() && !matches!(source, Some(InstallSource::Github(_))) {
         return Err(
             "extension install: --re-approve and --approve <commit-sha> only apply to \
              --github installs"
                 .into(),
         );
     }
-    if re_approve && approve.is_some() {
-        return Err(
-            "extension install: --re-approve and --approve are mutually exclusive \
-             (both re-approve a resolved pin)"
-                .into(),
-        );
-    }
     // The source the flag names already determines the version
     // (ADR-0431 §3).
-    if version.is_some() && (url.is_some() || from.is_some() || github.is_some()) {
+    if version.is_some() && source.is_some() {
         return Err(
             "extension install: --version is not valid with --url, --from or --github \
              (the named source already determines the version)"
@@ -269,24 +255,94 @@ fn parse_install(rest: &[String]) -> Result<ExtensionAction, ParseError> {
     let Some(name) = name else {
         return Err("extension install requires a package name".into());
     };
-    // The typed source, decided once here at the grammar boundary: the
-    // checks above guarantee exactly one shape holds.
-    let source = if let Some(url) = url {
-        InstallSource::Url(url)
-    } else if let Some(from) = from {
-        InstallSource::From(from)
-    } else if let Some(github) = github {
-        InstallSource::Github(github)
-    } else {
-        InstallSource::Channel { version }
-    };
+    let source = source.unwrap_or(InstallSource::Channel { version });
     Ok(ExtensionAction::Install(InstallArgs {
         name,
         source,
         force,
-        re_approve,
-        approve,
+        approval,
     }))
+}
+
+/// The `--re-approve` / `--approve` mutual-exclusion text, one spelling:
+/// the two flags are one [`Approval`] choice, so the parking helper words
+/// its refusal from here.
+const APPROVAL_EXCLUSIVE: &str = "extension install: --re-approve and --approve are mutually \
+                                 exclusive (both re-approve a resolved pin)";
+
+/// Park one re-approval flag's [`Approval`] — the same park-or-refuse
+/// policy as [`set_source`], over the approval vocabulary: an empty slot
+/// takes the value, the same choice twice is the once-only refusal, the
+/// other choice the mutual-exclusion refusal.
+fn set_approval(slot: &mut Option<Approval>, value: Approval) -> Result<(), ParseError> {
+    match park(slot, value) {
+        Ok(()) => Ok(()),
+        Err((held, incoming)) => {
+            let held_flag = held.flag();
+            let flag = incoming.flag();
+            if held_flag == flag {
+                Err(crate::parse_error::repeat_error("extension install", flag))
+            } else {
+                Err(APPROVAL_EXCLUSIVE.into())
+            }
+        }
+    }
+}
+
+/// The one park-or-refuse step the grammar's two typed slots share (the
+/// source slot and the approval slot): an empty slot takes the value; a
+/// slot already holding one hands both values back, and the caller words
+/// the refusal from its own flag vocabulary (the same flag twice is the
+/// once-only error, two flags the pair error) — the decision lives here
+/// once, the texts stay with the flags.
+fn park<T: Clone>(slot: &mut Option<T>, value: T) -> Result<(), (T, T)> {
+    match slot {
+        None => {
+            *slot = Some(value);
+            Ok(())
+        }
+        Some(held) => Err((held.clone(), value)),
+    }
+}
+
+/// Park one source flag's typed variant in the install grammar's one
+/// source slot (ADR-0431 §3): a source flag arriving when the slot
+/// already holds refuses — the same flag twice is the once-only
+/// refusal, a different source flag the pair refusal, each with the
+/// grammar's one spelling of that text. This is the source flags' own
+/// parking policy (the `--url`/`--from`/`--github` set); the other
+/// value flags park through [`set_once`].
+fn set_source(slot: &mut Option<InstallSource>, variant: InstallSource) -> Result<(), ParseError> {
+    match park(slot, variant) {
+        Ok(()) => Ok(()),
+        Err((held, incoming)) => {
+            // The spelling is the variant's own
+            // ([`InstallSource::install_flag`]), so the once-only prose is
+            // the shared guard's ([`crate::parse_error::repeat_error`]).
+            let held_flag = held.install_flag().expect("a parked source names its flag");
+            let flag = incoming
+                .install_flag()
+                .expect("a source variant names its flag");
+            if held_flag == flag {
+                return Err(crate::parse_error::repeat_error("extension install", flag));
+            }
+            // The pair refusal names both flags in the grammar's canonical
+            // order — `--url` and `--from`, or `--github` against the other
+            // two — so the text is the same whichever flag arrived first.
+            // Which pair it is reads off the typed variants, never a flag
+            // literal.
+            let github_pair = matches!(held, InstallSource::Github(_))
+                || matches!(incoming, InstallSource::Github(_));
+            let text = if github_pair {
+                "extension install: --github is mutually exclusive with --url and --from \
+                 (each names the install source)"
+            } else {
+                "extension install: --url and --from are mutually exclusive (they both name \
+                 the install source)"
+            };
+            Err(text.into())
+        }
+    }
 }
 
 /// The `list` grammar: no positional; `--available` once (ADR-0431 §9)

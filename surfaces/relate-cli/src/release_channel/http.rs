@@ -102,9 +102,12 @@ pub(crate) struct AssetRequest<'a> {
 /// [`approved_transport`], the one predicate over this carve-out, so the
 /// two spellings of the rule cannot drift.
 pub(crate) fn plain_http_allowed(url: &str) -> bool {
-    let rest = match url.strip_prefix("http://") {
-        Some(rest) => rest,
-        None => return false,
+    // The scheme compares ASCII-case-insensitively (the crate's one
+    // scheme test), so `HTTP://127.0.0.1/x` is the same carve-out value
+    // as `http://127.0.0.1/x`.
+    let rest = match crate::plaintext::split_scheme(url) {
+        Some((scheme, rest)) if scheme.eq_ignore_ascii_case("http") => rest,
+        _ => return false,
     };
     let authority = rest.split_once(['/', '?', '#']).map_or(rest, |(a, _)| a);
     if authority.contains('@') {
@@ -131,7 +134,11 @@ pub(crate) fn plain_http_allowed(url: &str) -> bool {
 /// `extensions::install` and by [`http_agent`]'s `https_only` pin, so the
 /// rule exists once.
 pub(crate) fn approved_transport(url: &str) -> bool {
-    url.starts_with("https://") || plain_http_allowed(url)
+    // The scheme test is the crate's one (ASCII-case-insensitive): the
+    // classifier that accepted the value at the grammar boundary and this
+    // gate must never answer `HTTPS://…` differently.
+    crate::plaintext::scheme(url).is_some_and(|scheme| scheme.eq_ignore_ascii_case("https"))
+        || plain_http_allowed(url)
 }
 
 /// The module's one HTTP client: every request [`download_asset`] issues

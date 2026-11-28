@@ -19,12 +19,28 @@ use super::*;
 use crate::extensions::manifest::Manifest;
 use crate::extensions::provenance::MARKER_FILE;
 use crate::extensions::registry::ActionRegistry;
+use crate::extensions::source::{Approval, GithubSpec};
 use crate::telemetry::env_of;
 
-/// A well-formed command manifest for `name` with `version`.
+/// A well-formed command manifest for `name` with `version` — the common
+/// fixture: the host's protocol, a top-level `run.sh` executable. The
+/// one builder ([`manifest_with`]) spells the schema; every other
+/// fixture spelling delegates here.
 fn manifest_text(name: &str, version: &str) -> String {
+    manifest_with(
+        name,
+        version,
+        "run.sh",
+        relate_wire::mcp::MCP_PROTOCOL_VERSION,
+    )
+}
+
+/// The one manifest fixture builder: any executable path (the subfolder
+/// and escaping cases) and any protocol (the foreign-protocol refusal) —
+/// the schema's required fields live at this one site.
+fn manifest_with(name: &str, version: &str, executable: &str, protocol: &str) -> String {
     format!(
-        r#"{{"kind":"command","name":"{name}","version":"{version}","protocol":"2025-06-18","flags":[],"commit":"per-batch","executable":"run.sh"}}"#
+        r#"{{"kind":"command","name":"{name}","version":"{version}","protocol":"{protocol}","flags":[],"commit":"per-batch","executable":"{executable}"}}"#
     )
 }
 
@@ -42,17 +58,28 @@ impl World {
         }
     }
 
-    /// The extensions dir both the registry walk and the install target.
+    /// The config dir both the extensions dir and the trust store live
+    /// under (`<tmp>/relate`) — the one spelling of the layout.
+    fn config_dir(&self) -> PathBuf {
+        self.tmp.path().join("relate")
+    }
+
+    /// The extensions dir both the registry walk and the install target —
+    /// the canonical name ([`crate::extensions::registry::EXTENSIONS_DIR`]),
+    /// never a re-spelled literal.
     fn extensions_dir(&self) -> PathBuf {
-        let dir = self.tmp.path().join("relate").join("extensions");
+        let dir = self
+            .config_dir()
+            .join(crate::extensions::registry::EXTENSIONS_DIR);
         std::fs::create_dir_all(&dir).unwrap();
         dir
     }
 
-    /// The config dir's trust-store path (the store ADR-0449 adds beside
-    /// the extensions dir).
+    /// The config dir's trust-store path — the canonical join
+    /// ([`crate::extensions::trust::trust_path`]), the one the install
+    /// verbs, `list --trust` and `remove --forget-pin` share.
     fn trust_file(&self) -> PathBuf {
-        self.tmp.path().join("relate").join("extensions-trust.json")
+        crate::extensions::trust::trust_path(&self.config_dir())
     }
 
     /// The recorded pin for `name`, when the store has one.
@@ -107,22 +134,75 @@ impl World {
     }
 }
 
-/// `extension install <name> --from DIR` over a fixture world: the flow's
-/// real entry point is `run_install` (real env); these tests drive
-/// `install_into` against the fixture tree.
-fn install_from(world: &World, name: &str, source: &Path) -> Result<(), InstallError> {
+/// The one `InstallArgs` literal the fixtures build: every flow entry
+/// delegates here, so a field the grammar adds is threaded once.
+fn install_args(name: &str, source: InstallSource, approval: Option<Approval>) -> InstallArgs {
+    InstallArgs {
+        name: name.to_string(),
+        source,
+        force: false,
+        approval,
+    }
+}
+
+/// The one `install_into` adapter the fixtures run: the flow's real entry
+/// point is `run_install` (real env), so these tests drive `install_into`
+/// against the fixture tree — every flow entry differs only by the source
+/// it names and the route it injects.
+fn install_with(
+    world: &World,
+    route: GithubResolver<'_>,
+    args: InstallArgs,
+) -> Result<(), InstallError> {
     install_into(
         &world.extensions_dir(),
         &world.trust_file(),
-        &GithubRoute::from_env,
-        &InstallArgs {
-            name: name.to_string(),
-            source: InstallSource::From(source.display().to_string()),
-            force: false,
-            re_approve: false,
-            approve: None,
-        },
+        route,
+        &args,
         &world.registry(),
+    )
+}
+
+/// `extension install <name> --from DIR` over a fixture world.
+fn install_from(world: &World, name: &str, source: &Path) -> Result<(), InstallError> {
+    install_with(
+        world,
+        &GithubRoute::from_env,
+        install_args(
+            name,
+            InstallSource::From(source.display().to_string()),
+            None,
+        ),
+    )
+}
+
+/// `extension install <name> --from URL` over a fixture world: the remote
+/// form's entry — the loopback route the URL points at is each test's own
+/// fixture server.
+fn install_from_remote(world: &World, name: &str, url: &str) -> Result<(), InstallError> {
+    install_with(
+        world,
+        &GithubRoute::from_env,
+        install_args(name, InstallSource::FromUrl(url.to_string()), None),
+    )
+}
+
+/// `extension install <name> --github …` through the real flow, with the
+/// loopback API and download bases injected (the `load`/`load_with` shape
+/// the channel's post-gate steps already use).
+fn install_github(
+    world: &World,
+    name: &str,
+    spec: GithubSpec,
+    approval: Option<Approval>,
+    api_base: &str,
+    download_base: &str,
+) -> Result<(), InstallError> {
+    let route = GithubRoute::at(api_base, download_base);
+    install_with(
+        world,
+        &|_| Ok(route.clone()),
+        install_args(name, InstallSource::Github(spec), approval),
     )
 }
 
@@ -149,7 +229,10 @@ fn staging_dir(world: &World) -> PathBuf {
 }
 
 mod channel;
+mod fixtures;
 mod from_dir;
+mod from_url;
 mod github;
 mod target;
+mod trust;
 mod url;

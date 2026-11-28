@@ -60,3 +60,21 @@ impl From<crate::release_channel::ChannelError> for InstallError {
         InstallError::Runtime(err.to_string())
     }
 }
+
+/// The trust store's failures are runtime ones (exit 1): its typed error
+/// already names the file, so the flow carries it through `?` instead of
+/// re-wrapping each site by hand.
+impl From<crate::extensions::trust::TrustError> for InstallError {
+    fn from(err: crate::extensions::trust::TrustError) -> Self {
+        InstallError::Runtime(err.to_string())
+    }
+}
+
+/// The registry's failures are runtime ones too (exit 1): the load-time
+/// refusals already name their offender, so the install entry point
+/// carries them through `?` like the other two.
+impl From<crate::extensions::registry::RegistryError> for InstallError {
+    fn from(err: crate::extensions::registry::RegistryError) -> Self {
+        InstallError::Runtime(err.to_string())
+    }
+}

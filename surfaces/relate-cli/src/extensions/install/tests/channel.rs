@@ -68,9 +68,9 @@ fn a_first_party_style_signed_index_installs_the_package_behind_the_gate() {
     let (provenance, manifest) =
         install_from_index(&index, "greet", None, &base, &staged).expect("the install lands");
 
-    // The provenance records the first-party tier and the channel tag
-    // (§7's source reference; the loud line renders it, pinned above).
-    assert_eq!(provenance.tier, Tier::FirstParty);
+    // The adapter hands back the channel tag (§7's source reference; the
+    // loud line renders it, pinned above) — the tier is the source's own
+    // (`InstallSource::tier`), stamped by the install.
     assert_eq!(provenance.source, "relate-extensions-greet-1.2.3");
     // The staged package holds exactly the accounted set, the executable
     // with its exec bit from the member mode (§2).
@@ -236,8 +236,8 @@ fn the_walkthroughs_package_installs_from_the_first_party_channel_index() {
     let (provenance, landed) = install_from_index(&index, "git-to-graph", None, &base, &staged)
         .expect("the walkthrough's channel install lands");
 
-    // First-party tier, the channel tag as the source reference (§7).
-    assert_eq!(provenance.tier, Tier::FirstParty);
+    // The channel tag is the source reference (§7); the tier is the
+    // source's own, stamped by the install.
     assert_eq!(
         provenance.source,
         format!("relate-extensions-git-to-graph-{}", command.version)

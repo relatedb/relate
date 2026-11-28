@@ -131,7 +131,7 @@ triggered.
 ### 3. The verbs
 
 ```text
-cypherlite extension install <name> [--url URL] [--from DIR] [--version V] [--force]
+cypherlite extension install <name> [--url URL] [--from DIR|URL] [--version V] [--force]
 cypherlite extension list [--available]
 cypherlite extension remove <name>
 ```
@@ -146,7 +146,10 @@ cypherlite extension remove <name>
   `install` and `remove`, none on `list`; action names are closed.
 - `--url` and `--from` are mutually exclusive (a usage error naming
   both) and each names the install source; with neither, `install`
-  means the first-party channel. `--version V` selects a listed channel
+  means the first-party channel. `--from` takes a local directory
+  (§5) or a URL (§5's remote form, below) — a value that begins
+  `https://` or `http://` is the URL form, anything else the local
+  directory. `--version V` selects a listed channel
   version (default: the newest listed) and is a usage error beside
   `--url` / `--from` — the source the flag names already determines
   the version.
@@ -226,6 +229,44 @@ LABS-469's acceptance); air-gapped machines and sandbox images carry
 packages across the gap as directories — an installed extension is
 just a directory, so an image can `COPY` one in and install from it.
 
+`--from URL` is the same loose-files layout over the network: the URL
+names the manifest, or a path the manifest filename is appended to.
+Resolution, in order:
+
+- A `github.com/OWNER/REPO/blob/REF/PATH` or `/tree/REF/PATH` web URL
+  is rewritten to its raw-content form
+  `raw.githubusercontent.com/OWNER/REPO/REF/PATH` before any fetch —
+  a web-blob URL serves HTML, not the file, and the invoker pastes
+  the page they browsed, so the rewrite is what makes a pasted
+  GitHub URL installable at all. The rewrite applies to every URL
+  the install derives (the manifest's, the executable's). A GitHub
+  page that names no content — the bare repository URL, or a
+  blob/tree URL whose path stops at the verb — is refused (the usage
+  class, before any fetch) with the form that works, rather than
+  left to die as a download 404; any other page (a releases listing,
+  say) passes through and the fetch answers for it.
+- The (rewritten) URL whose last path segment ends in `.json` names
+  the manifest file itself; any other URL names a directory and
+  `extension.json` (the channel layout's manifest filename) is
+  appended to it.
+- The executable is resolved against the *manifest's* URL directory:
+  the manifest's `executable` path joined onto the folder the
+  manifest was fetched from — the same folder or a relative
+  subfolder, never above it. The [ADR-0429](./0429-cli-extension-registry.md) §2
+  escaping-executable rule refuses `..` and absolute spellings before
+  the executable is fetched, so nothing outside the manifest's folder
+  can ride in.
+
+The tier is the third-party one (§6's posture — no signature exists
+to check, so the https transport is the act's one leg of integrity,
+gated by the same predicate: https, or plain http to the loopback
+interface, refused before any fetch), and the provenance records the
+URL as the invoker named it. There is no tarball and no member-mode
+field, so the executable lands with the fixed `755` mode through the
+one landing-mode policy (§2's masking rule); the staged package is
+exactly the manifest plus the executable, the same accounted set the
+local-directory tier copies.
+
 ### 6. `--url URL`: the explicit third-party trust act
 
 `--url` names the package tarball at any https source the invoker
@@ -246,7 +287,8 @@ Three tiers, one ladder:
 
 - **First-party** — the signed channel, automatic verification (§1).
 - **Third-party URL** — the explicit act, loud output, recorded
-  provenance (§6).
+  provenance (§6; the remote `--from URL` form of §5 sits here too —
+  the same transport gate, the URL recorded as named).
 - **Local directory** — the explicit local act (§5).
 
 (P2's callable packs, LABS-468, will sit at the data tier below these

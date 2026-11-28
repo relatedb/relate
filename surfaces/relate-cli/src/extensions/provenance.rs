@@ -12,6 +12,19 @@
 
 use serde::Deserialize;
 
+/// What a source adapter hands back before the install stamps the tier
+/// (ADR-0431 §7): the pin a `--github` install resolved, and the source
+/// reference the marker records. The tier is the source's own
+/// ([`crate::extensions::source::InstallSource::tier`]) and is stamped by
+/// the caller, so the variant→tier mapping has one home.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SourceFacts {
+    /// The resolved pin, for a `--github` install.
+    pub(crate) pin: Option<Pin>,
+    /// The source reference the marker records.
+    pub(crate) source: String,
+}
+
 /// The provenance marker's filename, beside `extension.json` in the
 /// package directory (ADR-0431 §7).
 pub(crate) const MARKER_FILE: &str = ".relate-provenance.json";
