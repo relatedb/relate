@@ -2,11 +2,6 @@
 
 use relate_core::{ArithmeticFailure, Error, ErrorKind, Result, Value};
 
-/// The largest `round()` precision the f64-backed engine supports: an f64
-/// carries at most ~15–17 significant decimal digits, so a larger decimal
-/// precision cannot express anything the value does not already have
-/// (ADR-0336).
-const MAX_ROUND_PRECISION: i64 = 15;
 /// Once a float's ulp is at least 1 (|x| >= 2^52), every value of that
 /// magnitude is already an integer — `Math.round`'s `floor(x + 0.5)`
 /// would instead round an odd ulp up, and live returns the identity.
@@ -96,33 +91,44 @@ enum AppliedMode {
 /// `round(3.14…, -0.02)` is `round(3.14…, 0)` — and a value that is not a
 /// truncatable number keeps the `must be INTEGER` type rejection.
 fn round_precision(v: &Value) -> Result<usize> {
-    let Some(n) = v.as_number() else {
+    let Some(n) = v.as_number().filter(|n| n.is_finite()) else {
         return Err(Error::invalid_argument_type(
             "round precision must be INTEGER",
         ));
     };
-    if !n.is_finite() {
-        return Err(Error::invalid_argument_type(
-            "round precision must be INTEGER",
-        ));
-    }
     let n = n.trunc();
     // Live Neo4j 2026.10.1: both precision faults are the ArgumentError
-    // class (22N38 negative, 22003 above the integer range).
+    // class (22N38 negative, 22003 above the integer range), and the bound
+    // is the full int32 range — a precision at or above the value's own
+    // decimal scale is the identity in `round_decimal`, never an error
+    // (ADR-0336).
     if n < 0.0 {
         return Err(Error::argument_value_kind(
             ErrorKind::NumberOutOfRange,
-            "round precision must be non-negative",
+            "Precision argument to 'round()' cannot be negative",
         ));
     }
-    if n > MAX_ROUND_PRECISION as f64 {
+    if n > f64::from(i32::MAX) {
+        // The bounds text derives from the same constants the gate checks,
+        // and the offending value is the argument the caller passed — an
+        // INTEGER reports its own digits, never its f64 image.
+        let spelled = match v {
+            Value::Int(i) => i.to_string(),
+            _ => n.to_string(),
+        };
         return Err(Error::argument_value_kind(
             ErrorKind::NumberOutOfRange,
-            format!("round precision must be at most {MAX_ROUND_PRECISION}"),
+            format!(
+                "Invalid input for precision value in function 'round()': \
+                 Expected an integer between {} and {}, but got: {spelled}",
+                i32::MIN,
+                i32::MAX
+            ),
         ));
     }
-    // The range gate above bounds n to 0..=15, so this is the one checked
-    // conversion — callers carry a plain `usize` with nothing to cast.
+    // The range gate above bounds n to 0..=i32::MAX, so this is the one
+    // checked conversion — callers carry a plain `usize` with nothing to
+    // cast.
     Ok(n as usize)
 }
 
@@ -333,29 +339,50 @@ pub(crate) fn int_arg(v: &Value) -> Option<i64> {
 mod tests {
     use super::*;
 
-    /// ADR-0336: the precision is bounded to 0..=15 — a larger one gets the
-    /// same NumericValueOutOfRange treatment as a negative one, never the
-    /// NaN the overflow-prone scale computation used to produce.
+    /// ADR-0336: a precision above the int32 range is the ArgumentError
+    /// naming the bounds, and the offending value is the argument the
+    /// caller passed — an INTEGER reports its own digits, any other
+    /// spelling its truncated f64 (live Neo4j 2026.10.1, GQL 22003).
     #[test]
-    fn round_precision_is_bounded() {
-        let too_large = Error::argument_value_kind(
-            ErrorKind::NumberOutOfRange,
-            "round precision must be at most 15",
-        );
-        for precision in [16, 400, i64::MAX] {
+    fn round_precision_above_int32_names_the_bounds() {
+        let expected = |spelled: &str| {
+            Error::argument_value_kind(
+                ErrorKind::NumberOutOfRange,
+                format!(
+                    "Invalid input for precision value in function 'round()': \
+                     Expected an integer between -2147483648 and 2147483647, but got: {spelled}"
+                ),
+            )
+        };
+        // An INTEGER reports its own digits — i64::MAX is not its f64 image.
+        for precision in [2147483648_i64, i64::MAX] {
             assert_eq!(
                 round_function(&[Value::Float(2.5), Value::Int(precision)]).unwrap_err(),
-                too_large,
+                expected(&precision.to_string()),
                 "precision {precision}"
             );
         }
-        // One normalized range check: the INTEGER and FLOAT spellings share
-        // both the negative and the upper-bound class (`round(x, -1)` and
-        // `round(x, -1.0)` used to diverge into "non-negative" vs "must be
-        // INTEGER").
+        // Any other spelling reports its truncated f64 — the fraction never
+        // reaches the message.
+        for precision in [Value::Float(2147483648.0), Value::Float(2147483648.5)] {
+            assert_eq!(
+                round_function(&[Value::Float(2.5), precision.clone()]).unwrap_err(),
+                expected("2147483648"),
+                "precision {precision:?}"
+            );
+        }
+    }
+
+    /// One normalized range check: the INTEGER and FLOAT spellings share the
+    /// negative class (`round(x, -1)` and `round(x, -1.0)` used to diverge
+    /// into "non-negative" vs "must be INTEGER"); a negative fraction
+    /// truncates toward zero before the check, so only at or below -1
+    /// rejects (live Neo4j 2026.10.1, GQL 22N38).
+    #[test]
+    fn round_precision_negative_is_one_class() {
         let negative = Error::argument_value_kind(
             ErrorKind::NumberOutOfRange,
-            "round precision must be non-negative",
+            "Precision argument to 'round()' cannot be negative",
         );
         for precision in [Value::Int(-1), Value::Float(-1.0), Value::Float(-1.5)] {
             assert_eq!(
@@ -364,35 +391,27 @@ mod tests {
                 "precision {precision:?}"
             );
         }
-        for precision in [Value::Int(16), Value::Float(16.0)] {
+    }
+
+    /// ADR-0336: an in-range precision at or above the value's own decimal
+    /// scale is the identity, never an error — the old 15 cap rejected
+    /// 15's neighbors, 400 and i32::MAX alike (live Neo4j 2026.10.1:
+    /// `round(1.9951, 2147483647)` is `1.9951`).
+    #[test]
+    fn round_high_precision_is_the_identity() {
+        for precision in [
+            Value::Int(15),
+            Value::Int(16),
+            Value::Float(16.0),
+            Value::Int(400),
+            Value::Int(2147483647),
+        ] {
             assert_eq!(
-                round_function(&[Value::Float(2.5), precision.clone()]).unwrap_err(),
-                too_large,
+                round_function(&[Value::Float(2.5), precision.clone()]).unwrap(),
+                Value::Float(2.5),
                 "precision {precision:?}"
             );
         }
-        assert_eq!(
-            round_function(&[Value::Float(2.5), Value::Int(15)]).unwrap(),
-            Value::Float(2.5)
-        );
-        assert_eq!(
-            round_function(&[Value::Float(2.5)]).unwrap(),
-            Value::Float(3.0)
-        );
-        // The implicit form is HALF_UP toward positive infinity, not the
-        // wire `HALF_UP` (away from zero): -2.5 rounds to -2.0.
-        assert_eq!(
-            round_function(&[Value::Float(-2.5)]).unwrap(),
-            Value::Float(-2.0)
-        );
-        assert_eq!(
-            round_function(&[Value::Float(2.5), Value::Int(2)]).unwrap(),
-            Value::Float(2.5)
-        );
-        assert_eq!(
-            round_function(&[Value::Null, Value::Int(400)]).unwrap(),
-            Value::Null
-        );
     }
 
     /// `round()` rounds the shortest decimal spelling, not the binary image
@@ -412,6 +431,12 @@ mod tests {
             (2.55, 1, None, 2.6),
             (-1.25, 1, None, -1.3),
             (1.25, 1, None, 1.3),
+            // Precision 0 with no mode is Java's `Math.round`
+            // (`floor(x + 0.5)`, ties toward positive infinity) — the
+            // implicit `round(x)` form, not the wire `HALF_UP`.
+            (2.5, 0, None, 3.0),
+            (-2.5, 0, None, -2.0),
+            (-2.55, 0, None, -3.0),
             (2.675, 0, Some("HALF_UP"), 3.0),
             (2.675, 0, Some("HALF_EVEN"), 3.0),
             (1.235, 2, Some("HALF_EVEN"), 1.24),
@@ -430,16 +455,6 @@ mod tests {
                 "round({value}, {precision}, {mode:?})"
             );
         }
-        // Precision 0 with no mode stays Java's Math.round (floor(x + 0.5),
-        // ties toward positive infinity), which is not the wire HALF_UP.
-        assert_eq!(
-            round_function(&[Value::Float(-2.55), Value::Int(0)]).unwrap(),
-            Value::Float(-3.0)
-        );
-        assert_eq!(
-            round_function(&[Value::Float(-2.5), Value::Int(0)]).unwrap(),
-            Value::Float(-2.0)
-        );
     }
 
     /// A float precision is accepted and truncated, matching Neo4j:
@@ -461,7 +476,20 @@ mod tests {
             round_function(&[Value::Float(3.7), Value::Float(-0.02)]).unwrap(),
             Value::Float(4.0)
         );
-        assert!(round_function(&[Value::Float(1.23), Value::Float(-1.0)]).is_err());
+        assert_eq!(
+            round_function(&[Value::Float(1.23), Value::Float(-1.0)]).unwrap_err(),
+            Error::argument_value_kind(
+                ErrorKind::NumberOutOfRange,
+                "Precision argument to 'round()' cannot be negative",
+            )
+        );
+        // A null argument short-circuits before the range gates: the
+        // precision here is one the gate rejects, so the Null result can
+        // only come from the null check.
+        assert_eq!(
+            round_function(&[Value::Null, Value::Int(-1)]).unwrap(),
+            Value::Null
+        );
     }
 
     /// The `UNNECESSARY` mode keeps its typed failure at a bounded

@@ -1,40 +1,62 @@
-//! `round()` semantics: ADR-0336 bounds its precision to 0..=15 (a larger
-//! precision fails with the same NumericValueOutOfRange treatment as a
-//! negative one instead of returning NaN), and the implicit mode is HALF_UP
-//! toward positive infinity rather than the wire `HALF_UP` (away from zero).
+//! `round()` semantics: ADR-0336 bounds its precision to the int32 range
+//! (above it the ArgumentError names the bounds; a precision at or above the
+//! value's own decimal scale is the identity, live-verified against
+//! Neo4j 2026.10.1), and the implicit mode is HALF_UP toward positive
+//! infinity rather than the wire `HALF_UP` (away from zero).
 
 use crate::common;
 
 use relate::{Error, Value};
 use relate_core::ErrorKind;
 
-use common::{connection, error_class_literal, row, rows};
+use common::{connection, error_class_literal, refused_literal, row, rows};
 
 #[test]
 fn round_precision_bounds_are_argument_errors() {
     let mut conn = connection();
+    let out_of_range = "RETURN round(2.5, 2147483648) AS r";
+    let negative = "RETURN round(2.5, -1) AS r";
     assert_eq!(
-        conn.query("RETURN round(2.5, 400) AS r").unwrap_err(),
+        refused_literal(&mut conn, out_of_range),
         Error::argument_value_kind(
             ErrorKind::NumberOutOfRange,
-            "round precision must be at most 15"
+            "Invalid input for precision value in function 'round()': \
+             Expected an integer between -2147483648 and 2147483647, but got: 2147483648"
         )
     );
     assert_eq!(
-        conn.query("RETURN round(2.5, -1) AS r").unwrap_err(),
+        refused_literal(&mut conn, negative),
         Error::argument_value_kind(
             ErrorKind::NumberOutOfRange,
-            "round precision must be non-negative"
+            "Precision argument to 'round()' cannot be negative"
         )
     );
     // Live Neo4j 2026.10.1 reports both under the ArgumentError class.
+    assert_eq!(error_class_literal(&mut conn, negative), "ArgumentError");
+}
+
+/// Live Neo4j 2026.10.1: a precision at or above the value's own decimal
+/// scale returns the value unchanged — no zero padding, no cap error. The
+/// corpus rows this pins are `round(1.9951, 5)`/`(…, 2147483647)` and
+/// `round(3.141592653589793, 500)`.
+#[test]
+fn round_high_precision_is_the_identity() {
+    let mut c = connection();
     assert_eq!(
-        error_class_literal(&mut conn, "RETURN round(2.5, -1) AS r"),
-        "ArgumentError"
+        row(
+            &mut c,
+            "RETURN round(1.9951, 5) AS p5, round(1.9951, 2147483647) AS pMax"
+        ),
+        vec![Value::Float(1.9951), Value::Float(1.9951)]
     );
     assert_eq!(
-        conn.query("RETURN round(2.5, 2) AS r").unwrap().rows,
-        vec![vec![Value::Float(2.5)]]
+        row(&mut c, "RETURN round(3.141592653589793, 500) AS rounded"),
+        vec![Value::Float(std::f64::consts::PI)]
+    );
+    // An in-range precision at the value's own scale, the plain form.
+    assert_eq!(
+        row(&mut c, "RETURN round(2.5, 2) AS r"),
+        vec![Value::Float(2.5)]
     );
 }
 
