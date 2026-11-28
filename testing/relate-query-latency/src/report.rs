@@ -89,20 +89,21 @@ impl Report {
     /// The console table: one line per query, engine-elapsed p50 and mean.
     pub fn table(&self) -> String {
         let mut s = format!(
-            "{:<5} {:<8} {:>6} {:>7} {:>12} {:>12} {:>12}\n",
-            "query", "status", "rows", "rounds", "p50 ms", "mean ms", "p99 ms"
+            "{:<5} {:<8} {:>6} {:>7} {:>12} {:>12} {:>12} {:>10}\n",
+            "query", "status", "rows", "rounds", "p50 ms", "mean ms", "p99 ms", "db hits"
         );
         let ms = |ns: u64| format!("{:.3}", ns as f64 / 1e6);
         for q in &self.queries {
             s += &format!(
-                "q{:<4} {:<8} {:>6} {:>7} {:>12} {:>12} {:>12}\n",
+                "q{:<4} {:<8} {:>6} {:>7} {:>12} {:>12} {:>12} {:>10}\n",
                 q.qid,
                 q.status,
                 q.rows,
                 q.rounds,
                 ms(q.engine.p50_ns),
                 ms(q.engine.mean_ns),
-                ms(q.engine.p99_ns)
+                ms(q.engine.p99_ns),
+                q.db_hits
             );
         }
         for q in self.failures() {
@@ -199,6 +200,7 @@ mod tests {
                 status,
                 rows: 1,
                 rounds: 5,
+                db_hits: 1234,
                 engine: Stats {
                     p50_ns: 1_500_000,
                     ..Stats::default()
@@ -229,6 +231,7 @@ mod tests {
         assert_eq!(v["schema"], SCHEMA);
         assert_eq!(v["queries"][0]["status"], "ok");
         assert_eq!(v["queries"][0]["engine"]["p50_ns"], 1_500_000);
+        assert_eq!(v["queries"][0]["db_hits"], 1234);
         assert_eq!(
             v["graph"],
             serde_json::json!({

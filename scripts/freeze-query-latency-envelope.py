@@ -65,6 +65,11 @@ def check_compatible(reports: list[tuple[Path, dict]]) -> list[str]:
         keys = [(q.get("qid"), q.get("index_profile")) for q in rep.get("queries") or []]
         if len(keys) != len(set(keys)):
             problems.append(f"{path}: duplicate (qid, index_profile) entry")
+        # A report without db_hits is a pre-field run: refuse it, so an
+        # envelope never silently freezes a zero store-read ceiling.
+        for q in rep.get("queries") or []:
+            if not isinstance(q.get("db_hits"), int):
+                problems.append(f"{path}: q{q.get('qid')} report has no db_hits")
     return problems
 
 
@@ -97,6 +102,7 @@ def envelope(reports: list[tuple[Path, dict]]) -> dict:
                     "index_profile": q.get("index_profile"),
                     "p50_ms": 0.0,
                     "mean_ms": 0.0,
+                    "db_hits": 0,
                     "rows": q.get("rows"),
                 },
             )
@@ -104,6 +110,7 @@ def envelope(reports: list[tuple[Path, dict]]) -> dict:
             # run's value keeps the worst of N.
             entry["p50_ms"] = max(entry["p50_ms"], engine.get("p50_ns", 0) / 1e6)
             entry["mean_ms"] = max(entry["mean_ms"], engine.get("mean_ns", 0) / 1e6)
+            entry["db_hits"] = max(entry["db_hits"], q["db_hits"])
         rss = rep.get("peak_rss_bytes")
         if rss is not None:
             out["peak_rss_bytes"] = max(out.get("peak_rss_bytes") or 0, rss)

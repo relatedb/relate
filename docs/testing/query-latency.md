@@ -14,8 +14,21 @@ Flags and outputs are specified in
    cargo run --release -p relate-query-latency -- run --qids 19 --min-time 5
    ```
 
-   The table prints engine-elapsed p50, mean and p99; the full report is
+   The table prints engine-elapsed p50, mean and p99 and the query's
+   `db hits`; the full report is
    `target/query-latency/report-graph-benchmark-ldbc-sf0.1.json`.
+
+   `db hits` is the store reads of one untimed PROFILE execution (the plan
+   tree's `db_hits`, summed). It is deterministic for a fixed graph and
+   plan, so it needs no quiet machine: a change that moves wall time but
+   not `db hits` is CPU work, and one that moves `db hits` changed the
+   plan or the walk. The compare gate (`scripts/compare-query-latency.py`)
+   holds it in every environment class: report `db_hits` must stay within
+   max(1.05 x envelope, envelope + 64) per query (env knobs
+   `QUERY_LATENCY_DB_HITS_RATIO`, `QUERY_LATENCY_DB_HITS_FLOOR`); a
+   decrease passes, so re-freeze the envelope to ratchet an improvement in.
+   An envelope frozen before the field existed carries no `db_hits` and the
+   band is skipped until the next freeze.
 
 2. **Profile.**
 

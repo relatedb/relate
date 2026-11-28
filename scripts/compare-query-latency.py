@@ -6,6 +6,11 @@ Hard failures, independent of environment class: any query not ok
 qid/profile or required field (status, engine stats, peak RSS) in the
 report, or a report schema the envelope does not know.
 
+A db_hits band runs in every class (the count is deterministic, so it
+needs no matching environment): per (qid, index profile), report db_hits <=
+max(DB_HITS_RATIO x envelope, envelope + DB_HITS_FLOOR); an envelope entry
+without db_hits is skipped until the next freeze.
+
 Latency and memory bands run only when the `environment` classes match
 (ADR-0071): per (qid, index profile), engine p50 <= max(P50_RATIO x
 envelope p50, envelope p50 + P50_FLOOR_MS); across the run, peak RSS <=
@@ -48,6 +53,11 @@ _env_spec.loader.exec_module(_env)  # type: ignore[union-attr]
 P50_RATIO = float(os.environ.get("QUERY_LATENCY_P50_RATIO", "3.0"))
 P50_FLOOR_MS = float(os.environ.get("QUERY_LATENCY_P50_FLOOR_MS", "0.5"))
 RSS_RATIO = float(os.environ.get("QUERY_LATENCY_RSS_RATIO", "1.15"))
+# The store-read ratchet: db_hits is deterministic, so this band is tight
+# (5%) and carries a small absolute floor so a tiny query does not flap on
+# a one-read plan change. A decrease always passes.
+DB_HITS_RATIO = float(os.environ.get("QUERY_LATENCY_DB_HITS_RATIO", "1.05"))
+DB_HITS_FLOOR = int(os.environ.get("QUERY_LATENCY_DB_HITS_FLOOR", "64"))
 
 
 def load(path: Path) -> dict:
@@ -69,6 +79,8 @@ def hard_failures(baseline: dict, report: dict, rep: dict, base: dict) -> list[s
             )
         if "p50_ns" not in (q.get("engine") or {}):
             diags.append(f"q{key[0]}/{key[1]} missing engine.p50_ns")
+        if not isinstance(q.get("db_hits"), int):
+            diags.append(f"q{key[0]}/{key[1]} missing db_hits")
     if report.get("peak_rss_bytes") is None:
         diags.append("report missing peak_rss_bytes")
     for key in sorted(base):
@@ -105,13 +117,39 @@ def bands(base: dict, rep: dict) -> list[str]:
     return diags
 
 
+def db_hits_bands(base: dict, rep: dict) -> list[str]:
+    """The store-read ratchet: per query, report db_hits <= max(DB_HITS_RATIO
+    x envelope, envelope + DB_HITS_FLOOR). db_hits is deterministic for a
+    fixed graph and plan, so this layer is not class-gated: it judges every
+    environment. An envelope entry frozen before the field existed carries
+    no db_hits and is skipped until the next freeze."""
+    diags: list[str] = []
+    for key in sorted(base):
+        env = base[key].get("db_hits")
+        if env is None:
+            continue
+        # hard_failures already refused a report missing any envelope key,
+        # so the lookup is total here; a broken call order raises.
+        q = rep[key]
+        allowed = max(DB_HITS_RATIO * env, env + DB_HITS_FLOOR)
+        if q["db_hits"] > allowed:
+            diags.append(
+                f"q{key[0]}/{key[1]} db_hits {q['db_hits']} > {allowed:.0f} "
+                f"(envelope {env}; ADR-0245 store-read band)"
+            )
+    return diags
+
+
 def verdict(baseline: dict, report: dict) -> tuple[str, list[str]]:
     """The one public verdict layer: (status, diagnostics). Builds the
-    keyed views, runs the hard-failure layer (unconditional — a hard
-    failure wins every status, answers are judged in every class), then
-    the class gate, then the bands and the memory band on a clean,
-    matched pair. Status is `ok`, `fail`, or `incompatible` (class
-    mismatch: bands skipped, hard failures already judged)."""
+    keyed views, then runs the layers in order: the hard-failure layer
+    (unconditional — a hard failure wins every status, answers are judged
+    in every class), the store-read band (db_hits is deterministic, so it
+    is class-independent and also unconditional), the class gate, and
+    last the p50 and memory bands on a clean, matched pair. Status is
+    `ok`, `fail`, or `incompatible` (class mismatch: the p50 and memory
+    bands skipped, hard failures and the store-read band already
+    judged)."""
     rep: dict[tuple, dict] = {}
     for q in report.get("queries") or []:
         rep[(q.get("qid"), q.get("index_profile"))] = q
@@ -119,6 +157,9 @@ def verdict(baseline: dict, report: dict) -> tuple[str, list[str]]:
         (q.get("qid"), q.get("index_profile")): q for q in baseline.get("queries") or []
     }
     diags = hard_failures(baseline, report, rep, base)
+    if diags:
+        return "fail", diags
+    diags = db_hits_bands(base, rep)
     if diags:
         return "fail", diags
     # Class gate (ADR-0071), through the canonical field-level walk
