@@ -445,6 +445,52 @@ Error: the 'extension install' action is not included in this build of relate (e
 and exit 2, while `extension init`, `extension list`, `extension remove` and
 `extension check` keep working (ADR-0431 §3).
 
+### Trying the experimental Vortex store (ADR-0665/0703)
+
+A five-minute walkthrough. The store is an **experimental alternative
+storage representation** for properties: with it attached, point reads and
+the equality/aggregate lookups route to a columnar store and writes publish
+through its delta overlay — answers, the Cypher dialect and the durable
+checkpoint format are unchanged, and an attached run says so (the note
+below) so it never reads as a default one.
+
+1. **Build from source with the feature.** No released binary, wheel or
+   bundle carries it — every default build leaves it out. Build the CLI
+   with the feature on:
+
+   ```
+   cargo build --release -p relate-cli --features vortex-store
+   ```
+
+2. **Opt in at open** — one of the two runtime spellings (both need the
+   feature build; both fail the open closed, exit 1, on any other build):
+
+   ```
+   RELATE_PREVIEW=vortex-store ./target/release/relate query \
+       "MATCH (p:Person) RETURN count(p)" -d mydb
+   # or, on this build only:
+   ./target/release/relate query --vortex-store "MATCH (p:Person) RETURN count(p)" -d mydb
+   ```
+
+   `RELATE_PREVIEW` is process-global (read once — every open in the
+   process attaches the store); `--vortex-store` sets the typed field for
+   its one open. `serve` takes the same flag: every served surface reads
+   through the store.
+
+3. **Confirm it attached.** An attached `query` prints on stderr:
+
+   ```
+   note: the experimental Vortex property store is attached (--vortex-store / RELATE_PREVIEW=vortex-store); answers and the Cypher dialect are unchanged
+   ```
+
+   and `serve` adds the same text as a banner line.
+
+What to expect: nothing changes in the answers or the dialect — the store
+is a speed/memory experiment, and a wrong answer is a bug worth reporting
+(the [Rust](../rust/spec.md) and [Python](../python/spec.md) specs carry
+the same opt-in for embedding; the Python and JavaScript spellings are the
+environment row only, on the same feature build).
+
 ## Lifecycle commands
 
 Exit-after lifecycle verbs are **positional commands**, recognized only as the

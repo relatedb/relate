@@ -283,7 +283,10 @@ refuses any opt-in with the error in the `OpenOptions` row above, and
 (unknown names keep failing the open closed; only a feature build can
 serve the row). The C-ABI clients (Python, JavaScript) reach the same row
 through `RELATE_PREVIEW` only; a typed per-open opt-in for them is a
-recorded follow-up needing a new C ABI options entry point.
+recorded follow-up needing a new C ABI options entry point. The CLI spec
+carries [a five-minute try-it
+walkthrough](../cli/spec.md#trying-the-experimental-vortex-store-adr-06650703)
+— build from source with the feature, opt in, read the note.
 
 The example requires the `vortex-store` cargo feature:
 
