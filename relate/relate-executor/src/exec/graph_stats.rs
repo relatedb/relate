@@ -7,14 +7,43 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use relate_core::Value;
-use relate_ir::{BinaryOp, Expr, NodePattern, RelPattern};
+use relate_ir::{BinaryOp, Expr, NodePattern, PathPattern, RelPattern};
 use relate_names::{NamedToken, SmallName, Token, TokenResolver};
 use relate_planner::{
-    endpoint_estimate, seed_on_rel_start, walk_cost, Bound, ContainsCount, DegreeMoments, KeyStats,
-    Provenance, RowEstimate,
+    endpoint_estimate, seed_on_rel_start, walk_cost, Basis, Bound, ContainsCount, DegreeMoments,
+    KeyStats, Provenance, RowEstimate,
 };
 
 use crate::graph::{key_heavy_count, key_value_admitted, Graph};
+
+/// A start's walked row estimate with the trust of the figure it was
+/// walked from (ADR-0694's provenance): the rows are what strategies
+/// compare, the basis only gates a strategy or breaks a tie between
+/// prices that are equal, never overrides a strictly cheaper row count.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct StartEstimate {
+    pub(crate) rows: u64,
+    pub(crate) basis: Basis,
+}
+
+impl StartEstimate {
+    /// The one price ordering: fewer rows first, then the more
+    /// trustworthy basis. Every start choice ranks by it, so no chooser
+    /// carries its own tie policy.
+    pub(super) fn key(self) -> (u64, std::cmp::Reverse<Basis>) {
+        (self.rows, std::cmp::Reverse(self.basis))
+    }
+
+    /// The cheaper of two prices; an equal price keeps the more
+    /// trustworthy basis (a tie-break, never an override of fewer rows).
+    pub(super) fn cheaper(self, other: StartEstimate) -> StartEstimate {
+        if other.key() < self.key() {
+            other
+        } else {
+            self
+        }
+    }
+}
 
 /// Construction goes through [`GraphStats::new`] (the ADR-0218 one-
 /// construction idiom the sibling plan-time stats impls use), so an
@@ -52,8 +81,9 @@ impl<'a> GraphStats<'a> {
         where_conjuncts: impl Iterator<Item = &'c Expr> + Clone,
         first_hop: Option<&RelPattern>,
         reversed: bool,
-    ) -> u64 {
+    ) -> StartEstimate {
         let estimate = endpoint_estimate(np, bound, where_conjuncts, self);
+        let basis = estimate.basis();
         // Two local facts: the orientation flag is the caller's derived
         // one (the forward walker passes false, the backward walker's
         // k > 0 pivots pass true — LABS-426), and the walk prices this
@@ -67,8 +97,39 @@ impl<'a> GraphStats<'a> {
                 .map(|rel| (np, rel, seed_on_rel_start(rel, reversed))),
             self,
         );
-        rows.min(u64::MAX as u128) as u64
+        StartEstimate {
+            rows: rows.min(u64::MAX as u128) as u64,
+            basis,
+        }
     }
+}
+
+/// One element's degree-scaled start estimate with its adjacent first
+/// hop — the comparison both start selections run, spelled once
+/// (stellar F-1-1/F-1-2/F-1-4): the bound-pivot gate and
+/// `cheapest_start` rank candidates with the same numbers. Element 0's
+/// first hop is the path's first rel; element k walks `rels[k - 1]`
+/// backward. Element 0 is the start node the parsed-pattern invariant
+/// guarantees (F-8-4's boundary, stated once here). `choose_start`'s ranker and the hub join's cost gate are
+/// its callers, and the hub join's cost gate prices a pair's side B with it.
+pub(super) fn element_estimate<'a>(
+    stats: &GraphStats<'_>,
+    path: &'a PathPattern,
+    bound: relate_planner::Bound<'_>,
+    conjuncts: impl Iterator<Item = &'a relate_ir::Expr> + Clone,
+    k: usize,
+) -> StartEstimate {
+    // The walk, derived once (round 2, F-2-1: one branch on `k == 0`, not
+    // three spellings of it): k == 0 is the forward walker (seed
+    // nodes[0], hop rels[0]); k > 0 is the backward walker's pivot
+    // candidate — the walk from nodes[k] back through rels[k-1], the
+    // reversed evaluation of the planned spelling (LABS-426).
+    // `nodes[k]` exists for every k the callers pass (the parsed-pattern
+    // invariant: one more node than rels, index 0 the start node).
+    let np = &path.nodes[k];
+    let first_hop = path.rels.get(k.saturating_sub(1));
+    let reversed = k > 0;
+    stats.estimate(np, bound, conjuncts, first_hop, reversed)
 }
 
 impl GraphStats<'_> {

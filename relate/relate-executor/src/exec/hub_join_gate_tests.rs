@@ -3,10 +3,14 @@
 //! planner's order — leaves the nested loop's per-hub expansions the
 //! cheaper plan, while a side A that covers most hubs keeps the join.
 
-use super::hub_join::{take_hub_join_engagements, with_hub_join_disabled};
+use super::graph_stats::StartEstimate;
+use super::hub_join::{
+    is_guess, join_beats_nested, take_hub_join_engagements, with_hub_join_disabled,
+};
 use super::test_support::exec_cypher;
 use super::*;
 use crate::graph::Graph;
+use relate_planner::Basis;
 
 const PERSONS: usize = 2_000;
 const INTERESTS: usize = 10;
@@ -74,4 +78,59 @@ fn a_side_a_covering_every_hub_keeps_the_hub_join() {
     // every person is a side-A row, so the one full enumeration of side B
     // is no dearer than the per-person expansions.
     assert_engagements_and_rows(&interest_graph(), &query(""), 1);
+}
+
+fn priced(rows: u64, basis: Basis) -> StartEstimate {
+    StartEstimate { rows, basis }
+}
+
+/// Every rung of the basis vocabulary, in trust order, with whether it
+/// is a guess: the margin threshold is asserted once, here.
+fn every_basis() -> [(Basis, bool); 7] {
+    use relate_planner::Provenance;
+    [
+        (Basis::Rank, true),
+        (Basis::Default, true),
+        (Basis::Sampled, false),
+        (Basis::Statistic(Provenance::Sketched), false),
+        (Basis::Statistic(Provenance::UpperBound), false),
+        (Basis::Statistic(Provenance::Exact), false),
+        (Basis::Measured, false),
+    ]
+}
+
+#[test]
+fn the_join_ties_unless_the_price_is_a_guess_and_then_needs_the_margin() {
+    for (basis, guess) in every_basis() {
+        assert_eq!(is_guess(priced(100, basis)), guess, "{basis:?}");
+        assert!(!join_beats_nested(priced(100, basis), 99), "{basis:?}");
+        assert_eq!(
+            join_beats_nested(priced(100, basis), 100),
+            !guess,
+            "{basis:?}"
+        );
+        assert_eq!(
+            join_beats_nested(priced(100, basis), 199),
+            !guess,
+            "{basis:?}"
+        );
+        assert!(join_beats_nested(priced(100, basis), 200), "{basis:?}");
+    }
+}
+
+#[test]
+fn a_strictly_dearer_join_never_wins_on_basis() {
+    assert!(!join_beats_nested(priced(101, Basis::Measured), 100));
+}
+
+#[test]
+fn an_equal_price_keeps_the_more_trustworthy_basis_and_fewer_rows_still_win() {
+    let guess = priced(10, Basis::Default);
+    let measured = priced(10, Basis::Measured);
+    assert_eq!(guess.cheaper(measured), measured);
+    assert_eq!(measured.cheaper(guess), measured);
+    assert_eq!(
+        measured.cheaper(priced(9, Basis::Rank)),
+        priced(9, Basis::Rank)
+    );
 }

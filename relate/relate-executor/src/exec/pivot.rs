@@ -22,6 +22,7 @@ use crate::pattern_walk::{
 use crate::row::{row_bound, Row};
 
 use super::expand::{admit_candidate, admit_far_node_at, match_node, PathMatch};
+use super::graph_stats::element_estimate;
 use super::predicate_spec;
 use super::pushdown::residual_ok_skipping;
 use super::rel_seek::RelSeek;
@@ -157,34 +158,6 @@ pub(super) fn cheapest_start_expansion(
     Ok(())
 }
 
-/// One element's degree-scaled start estimate with its adjacent first
-/// hop — the comparison both start selections run, spelled once
-/// (stellar F-1-1/F-1-2/F-1-4): the bound-pivot gate and
-/// `cheapest_start` rank candidates with the same numbers. Element 0's
-/// first hop is the path's first rel; element k walks `rels[k - 1]`
-/// backward. Element 0 is the start node the parsed-pattern invariant
-/// guarantees (F-8-4's boundary, stated once here). `choose_start` and `cheapest_start` are
-/// its callers, and the hub join's cost gate prices a pair's side B with it.
-pub(super) fn element_estimate<'g, 'a>(
-    stats: &crate::exec::graph_stats::GraphStats<'g>,
-    path: &'a PathPattern,
-    bound: relate_planner::Bound<'_>,
-    conjuncts: impl Iterator<Item = &'a relate_ir::Expr> + Clone,
-    k: usize,
-) -> u64 {
-    // The walk, derived once (round 2, F-2-1: one branch on `k == 0`, not
-    // three spellings of it): k == 0 is the forward walker (seed
-    // nodes[0], hop rels[0]); k > 0 is the backward walker's pivot
-    // candidate — the walk from nodes[k] back through rels[k-1], the
-    // reversed evaluation of the planned spelling (LABS-426).
-    // `nodes[k]` exists for every k the callers pass (the parsed-pattern
-    // invariant: one more node than rels, index 0 the start node).
-    let np = &path.nodes[k];
-    let first_hop = path.rels.get(k.saturating_sub(1));
-    let reversed = k > 0;
-    stats.estimate(np, bound, conjuncts, first_hop, reversed)
-}
-
 /// The walk's start selection, orchestrated in one place — the
 /// eligibility gates, the bound pivot, its estimate gate, and the
 /// cheapest-start fallback — beside the two selections it drives
@@ -244,12 +217,9 @@ pub(super) fn choose_start(
     // once per row and are shared by both — the estimate can descend
     // indexes, so a dead derivation per row is not a small cost
     // (stellar F-8-x; q19 measured the unconditional form at 2x).
-    // `est0` derives once, for the bound pivot's beats-element-0 gate
-    // and the cheapest arm's per-element comparison alike.
     let stats = crate::exec::graph_stats::GraphStats::new(graph.base(), params);
     let bound = row_bound(row);
-    let est0 = element_estimate(&stats, path, &bound, conjuncts.iter(), 0);
-    select_start(path, row, &stats, &bound, conjuncts, est0)
+    select_start(path, row, &stats, &bound, conjuncts)
 }
 
 /// The one start-selection ranker (ADR-0351/LABS-351, ADR-0350): every
@@ -267,8 +237,9 @@ pub(super) fn choose_start(
 /// variable are eligible: the start element's row binding is what
 /// short-circuits the suffix walk's re-enumeration (`match_node`'s bound
 /// arm), and an anonymous element cannot provide it. The compound inputs
-/// — stats, the bound view, `est0`, the residual conjuncts — arrive
-/// derived once per row from [`choose_start`]. `None` keeps today's
+/// — stats, the bound view, the residual conjuncts — arrive derived once
+/// per row from [`choose_start`]; element 0's price (`est0`) derives here,
+/// once. `None` keeps today's
 /// index-0 start: index 0 is already (or ties as) cheapest, or every
 /// alternative element's prefix is variable-length or quantified (the
 /// backward walker is single-hop only).
@@ -278,13 +249,17 @@ fn select_start(
     stats: &crate::exec::graph_stats::GraphStats<'_>,
     bound: relate_planner::Bound<'_>,
     conjuncts: &[Expr],
-    est0: u64,
 ) -> Option<Selection> {
+    // Element 0's price derives once, here, for the beats-element-0 gate
+    // of the bound pivot and the cheapest arm alike.
+    let est0 = element_estimate(stats, path, bound, conjuncts.iter(), 0);
     let (k, _) = (1..path.nodes.len())
         .filter(|&k| path.nodes[k].variable.is_some() && prefix_plain(path, k))
         .map(|k| (k, element_estimate(stats, path, bound, conjuncts.iter(), k)))
-        .filter(|&(_, est)| est < est0)
-        .min_by_key(|&(k, est)| (est, k))?;
+        // Strictly fewer rows than element 0: the basis only orders
+        // candidates priced alike (R1), it never admits a dearer one.
+        .filter(|&(_, est)| est.rows < est0.rows)
+        .min_by_key(|&(k, est)| (est.key(), k))?;
     Some(match bound_node(&path.nodes[k], row) {
         Some(id) => Selection::Pivot((k, id)),
         None => Selection::Cheapest(k),
